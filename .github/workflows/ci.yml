@@ -41,7 +41,18 @@ jobs:
         run: go vet ./...
 
       - name: Test
-        run: go test ./...
+        shell: bash
+        run: |
+          set -o pipefail
+          go test ./... 2>&1 | tee test-output.txt
+
+      - name: Report test failures
+        if: failure()
+        shell: bash
+        run: |
+          # Failing tests become annotations on the run summary.
+          grep -E '^(--- FAIL|FAIL|panic:)|_test\.go:[0-9]+:' test-output.txt | head -40 |
+            while IFS= read -r line; do echo "::error title=Test failure::${line}"; done
 
   linux-checks:
     name: linux checks
@@ -76,7 +87,15 @@ jobs:
         run: GOARCH=386 go vet ./...
 
       - name: Race tests
-        run: go test -race ./...
+        run: |
+          set -o pipefail
+          go test -race ./... 2>&1 | tee race-output.txt
+
+      - name: Report race test failures
+        if: failure()
+        run: |
+          grep -E '^(--- FAIL|FAIL|panic:|WARNING: DATA RACE)|_test\.go:[0-9]+:' race-output.txt | head -40 |
+            while IFS= read -r line; do echo "::error title=Race test failure::${line}"; done
 
       - name: THIRD_PARTY_NOTICES up to date
         run: |
