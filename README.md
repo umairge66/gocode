@@ -10,9 +10,20 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/umairge66/gocode/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/umairge66/gocode/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/umairge66/gocode/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/umairge66/gocode?include_prereleases&color=188038"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-188038"></a>
   <img alt="Go 1.26" src="https://img.shields.io/badge/go-1.26-00ADD8">
-  <img alt="Linux, macOS, Windows" src="https://img.shields.io/badge/platforms-linux%20%7C%20macOS%20%7C%20windows-34d27b">
+  <img alt="Linux, macOS, Windows, BSD" src="https://img.shields.io/badge/platforms-linux%20%7C%20macOS%20%7C%20windows%20%7C%20bsd-34d27b">
+</p>
+
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#features">Features</a> ·
+  <a href="#chrome-browser-control">Chrome extension</a> ·
+  <a href="https://github.com/umairge66/gocode/releases">Releases</a> ·
+  <a href="https://github.com/umairge66/gocode/issues">Issues</a>
 </p>
 
 ---
@@ -36,7 +47,13 @@ gocode is a coding agent that lives in your terminal. You describe what you want
 
 ## Install
 
-Every release on the GitHub Releases page has ready-made builds. Below, `<owner>/<repo>` stands for the GitHub repository gocode is published from and `<version>` for the release version without the `v` (e.g. `1.2.3`).
+Every release on the [Releases page](https://github.com/umairge66/gocode/releases) has ready-made builds. Below, `<version>` is the release version without the `v` (e.g. `0.1.0`).
+
+**With Go installed**, the quickest way is:
+
+```sh
+go install github.com/umairge66/gocode/cmd/gocode@latest
+```
 
 | Platform | Download |
 |---|---|
@@ -48,7 +65,7 @@ Every release on the GitHub Releases page has ready-made builds. Below, `<owner>
 **Archive** (any platform): unpack it and put `gocode` (`gocode.exe` on Windows) somewhere on your `PATH`:
 
 ```sh
-curl -LO https://github.com/<owner>/<repo>/releases/download/v<version>/gocode-<version>-linux-amd64.tar.gz
+curl -LO https://github.com/umairge66/gocode/releases/download/v<version>/gocode-<version>-linux-amd64.tar.gz
 tar -xzf gocode-<version>-linux-amd64.tar.gz
 install -m 0755 gocode-<version>-linux-amd64/gocode ~/.local/bin/gocode
 ```
@@ -74,7 +91,7 @@ sudo dnf install ./gocode-<version>-1.x86_64.rpm
 **From source** (Go 1.26 or newer):
 
 ```sh
-git clone https://github.com/<owner>/<repo>.git gocode
+git clone https://github.com/umairge66/gocode.git
 cd gocode
 go build -o gocode ./cmd/gocode
 ```
@@ -128,14 +145,34 @@ Cycle modes with **Shift+Tab**. Say "No" to any prompt and the turn stops; type 
 - **Skills, plugins, hooks and custom commands**, compatible with Claude Code's skill and plugin formats, so existing marketplaces work.
 - **Language servers (LSP):** go-to-definition, references, hover and new errors after each edit, from `gopls`, `pyright`, `typescript-language-server` and others configured by a plugin.
 
-### Browser control
-gocode can drive your local Chrome through its own extension, which talks only to gocode on your machine:
+### Chrome browser control
+gocode can work in **your own Chrome** (or Chromium, Edge, Brave): open pages, read them, click, type, fill in forms and take screenshots. Ask things like *"open localhost:3000, sign up with a test account and tell me what breaks"* or *"check the pricing page and summarise the plans"*.
+
+**What the model can do in the browser**
+
+| Tool | |
+|---|---|
+| `navigate`, `tabs_create`, `tabs_close`, `tabs_context` | open pages and manage gocode's tabs |
+| `read_page`, `get_page_text`, `find` | read a page's structure or text, find elements by description |
+| `computer`, `form_input` | click, type, scroll, press keys, fill in form fields |
+| `screenshot` | see the page as it looks |
+| `browser_batch` | several steps in one go |
+
+**Private and contained by design**
+- **Local only.** The extension talks to the gocode process on your machine through Chrome's native messaging. No server, no account, no telemetry, no network calls of its own, and no port is opened.
+- **Its own tab group.** Every tab gocode opens goes into a green **"gocode"** tab group, one per session. gocode can only see and control tabs in its group; your other tabs are off limits.
+- **Cleans up after itself.** When a session ends, gocode closes its tab group. Tabs you dragged into the group yourself, and pages you asked it to keep open, stay.
+- **Your permission rules apply**, the same as for every other tool.
+
+**Set it up** (the extension is built into gocode, nothing else to download):
 
 ```sh
-gocode chrome install   # then: chrome://extensions → Developer mode → Load unpacked
+gocode chrome install
 ```
 
-Tabs gocode opens live in their own tab group and are closed when the session ends. Details in [`extension/README.md`](extension/README.md).
+Then, once: open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**, choose the folder the command printed (`~/.config/gocode/chrome-extension`), and restart Chrome. The Prompty icon in the toolbar shows a red dot only when gocode can't be reached.
+
+`gocode chrome status` checks the setup; after updating gocode, run `gocode chrome install` again and click **Reload** on the extension. Browser tools are offered in interactive sessions (use `--no-chrome` to turn them off) and in `-p` runs with `--chrome`. More in [`extension/README.md`](extension/README.md); a Chrome Web Store version is planned.
 
 ### Fast search
 The model's `grep` runs a bundled **ugrep** that skips `.gitignore`d files, VCS folders and binaries, so searches on real projects return your code in milliseconds instead of a flood of `node_modules`.
