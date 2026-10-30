@@ -1,0 +1,29 @@
+╭───────╮
+│ ● ▾ ● │
+╰──┬────╯
+   ❯_
++-----------------------------------------+
+| gocode v1.0.0                           |
+| openrouter · opus-5.5                   |
+| /home/u/proj                            |
+| /help for commands, /login to set a key |
++-----------------------------------------+
+> fix the failing test in parser.go
+⎔ Read(internal/parser/parser.go)
+    Read 40 lines
+⎔ Bash(go test ./...)
+    FAIL parser_test.go:12
+    exit status 1
+  diff parser.go
+  @@ -1,3 +1,3 @@
+    package parser
+  - old line
+  + new line
+    func Parse() {}
+The test fails because the **tokenizer** drops the last rune.
+· Auto-compacted.
+! boom
+· Thinking… (12s · ↓ 1.2k tokens · esc to interrupt)
+> _
+⏵⏵ auto mode on (shift+tab to cycle)
+                                                     ↑ 1.2k ↓ 340 tokens

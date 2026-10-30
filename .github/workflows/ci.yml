@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOTOOLCHAIN: local
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+  linux-checks:
+    name: linux checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify module checksums
+        run: go mod verify
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l internal cmd extension)
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Check extension script syntax
+        run: node --check extension/background.js
+
+      - name: Vet on 32-bit (linux/386)
+        run: GOARCH=386 go vet ./...
+
+      - name: Race tests
+        run: go test -race ./...
+
+      - name: THIRD_PARTY_NOTICES up to date
+        run: |
+          python3 scripts/gen-notices.py
+          git diff --exit-code THIRD_PARTY_NOTICES
+
+      - name: Cross-compile every release target
+        run: |
+          set -eu
+          for t in linux/amd64 linux/arm64 linux/386 linux/arm linux/riscv64 linux/ppc64le linux/s390x \
+                   darwin/amd64 darwin/arm64 windows/amd64 windows/arm64 windows/386 \
+                   freebsd/amd64 freebsd/arm64 openbsd/amd64 netbsd/amd64; do
+            echo "::group::$t"
+            CGO_ENABLED=0 GOOS=${t%/*} GOARCH=${t#*/} GOARM=7 go build -trimpath -o /dev/null ./cmd/gocode
+            echo "::endgroup::"
+          done

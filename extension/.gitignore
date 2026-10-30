@@ -1,0 +1,4 @@
+# No private key is needed for this extension (see README.md, "Extension ids
+# and trust"). Should you ever generate one locally, keep it out of git.
+.keys/
+*.pem

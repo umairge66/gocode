@@ -1,0 +1,5 @@
+#!/bin/sh
+# Starts the gocode binary bundled in this AppImage with the caller's
+# arguments and working directory.
+here=$(dirname "$(readlink -f "$0")")
+exec "$here/usr/bin/gocode" "$@"

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=gocode
+GenericName=Coding agent
+Comment=Agentic coding assistant for the terminal
+Exec=gocode
+Icon=gocode
+Terminal=true
+Categories=Development;
+Keywords=code;agent;assistant;terminal;

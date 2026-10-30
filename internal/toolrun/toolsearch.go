@@ -1,0 +1,133 @@
+package toolrun
+
+import (
+	"context"
+	"encoding/json"
+	"math"
+
+	"github.com/umairge66/gocode/internal/agent"
+	pathguard "github.com/umairge66/gocode/internal/pathguard"
+	"github.com/umairge66/gocode/internal/protocol"
+	"github.com/umairge66/gocode/internal/toolreg"
+	"github.com/umairge66/gocode/internal/toolsearch"
+)
+
+// WithToolSearch turns deferred tool loading on for the dispatcher: the
+// non-core tools' schemas are marked Deferred (see toolsearch.IsDeferred) and
+// the ToolSearch tool that loads them is registered. In auto mode the tools
+// are deferred only while their definitions reach autoThresholdChars
+// characters. ModeStandard (the zero value) leaves every schema undeferred
+// and registers no ToolSearch.
+func WithToolSearch(mode toolsearch.Mode, autoThresholdChars int) Option {
+	return func(d *Dispatcher) {
+		d.toolSearch = mode
+		d.toolSearchAuto = autoThresholdChars
+	}
+}
+
+// ToolSearchMode reports the dispatcher's deferred-loading mode and auto
+// threshold (for building a subagent's dispatcher the same way).
+func (d *Dispatcher) ToolSearchMode() (toolsearch.Mode, int) {
+	return d.toolSearch, d.toolSearchAuto
+}
+
+// markDeferred sets Deferred on the schemas of deferrable tools when
+// deferred loading is on, and drops the ToolSearch schema when it is off
+// (auto mode below its threshold, or nothing to defer).
+func (d *Dispatcher) markDeferred(schemas []agent.ToolSchema, external map[string]bool) []agent.ToolSchema {
+	if d.toolSearch == toolsearch.ModeStandard {
+		return schemas
+	}
+	if d.toolSearchDenied() {
+		// ToolSearch is disallowed: nothing could load a deferred tool, so
+		// every definition is sent in full.
+		return d.undefer(schemas)
+	}
+	size := 0
+	found := false
+	for i := range schemas {
+		if d.isDeferred(schemas[i].Name, external[schemas[i].Name]) {
+			schemas[i].Deferred = true
+			found = true
+			size += len(schemas[i].Name) + len(schemas[i].Description) + len(schemas[i].InputSchema)
+		}
+	}
+	if found && (d.toolSearch != toolsearch.ModeAuto || size >= d.toolSearchAuto) {
+		return schemas
+	}
+	return d.undefer(schemas)
+}
+
+// isDeferred applies the deferred set of this dispatcher's session kind.
+func (d *Dispatcher) isDeferred(name string, mcp bool) bool {
+	if d.compact {
+		return toolsearch.IsDeferredCompact(name, mcp)
+	}
+	return toolsearch.IsDeferred(name, mcp)
+}
+
+// undefer clears every Deferred mark and drops the ToolSearch schema.
+func (d *Dispatcher) undefer(schemas []agent.ToolSchema) []agent.ToolSchema {
+	out := schemas[:0]
+	for _, s := range schemas {
+		if s.Name == toolsearch.Name {
+			continue
+		}
+		s.Deferred = false
+		out = append(out, s)
+	}
+	return out
+}
+
+// toolSearchAdapter adapts the ToolSearch tool: it searches this
+// dispatcher's own tool catalog, so a subagent finds only its own tools.
+func (d *Dispatcher) toolSearchAdapter() adapter {
+	return adapter{
+		permission: func(input json.RawMessage) (string, string, pathguard.Operation, error) {
+			var in toolsearch.Input
+			if err := unmarshal(input, &in); err != nil {
+				return "", "", "", err
+			}
+			return "", "", "", nil
+		},
+		runLoads: func(_ context.Context, input json.RawMessage) (string, []string, error) {
+			var in toolsearch.Input
+			if err := unmarshal(input, &in); err != nil {
+				return "", nil, err
+			}
+			max := toolsearch.DefaultMaxMatch
+			if in.MaxResults != nil && *in.MaxResults >= 1 && !math.IsInf(*in.MaxResults, 0) {
+				max = int(math.Min(*in.MaxResults, 1000))
+			}
+			var tools []toolsearch.Tool
+			for _, s := range d.Schemas() {
+				if s.Name == toolsearch.Name {
+					continue
+				}
+				tools = append(tools, toolsearch.Tool{Name: s.Name, Description: s.Description, Deferred: s.Deferred})
+			}
+			names := toolsearch.Search(in.Query, tools, max)
+			return toolsearch.ResultText(names), names, nil
+		},
+		description: toolsearch.Description,
+		inputSchema: toolsearch.InputSchema,
+	}
+}
+
+// registerToolSearch registers ToolSearch when deferred loading is on.
+func (d *Dispatcher) registerToolSearch() {
+	if d.toolSearch == toolsearch.ModeStandard {
+		return
+	}
+	d.Register(protocol.ToolSearch, d.toolSearchAdapter())
+}
+
+// toolSearchDenied reports whether a deny rule covers every ToolSearch call.
+func (d *Dispatcher) toolSearchDenied() bool {
+	for _, r := range d.SnapshotRules() {
+		if r.Behavior == toolreg.RuleDeny && r.ToolName == toolsearch.Name && (r.Content == "" || r.Content == "*") {
+			return true
+		}
+	}
+	return false
+}

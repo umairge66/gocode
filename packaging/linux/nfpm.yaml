@@ -1,0 +1,37 @@
+# nfpm package definition for the gocode .deb and .rpm packages. The release
+# workflow fills in the environment variables; see RELEASING.md.
+name: gocode
+arch: ${NFPM_ARCH}
+platform: linux
+version: ${NFPM_VERSION}
+version_schema: semver
+section: devel
+priority: optional
+maintainer: The gocode authors
+description: |
+  Agentic coding assistant for the terminal.
+  gocode reads and searches your code, edits files, runs commands and checks
+  its work, using the model provider and API key you choose.
+vendor: The gocode authors
+homepage: ${NFPM_HOMEPAGE}
+license: MIT
+contents:
+  - src: ${NFPM_BINARY}
+    dst: /usr/bin/gocode
+    expand: true
+    file_info:
+      mode: 0755
+  - src: LICENSE
+    dst: /usr/share/doc/gocode/LICENSE
+    file_info:
+      mode: 0644
+  - src: README.md
+    dst: /usr/share/doc/gocode/README.md
+    file_info:
+      mode: 0644
+  - src: THIRD_PARTY_NOTICES
+    dst: /usr/share/doc/gocode/THIRD_PARTY_NOTICES
+    file_info:
+      mode: 0644
+rpm:
+  group: Development/Tools
