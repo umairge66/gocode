@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path"
+	"path/filepath"
 	"slices"
 	"sort"
 
@@ -396,7 +397,7 @@ func readProjectFiles(fsys fsfacade.FS, dir string) (map[string]mcp.ServerConfig
 		return nil, nil
 	}
 	var dirs []string
-	for d := path.Clean(dir); d != "/" && d != "." && d != ""; d = path.Dir(d) {
+	for d := path.Clean(filepath.ToSlash(dir)); d != "/" && d != "." && d != ""; d = path.Dir(d) {
 		dirs = append(dirs, d)
 	}
 	slices.Reverse(dirs)

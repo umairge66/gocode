@@ -48,9 +48,11 @@ func (m *scriptedModel) calls() int {
 func twoWritesTurn(t *testing.T, dir string) (agent.Message, string, string) {
 	t.Helper()
 	first, second := filepath.Join(dir, "first"), filepath.Join(dir, "second")
+	// Forward slashes: the shell (Git Bash on Windows) treats a backslash as
+	// an escape.
 	return agent.AssistantMessage(
-		agent.ToolUseBlock("tu_1", string(protocol.ToolBash), mustJSON(t, map[string]any{"command": "touch " + first})),
-		agent.ToolUseBlock("tu_2", string(protocol.ToolBash), mustJSON(t, map[string]any{"command": "touch " + second})),
+		agent.ToolUseBlock("tu_1", string(protocol.ToolBash), mustJSON(t, map[string]any{"command": "touch " + filepath.ToSlash(first)})),
+		agent.ToolUseBlock("tu_2", string(protocol.ToolBash), mustJSON(t, map[string]any{"command": "touch " + filepath.ToSlash(second)})),
 	), first, second
 }
 
@@ -218,7 +220,7 @@ func TestRejectOutsideTurnIsPlainDenial(t *testing.T) {
 	}}))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	res, err := d.Dispatch(ctx, bashCall(t, "touch "+filepath.Join(t.TempDir(), "x")))
+	res, err := d.Dispatch(ctx, bashCall(t, "touch "+filepath.ToSlash(filepath.Join(t.TempDir(), "x"))))
 	if err != nil || !res.IsError {
 		t.Fatalf("Dispatch = %+v, %v; want a denial", res, err)
 	}

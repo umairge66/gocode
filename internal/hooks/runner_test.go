@@ -97,11 +97,13 @@ func TestRunnerExit1NonBlocking(t *testing.T) {
 	}
 }
 
-// A hook that overruns its timeout is reported as a timeout, non-blocking.
+// A hook that overruns its timeout is reported as a timeout, non-blocking,
+// and promptly: the shell's own child (which holds the output pipes open) is
+// terminated with it rather than left running until it exits by itself.
 func TestRunnerTimeout(t *testing.T) {
 	skipOnWindows(t)
 	r := &Runner{Dir: t.TempDir()}
-	hook := CommandHook{Type: HookTypeCommand, Command: "sleep 5", TimeoutSeconds: 1}
+	hook := CommandHook{Type: HookTypeCommand, Command: "sleep 5; echo after", TimeoutSeconds: 1}
 	start := time.Now()
 	d, res, err := r.Run(context.Background(), hook, Payload{HookEventName: EventStop}, DecisionOptions{})
 	if err != nil {

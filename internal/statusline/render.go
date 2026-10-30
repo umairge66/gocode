@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/umairge66/gocode/internal/envsec"
+	"github.com/umairge66/gocode/internal/proctree"
 )
 
 // Context is the JSON payload Gocode writes to the status-line command's stdin.
@@ -236,6 +237,11 @@ func (e ExecRunner) Run(ctx context.Context, command, stdin string) (RunOutput, 
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
+	// The command runs in its own process group so a timeout terminates its
+	// descendants too; WaitDelay bounds the wait for one that keeps the
+	// output pipes open.
+	proctree.Prepare(cmd)
+	proctree.BindContext(cmd, proctree.Options{})
 
 	runErr := cmd.Run()
 	out := RunOutput{Stdout: outBuf.String(), Stderr: errBuf.String()}

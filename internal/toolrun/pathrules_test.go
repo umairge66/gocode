@@ -131,6 +131,9 @@ func TestBlockReadsOutsideWorkingDirectories(t *testing.T) {
 func TestPlanModeBlocksEditsAndBash(t *testing.T) {
 	proj, _ := searchFixture(t)
 	target := filepath.Join(proj, "src", "a.txt")
+	// Shell spellings use forward slashes: the shell (Git Bash on Windows)
+	// treats a backslash as an escape.
+	shProj, shTarget := filepath.ToSlash(proj), filepath.ToSlash(target)
 	d := New(toolreg.ModePlan, nil, WithSessionFiles(sessionFilesFor(proj, t.TempDir(), false)))
 	if res := dispatch(t, d, string(protocol.ToolRead), map[string]any{"file_path": target}); res.IsError {
 		t.Fatalf("plan Read refused: %+v", res)
@@ -138,7 +141,7 @@ func TestPlanModeBlocksEditsAndBash(t *testing.T) {
 	for name, in := range map[protocol.Tool]map[string]any{
 		protocol.ToolEdit:  {"file_path": target, "old_string": "needle", "new_string": "x"},
 		protocol.ToolWrite: {"file_path": target, "content": "x"},
-		protocol.ToolBash:  {"command": "rm -f " + target},
+		protocol.ToolBash:  {"command": "rm -f " + shTarget},
 	} {
 		if res := dispatch(t, d, string(name), in); !res.IsError {
 			t.Errorf("plan mode ran %s: %+v", name, res)
@@ -146,7 +149,7 @@ func TestPlanModeBlocksEditsAndBash(t *testing.T) {
 	}
 	// Read-only Bash runs in plan mode (the per-command
 	// isReadOnly lets plan mode explore); anything that could write is held.
-	for _, cmd := range []string{"ls " + proj, "git status", "grep -r needle " + proj, "cat " + target} {
+	for _, cmd := range []string{"ls " + shProj, "git status", "grep -r needle " + shProj, "cat " + shTarget} {
 		res := dispatch(t, d, string(protocol.ToolBash), map[string]any{"command": cmd})
 		if strings.Contains(res.Content, "plan mode") || strings.Contains(res.Content, "permission") {
 			t.Errorf("plan mode held read-only %q: %+v", cmd, res)
@@ -156,13 +159,13 @@ func TestPlanModeBlocksEditsAndBash(t *testing.T) {
 		}
 	}
 	for _, cmd := range []string{
-		"sed -i s/needle/x/ " + target,
-		"find " + proj + " -delete",
-		"echo x > " + target,
+		"sed -i s/needle/x/ " + shTarget,
+		"find " + shProj + " -delete",
+		"echo x > " + shTarget,
 		"git commit -m x",
-		"ls; rm -f " + target,
-		"ls $(rm -f " + target + ")",
-		"cat `rm -f " + target + "`",
+		"ls; rm -f " + shTarget,
+		"ls $(rm -f " + shTarget + ")",
+		"cat `rm -f " + shTarget + "`",
 	} {
 		res := dispatch(t, d, string(protocol.ToolBash), map[string]any{"command": cmd})
 		if !res.IsError || !strings.Contains(res.Content, "plan mode") {

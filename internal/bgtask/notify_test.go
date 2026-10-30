@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -204,7 +205,9 @@ func TestOutputFileWrittenAndBounded(t *testing.T) {
 	if !strings.HasPrefix(string(data), "0123456789abcdef\n[output truncated") {
 		t.Fatalf("output file = %q", data)
 	}
-	if st, _ := os.Stat(info.OutputFile); st.Mode().Perm()&0o077 != 0 {
+	// Windows has no Unix permission bits: the file is private through the
+	// per-user ACL of the directory it is created in.
+	if st, _ := os.Stat(info.OutputFile); runtime.GOOS != "windows" && st.Mode().Perm()&0o077 != 0 {
 		t.Errorf("output file mode = %v, want owner-only", st.Mode().Perm())
 	}
 	// The tail keeps working past the file limit.
@@ -220,7 +223,7 @@ func TestOutputFileWrittenAndBounded(t *testing.T) {
 }
 
 func TestTempOutputDirLifecycle(t *testing.T) {
-	t.Setenv("TMPDIR", t.TempDir())
+	setTempDir(t, t.TempDir())
 	r := &fakeRunner{}
 	m := NewManager(WithRunner(r), WithTempOutputDir())
 	dir := m.OutputDir()
@@ -232,7 +235,7 @@ func TestTempOutputDirLifecycle(t *testing.T) {
 	}
 	id, _ := m.Start(context.Background(), "x")
 	st, err := os.Stat(dir)
-	if err != nil || st.Mode().Perm() != 0o700 {
+	if err != nil || !st.IsDir() || (runtime.GOOS != "windows" && st.Mode().Perm() != 0o700) {
 		t.Fatalf("output dir after start: %v %v", st, err)
 	}
 	r.last().finish(0)
@@ -246,7 +249,7 @@ func TestTempOutputDirLifecycle(t *testing.T) {
 }
 
 func TestTempOutputDirNeverReusesExisting(t *testing.T) {
-	t.Setenv("TMPDIR", t.TempDir())
+	setTempDir(t, t.TempDir())
 	r := &fakeRunner{}
 	m := NewManager(WithRunner(r), WithTempOutputDir())
 	// Someone else created the directory first: no output file is written
@@ -266,5 +269,14 @@ func TestTempOutputDirNeverReusesExisting(t *testing.T) {
 	_ = m.Close()
 	if _, err := os.Stat(m.OutputDir()); err != nil {
 		t.Fatalf("foreign directory removed: %v", err)
+	}
+}
+
+// setTempDir points os.TempDir at dir for the test: TMPDIR on Unix, TMP and
+// TEMP on Windows.
+func setTempDir(t *testing.T, dir string) {
+	t.Helper()
+	for _, k := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(k, dir)
 	}
 }

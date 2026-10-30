@@ -17,7 +17,7 @@ func TestListenControlRefusesForeignOwnedDir(t *testing.T) {
 	old := controlUID
 	controlUID = func() int { return os.Getuid() + 1 } // dirs look foreign
 	defer func() { controlUID = old }()
-	ep := ControlEndpoint{Network: "unix", Address: filepath.Join(t.TempDir(), "inst", ChromeHostSocketName)}
+	ep := ControlEndpoint{Network: "unix", Address: filepath.Join(shortSockDir(t), "inst", ChromeHostSocketName)}
 	if l, err := listenControl(ep); err == nil {
 		l.Close()
 		t.Fatal("listenControl bound a socket in a directory owned by another user")
@@ -25,7 +25,7 @@ func TestListenControlRefusesForeignOwnedDir(t *testing.T) {
 }
 
 func TestListenControlRefusesSymlinkedDir(t *testing.T) {
-	base := t.TempDir()
+	base := shortSockDir(t)
 	real := filepath.Join(base, "elsewhere")
 	if err := os.Mkdir(real, 0o777); err != nil {
 		t.Fatal(err)
@@ -42,7 +42,7 @@ func TestListenControlRefusesSymlinkedDir(t *testing.T) {
 }
 
 func TestListenControlSocketModes(t *testing.T) {
-	ep := ControlEndpoint{Network: "unix", Address: filepath.Join(t.TempDir(), "inst", ChromeHostSocketName)}
+	ep := ControlEndpoint{Network: "unix", Address: filepath.Join(shortSockDir(t), "inst", ChromeHostSocketName)}
 	if err := os.MkdirAll(filepath.Dir(ep.Address), 0o777); err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestListenControlSocketModes(t *testing.T) {
 // The session must not send browser commands to (or trust replies from) a
 // socket bound by another user.
 func TestDialControlRefusesForeignEndpoint(t *testing.T) {
-	sock := filepath.Join(t.TempDir(), "c.sock")
+	sock := filepath.Join(shortSockDir(t), "c.sock")
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatal(err)
@@ -90,7 +90,7 @@ func TestDialControlRefusesForeignEndpoint(t *testing.T) {
 }
 
 func TestDialControlRefusesSymlinkSocket(t *testing.T) {
-	dir := t.TempDir()
+	dir := shortSockDir(t)
 	sock := filepath.Join(dir, "real.sock")
 	ln, err := net.Listen("unix", sock)
 	if err != nil {

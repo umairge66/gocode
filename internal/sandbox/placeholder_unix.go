@@ -4,6 +4,7 @@ package sandbox
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -16,11 +17,19 @@ import (
 // not exist yet), with the identity it had when created. Cleanup removes it
 // only while it is still that very inode, still empty, and still reachable
 // without crossing a symbolic link.
+//
+// The placeholder is held open until cleanup. An inode number alone does not
+// identify a file over time: once a file is unlinked, filesystems such as
+// ext4 hand the same number to the next file created, so a placeholder that
+// was deleted and replaced by a new file at the same path would otherwise
+// look unchanged. While the descriptor is open the original inode cannot be
+// freed, so no other file can carry its number.
 type Placeholder struct {
 	Path string
 	Dir  bool
 	dev  uint64
 	ino  uint64
+	pin  *os.File
 }
 
 // openDirNoFollow opens an absolute directory path component by component
@@ -57,22 +66,28 @@ func createPlaceholder(path string, dir bool) (Placeholder, error) {
 		return Placeholder{}, err
 	}
 	defer unix.Close(pfd)
+	var fd int
 	if dir {
 		if err := unix.Mkdirat(pfd, base, 0o700); err != nil {
 			return Placeholder{}, err
 		}
+		fd, err = unix.Openat(pfd, base, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if err != nil {
+			_ = unix.Unlinkat(pfd, base, unix.AT_REMOVEDIR)
+			return Placeholder{}, err
+		}
 	} else {
-		fd, err := unix.Openat(pfd, base, unix.O_CREAT|unix.O_EXCL|unix.O_WRONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+		fd, err = unix.Openat(pfd, base, unix.O_CREAT|unix.O_EXCL|unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
 		if err != nil {
 			return Placeholder{}, err
 		}
-		_ = unix.Close(fd)
 	}
 	var st unix.Stat_t
-	if err := unix.Fstatat(pfd, base, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+	if err := unix.Fstat(fd, &st); err != nil {
+		_ = unix.Close(fd)
 		return Placeholder{}, err
 	}
-	return Placeholder{Path: path, Dir: dir, dev: uint64(st.Dev), ino: uint64(st.Ino)}, nil
+	return Placeholder{Path: path, Dir: dir, dev: uint64(st.Dev), ino: uint64(st.Ino), pin: os.NewFile(uintptr(fd), path)}, nil
 }
 
 // RemovePlaceholders removes the placeholders that are still exactly what
@@ -90,6 +105,12 @@ func RemovePlaceholders(ps []Placeholder) {
 }
 
 func removePlaceholder(p Placeholder) {
+	if p.pin == nil {
+		// Without the pinned inode its number may have been reused by an
+		// unrelated file, so the identity check below would prove nothing.
+		return
+	}
+	defer p.pin.Close()
 	if p.Path == "" || p.ino == 0 {
 		return
 	}

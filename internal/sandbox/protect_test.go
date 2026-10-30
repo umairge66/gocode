@@ -3,6 +3,7 @@ package sandbox
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -66,6 +67,9 @@ func TestPassThroughEnvVarsTrustedOnly(t *testing.T) {
 
 // The per-user temp root must be a real directory owned by this user.
 func TestEnsurePrivateDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix permission bits and symlink checks")
+	}
 	root := t.TempDir()
 	d := filepath.Join(root, "gocode-1000")
 	if err := ensurePrivateDir(d); err != nil {

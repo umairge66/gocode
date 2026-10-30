@@ -3,6 +3,7 @@ package skills
 import (
 	"path"
 	"regexp"
+	"runtime"
 	"strings"
 
 	"github.com/umairge66/gocode/internal/frontmatter"
@@ -337,7 +338,7 @@ func DiscoverScope(fsys fsfacade.FS, root string, scope Scope, pluginID string) 
 	confine := ""
 	if scope == ScopeProject || scope == ScopeClaudeProject {
 		confine = path.Dir(path.Dir(root))
-		if r, err := fsfacade.Realpath(fsys, confine); err == nil {
+		if r, err := fsfacade.RealpathVia(fsys, confine); err == nil {
 			confine = r
 		}
 	}
@@ -476,10 +477,20 @@ func unquote(s string) string {
 // An unresolvable p (missing, dangling link) is reported inside so the
 // normal read path decides what happens to it.
 func insideDir(fsys fsfacade.FS, p, dir string) bool {
-	r, err := fsfacade.Realpath(fsys, p)
+	r, err := fsfacade.RealpathVia(fsys, p)
 	if err != nil {
 		return true
 	}
-	r, dir = path.Clean(r), path.Clean(dir)
+	r, dir = comparablePath(r), comparablePath(dir)
 	return r == dir || strings.HasPrefix(r, strings.TrimSuffix(dir, "/")+"/")
+}
+
+// comparablePath returns p with forward slashes, lexically cleaned, and
+// lower-cased on Windows where paths compare case-insensitively.
+func comparablePath(p string) string {
+	p = path.Clean(strings.ReplaceAll(p, "\\", "/"))
+	if runtime.GOOS == "windows" {
+		p = strings.ToLower(p)
+	}
+	return p
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -228,7 +229,8 @@ func TestEditUniqueReplace(t *testing.T) {
 		t.Fatalf("text %q", res.Text)
 	}
 	info, _ := os.Stat(p)
-	if info.Mode().Perm() != 0o640 {
+	// Windows reports only the read-only attribute as permission bits.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o640 {
 		t.Fatalf("mode not preserved: %v", info.Mode())
 	}
 	// state updated: a second edit without re-reading works.

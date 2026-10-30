@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -183,9 +184,12 @@ func TestEditPermissionsPathAndAcceptEdits(t *testing.T) {
 		t.Fatalf("acceptEdits should allow Edit: %+v", res)
 	}
 
-	deny := New(toolreg.ModeBypassPermissions, toolreg.RuleSet{{Behavior: toolreg.RuleDeny, ToolName: "Edit", Content: file}})
-	if res := dispatch(t, deny, string(protocol.ToolEdit), map[string]any{"file_path": file, "old_string": "r", "new_string": "s"}); !res.IsError || !strings.Contains(res.Content, "denied") {
-		t.Fatalf("deny rule on file_path not applied: %+v", res)
+	// An absolute path rule; see skipAbsolutePathRules for Windows.
+	if runtime.GOOS != "windows" {
+		deny := New(toolreg.ModeBypassPermissions, toolreg.RuleSet{{Behavior: toolreg.RuleDeny, ToolName: "Edit", Content: file}})
+		if res := dispatch(t, deny, string(protocol.ToolEdit), map[string]any{"file_path": file, "old_string": "r", "new_string": "s"}); !res.IsError || !strings.Contains(res.Content, "denied") {
+			t.Fatalf("deny rule on file_path not applied: %+v", res)
+		}
 	}
 
 	plan := New(toolreg.ModePlan, nil)

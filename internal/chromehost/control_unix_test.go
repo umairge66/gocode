@@ -49,7 +49,7 @@ func (f *fakeRelay) Send(ctx context.Context, method string, params any) (json.R
 // relay, and returns a client plus a cleanup.
 func startServer(t *testing.T, relay Relay) (*Client, func()) {
 	t.Helper()
-	ep := ControlEndpoint{Network: "unix", Address: filepath.Join(t.TempDir(), ChromeHostSocketName)}
+	ep := ControlEndpoint{Network: "unix", Address: filepath.Join(shortSockDir(t), "i", ChromeHostSocketName)}
 	l, err := listenControl(ep)
 	if err != nil {
 		t.Fatalf("listenControl: %v", err)
@@ -108,7 +108,7 @@ func TestControl_InBandExtensionErrorPropagates(t *testing.T) {
 
 func TestControl_NotConnectedWhenNothingListens(t *testing.T) {
 	// A socket path with no server behind it.
-	ep := ControlEndpoint{Network: "unix", Address: filepath.Join(t.TempDir(), ChromeHostSocketName)}
+	ep := ControlEndpoint{Network: "unix", Address: filepath.Join(shortSockDir(t), "i", ChromeHostSocketName)}
 	client := &Client{
 		Dial:    func(ctx context.Context) (net.Conn, error) { return dialControl(ctx, ep) },
 		Timeout: time.Second,
@@ -140,7 +140,7 @@ func TestControl_ContextCancelAbortsPendingCall(t *testing.T) {
 
 func TestControl_ListenTakesOverStaleSocket(t *testing.T) {
 	// Singleton/takeover: a stale socket file left by a prior host is replaced.
-	ep := ControlEndpoint{Network: "unix", Address: filepath.Join(t.TempDir(), ChromeHostSocketName)}
+	ep := ControlEndpoint{Network: "unix", Address: filepath.Join(shortSockDir(t), "i", ChromeHostSocketName)}
 	l1, err := listenControl(ep)
 	if err != nil {
 		t.Fatalf("first listen: %v", err)
@@ -181,7 +181,7 @@ func indexOf(s, sub string) int {
 
 func TestControl_HostInfoAnsweredLocally(t *testing.T) {
 	relay := &fakeRelay{result: json.RawMessage(`"relayed"`)}
-	ep := ControlEndpoint{Network: "unix", Address: filepath.Join(t.TempDir(), ChromeHostSocketName)}
+	ep := ControlEndpoint{Network: "unix", Address: filepath.Join(shortSockDir(t), "i", ChromeHostSocketName)}
 	l, err := listenControl(ep)
 	if err != nil {
 		t.Fatalf("listenControl: %v", err)

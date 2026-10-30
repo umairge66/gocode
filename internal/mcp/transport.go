@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -114,20 +115,30 @@ func (t *StdioTransport) buildEnv() []string {
 	// an explicit entry in the server config's env is still honoured.
 	env := envsec.ChildEnv(nil)
 	// Overlay the server config's explicit env, replacing any existing key.
+	// Variable names are case-insensitive on Windows, so an explicit "PATH"
+	// replaces an inherited "Path" there.
 	if len(t.cfg.Env) > 0 {
-		merged := make(map[string]string, len(env)+len(t.cfg.Env))
-		for _, kv := range env {
-			if i := strings.IndexByte(kv, '='); i >= 0 {
-				merged[kv[:i]] = kv[i+1:]
+		fold := func(k string) string {
+			if runtime.GOOS == "windows" {
+				return strings.ToUpper(k)
 			}
+			return k
+		}
+		explicit := make(map[string]bool, len(t.cfg.Env))
+		for k := range t.cfg.Env {
+			explicit[fold(k)] = true
+		}
+		merged := make([]string, 0, len(env)+len(t.cfg.Env))
+		for _, kv := range env {
+			if i := strings.IndexByte(kv, '='); i >= 0 && explicit[fold(kv[:i])] {
+				continue
+			}
+			merged = append(merged, kv)
 		}
 		for k, v := range t.cfg.Env {
-			merged[k] = v
+			merged = append(merged, k+"="+v)
 		}
-		env = env[:0]
-		for k, v := range merged {
-			env = append(env, k+"="+v)
-		}
+		env = merged
 	}
 	return env
 }

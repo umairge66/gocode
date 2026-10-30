@@ -313,6 +313,7 @@ func TestGitIgnoredResultsFiltered(t *testing.T) {
 	}
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	if out, err := exec.Command("git", "-C", dir, "init", "-q").CombinedOutput(); err != nil {
 		t.Skipf("git init: %v %s", err, out)

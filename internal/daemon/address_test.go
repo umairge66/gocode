@@ -3,6 +3,7 @@ package daemon
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -43,10 +44,13 @@ func TestInstanceDiscriminatorDeterministic(t *testing.T) {
 // socket address and strand existing daemons.
 func TestInstanceDiscriminatorKnownVector(t *testing.T) {
 	// resolveDir leaves an absolute, already-clean path unchanged, so this is
-	// sha256("/tmp/x")[:8].
-	got := InstanceDiscriminator("/tmp/x")
-	// sha256("/tmp/x") = 1c3a... ; computed value pinned below.
-	if want := sha256Hex8("/tmp/x"); got != want {
+	// sha256(dir)[:8].
+	dir := "/tmp/x"
+	if runtime.GOOS == "windows" {
+		dir = `C:\tmp\x`
+	}
+	got := InstanceDiscriminator(dir)
+	if want := sha256Hex8(dir); got != want {
 		t.Fatalf("discriminator = %q, want %q", got, want)
 	}
 }

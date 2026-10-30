@@ -50,9 +50,13 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          # Failing tests become annotations on the run summary.
-          grep -E '^(--- FAIL|FAIL|panic:)|_test\.go:[0-9]+:' test-output.txt | head -40 |
-            while IFS= read -r line; do echo "::error title=Test failure::${line}"; done
+          # One annotation lists every failing test; then one annotation per
+          # failing test, package panic, data race or build failure carries
+          # its whole output block (GitHub shows at most 10 error annotations
+          # per step). The job summary gets the complete output of each.
+          if [ -f test-output.txt ]; then
+            go run ./cmd/ci-testreport -max 9 -title "Test failure (${{ matrix.os }})" test-output.txt
+          fi
 
   linux-checks:
     name: linux checks
@@ -94,8 +98,11 @@ jobs:
       - name: Report race test failures
         if: failure()
         run: |
-          grep -E '^(--- FAIL|FAIL|panic:|WARNING: DATA RACE)|_test\.go:[0-9]+:' race-output.txt | head -40 |
-            while IFS= read -r line; do echo "::error title=Race test failure::${line}"; done
+          # Same reporting as the test job: a list of every failure, one
+          # annotation per failure with its output, the rest in the summary.
+          if [ -f race-output.txt ]; then
+            go run ./cmd/ci-testreport -max 9 -title "Race test failure" race-output.txt
+          fi
 
       - name: THIRD_PARTY_NOTICES up to date
         run: |

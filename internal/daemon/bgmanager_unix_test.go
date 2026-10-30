@@ -325,7 +325,16 @@ func TestManagerClaimsWarmSpare(t *testing.T) {
 	if res != "claimed" || h == nil || h.via != "spare" {
 		t.Fatalf("dispatch = %s", res)
 	}
-	waitFor(t, "claimed output", 15*time.Second, func() bool { return strings.Contains(ringText(h), "claimed-in:"+cwd) })
+	// The shell reports its physical working directory, which differs from
+	// t.TempDir() when the temp dir is reached through a symlink (macOS).
+	realCwd, err := filepath.EvalSymlinks(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "claimed output", 15*time.Second, func() bool {
+		out := ringText(h)
+		return strings.Contains(out, "claimed-in:"+cwd) || strings.Contains(out, "claimed-in:"+realCwd)
+	})
 	h.kill("SIGTERM", OutcomeKilled)
 	first.kill("SIGTERM", OutcomeKilled)
 	<-h.Settled()

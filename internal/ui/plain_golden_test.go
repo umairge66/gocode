@@ -44,7 +44,9 @@ func TestPlainRendererGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != string(want) {
+	// A checkout with CRLF conversion (core.autocrlf on Windows) rewrites
+	// the golden file's line endings; compare on LF.
+	if got != strings.ReplaceAll(string(want), "\r\n", "\n") {
 		t.Errorf("PlainRenderer output changed:\n--- got ---\n%s\n--- want ---\n%s", got, want)
 	}
 }

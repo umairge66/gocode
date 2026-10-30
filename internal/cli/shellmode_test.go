@@ -24,7 +24,13 @@ func startShellSession(t *testing.T, respond bool) (*fakeProgram, *bgRecordingCa
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-mode tests run POSIX commands")
 	}
-	home, cwd := t.TempDir(), t.TempDir()
+	home := t.TempDir()
+	// `pwd` prints the physical directory; resolve the temp dir's symlinks
+	// (macOS /var -> /private/var) so it compares equal.
+	cwd, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	env, _, _ := newTestEnv()
 	env.Getenv = func(k string) string {
 		if k == "HOME" {

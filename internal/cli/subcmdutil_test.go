@@ -20,7 +20,13 @@ type subcmdFixture struct {
 
 func newSubcmdFixture(t *testing.T) *subcmdFixture {
 	t.Helper()
-	root := t.TempDir()
+	// Canonical spelling of the temp dir (macOS reaches it through the
+	// /var -> /private/var symlink, Windows may hand out an 8.3 short name),
+	// so paths the code resolves compare equal to the fixture's.
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	f := &subcmdFixture{home: filepath.Join(root, "home"), cwd: filepath.Join(root, "proj"), vars: map[string]string{}}
 	for _, d := range []string{f.home, f.cwd} {
 		if err := os.MkdirAll(d, 0o755); err != nil {

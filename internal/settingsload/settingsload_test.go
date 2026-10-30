@@ -1,6 +1,7 @@
 package settingsload
 
 import (
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -37,7 +38,7 @@ func TestPathForSource(t *testing.T) {
 	}
 	for _, c := range cases {
 		got, ok := ctx.PathForSource(c.src)
-		if ok != c.ok || got != c.want {
+		if ok != c.ok || got != filepath.FromSlash(c.want) {
 			t.Errorf("PathForSource(%s) = %q,%v; want %q,%v", c.src, got, ok, c.want, c.ok)
 		}
 	}
@@ -62,13 +63,13 @@ func TestUserConfigDirPrecedence(t *testing.T) {
 		}
 		return ""
 	}}
-	if dir, ok := ctx.UserConfigDir(); !ok || dir != "/xdg/gocode" {
+	if dir, ok := ctx.UserConfigDir(); !ok || dir != filepath.FromSlash("/xdg/gocode") {
 		t.Fatalf("XDG_CONFIG_HOME: got %q,%v", dir, ok)
 	}
 
 	// HOME fallback.
 	ctx = &Context{HomeDir: "/home/user", Env: func(string) string { return "" }}
-	if dir, ok := ctx.UserConfigDir(); !ok || dir != "/home/user/.config/gocode" {
+	if dir, ok := ctx.UserConfigDir(); !ok || dir != filepath.FromSlash("/home/user/.config/gocode") {
 		t.Fatalf("HOME fallback: got %q,%v", dir, ok)
 	}
 
@@ -188,7 +189,7 @@ func TestProjectSourcesNeedProjectDir(t *testing.T) {
 	}
 	// ProjectConfigDir re-enables them even without a Cwd.
 	ctx.ProjectConfigDir = "/custom/proj"
-	if got, ok := ctx.PathForSource(settingspolicy.SourceLocal); !ok || got != "/custom/proj/.gocode/settings.local.json" {
+	if got, ok := ctx.PathForSource(settingspolicy.SourceLocal); !ok || got != filepath.FromSlash("/custom/proj/.gocode/settings.local.json") {
 		t.Errorf("projectConfigDir local: got %q,%v", got, ok)
 	}
 }
@@ -198,12 +199,12 @@ func TestLocalAnchoredAtGitRoot(t *testing.T) {
 	ctx.Cwd = "/home/user/project/sub/dir"
 	ctx.GitRoot = "/home/user/project"
 	got, ok := ctx.PathForSource(settingspolicy.SourceLocal)
-	if !ok || got != "/home/user/project/.gocode/settings.local.json" {
+	if !ok || got != filepath.FromSlash("/home/user/project/.gocode/settings.local.json") {
 		t.Errorf("local at git root: got %q,%v", got, ok)
 	}
 	// Project source stays anchored at the cwd.
 	got, _ = ctx.PathForSource(settingspolicy.SourceProject)
-	if got != "/home/user/project/sub/dir/.gocode/settings.json" {
+	if got != filepath.FromSlash("/home/user/project/sub/dir/.gocode/settings.json") {
 		t.Errorf("project at cwd: got %q", got)
 	}
 }

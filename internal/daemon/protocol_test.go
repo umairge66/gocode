@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -120,7 +121,7 @@ func TestReplyAsError(t *testing.T) {
 
 func TestSocketPaths(t *testing.T) {
 	rt := RuntimeDir("/tmp", 1000, "inst")
-	if rt != "/tmp/cc-daemon-1000/inst" {
+	if rt != filepath.FromSlash("/tmp/cc-daemon-1000/inst") {
 		t.Fatalf("runtime dir = %q", rt)
 	}
 }

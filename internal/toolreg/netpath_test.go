@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,9 @@ func readCall(tool protocol.Tool, p string) Call {
 // automount map. The link target is never touched by the permission walk.
 func netDecider(t *testing.T) (*Decider, *pathguard.SessionFiles, string) {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the /net automount map is a POSIX path")
+	}
 	proj := t.TempDir()
 	if err := os.Symlink("/net/fileserver/export", filepath.Join(proj, "share")); err != nil {
 		t.Skip("symlinks unavailable:", err)
@@ -107,7 +111,15 @@ func (s stalledFS) Lstat(name string) (fs.FileInfo, error) {
 // A stalled mount never hangs the permission check: the probe times out and
 // the read or write is refused — in every mode, bypass included.
 func TestStalledMountRefusedNotHung(t *testing.T) {
-	proj := t.TempDir()
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX session paths (Platform linux)")
+	}
+	// The probes see the canonical spelling, so the stalled root must use it
+	// too (on macOS the temp dir is behind a symlink).
+	proj, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	dead := filepath.Join(proj, "nfs")
 	if err := os.MkdirAll(filepath.Join(dead, "dir"), 0o700); err != nil {
 		t.Fatal(err)

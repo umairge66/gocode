@@ -45,7 +45,7 @@ graders:
 `
 
 func TestParseCaseDefaultsAndValidation(t *testing.T) {
-	root := t.TempDir()
+	root := realTempDir(t)
 	write(t, root, map[string]string{"evals/greet/case.yaml": yamlCase})
 	doc, err := loadCaseYAML(filepath.Join(root, "evals/greet/case.yaml"))
 	if err != nil {
@@ -91,7 +91,7 @@ func TestParseCaseDefaultsAndValidation(t *testing.T) {
 }
 
 func TestProseCaseMerge(t *testing.T) {
-	root := t.TempDir()
+	root := realTempDir(t)
 	write(t, root, map[string]string{
 		"evals/p1/prompt.md":           "---\nmax_turns: 5\ntags: [a]\nallowed_tools: [Read]\n---\n\nSummarize the README.\n",
 		"evals/p1/graders/quality.md":  "---\ntype: llm\nweight: 2\n---\nThe summary mentions installation.\n",
@@ -118,7 +118,7 @@ func TestProseCaseMerge(t *testing.T) {
 }
 
 func TestDiscoverEvalDirAndFilters(t *testing.T) {
-	root := t.TempDir()
+	root := realTempDir(t)
 	write(t, root, map[string]string{
 		".gocode-plugin/plugin.json":       `{"name":"demo","version":"1.2.0"}`,
 		"evals/a/case.yaml":                yamlCase,
@@ -180,7 +180,7 @@ func TestEvalDirFlagAndManifest(t *testing.T) {
 }
 
 func TestGraders(t *testing.T) {
-	cwd := t.TempDir()
+	cwd := realTempDir(t)
 	write(t, cwd, map[string]string{"report.md": "All tests PASSED\n", "img.png": "\x89PNG\r\n\x1a\nrest"})
 	run := &RunTrace{
 		LastAssistantText: "Hello there, hello again",
@@ -406,7 +406,7 @@ func hasArg(args []string, a string) bool {
 }
 
 func TestRunEndToEndWithAblation(t *testing.T) {
-	root := t.TempDir()
+	root := realTempDir(t)
 	write(t, root, map[string]string{
 		".gocode-plugin/plugin.json": `{"name":"demo","version":"0.1.0"}`,
 		"evals/greet/case.yaml":      yamlCase,
@@ -491,7 +491,7 @@ func TestRunEndToEndWithAblation(t *testing.T) {
 }
 
 func TestRunCostCeilingAndFailures(t *testing.T) {
-	root := t.TempDir()
+	root := realTempDir(t)
 	write(t, root, map[string]string{
 		"evals/a/case.yaml": strings.Replace(yamlCase, "runs: 2", "runs: 3", 1),
 	})
@@ -514,7 +514,7 @@ func TestRunCostCeilingAndFailures(t *testing.T) {
 }
 
 func TestRunRefusesShellGrant(t *testing.T) {
-	root := t.TempDir()
+	root := realTempDir(t)
 	write(t, root, map[string]string{"evals/a/case.yaml": strings.Replace(yamlCase, "allowed_tools: [Read, Write]", "allowed_tools: [Bash]", 1)})
 	fe := &fakeExecutor{reply: func(ChildSpec) ChildOutcome { t.Error("a shell-granting run must not start"); return ChildOutcome{} }}
 	out := Run(context.Background(), Options{Target: root, Cwd: root, Threshold: 1, Ablation: "none", AllowTools: []string{"Bash"}, Executor: fe})
@@ -524,7 +524,7 @@ func TestRunRefusesShellGrant(t *testing.T) {
 }
 
 func TestWriteBareCase(t *testing.T) {
-	dir := t.TempDir()
+	dir := realTempDir(t)
 	p, g, err := WriteBareCase(dir, nil, "first-case")
 	if err != nil || p != filepath.Join("evals", "first-case", "prompt.md") || g != filepath.Join("evals", "first-case", "graders", "criteria.md") {
 		t.Fatalf("p=%s g=%s err=%v", p, g, err)
@@ -542,4 +542,16 @@ func TestWriteBareCase(t *testing.T) {
 	if len(d.Errors) != 1 || !strings.Contains(d.Errors[0].Error, "blank `init` template") {
 		t.Fatalf("errors = %v", d.Errors)
 	}
+}
+
+// realTempDir is t.TempDir() with symlinks resolved (macOS reaches the temp
+// dir through /var -> /private/var; Windows may use an 8.3 short name), the
+// spelling the evaluator's own path resolution produces.
+func realTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }

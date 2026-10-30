@@ -93,7 +93,10 @@ func bgPrintEnv(t *testing.T, extra map[string]string) (*Env, *bytes.Buffer, *by
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("TMPDIR", t.TempDir())
+	tmp := t.TempDir()
+	for _, k := range []string{"TMPDIR", "TMP", "TEMP"} { // os.TempDir on Unix and Windows
+		t.Setenv(k, tmp)
+	}
 	env, out, errb := newTestEnv()
 	env.Getenv = func(k string) string {
 		if k == "HOME" {

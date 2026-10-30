@@ -27,7 +27,9 @@ type outputFile struct {
 }
 
 // createOutputFile creates dir/<id>.output exclusively, readable only by the
-// current user.
+// current user. On Windows the permission bits have no effect; the file
+// inherits the ACL of its directory, which for the default location (the
+// user's own %TEMP%) grants access only to that user and administrators.
 func createOutputFile(dir, id string, limit int64) (*outputFile, string, error) {
 	path := filepath.Join(dir, outputFileName(id))
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)

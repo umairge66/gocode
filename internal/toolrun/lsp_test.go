@@ -65,6 +65,11 @@ func TestLSPToolOfferedOnlyWithServers(t *testing.T) {
 
 func TestLSPToolPermissions(t *testing.T) {
 	proj := t.TempDir()
+	// Canonical form: the permission layer asks for an 8.3 short-name
+	// spelling (a Windows temp dir such as C:\Users\RUNNER~1\...).
+	if r, err := filepath.EvalSymlinks(proj); err == nil {
+		proj = r
+	}
 	main := filepath.Join(proj, "main.go")
 	if err := os.WriteFile(main, []byte("package main\nfunc main() {}\n"), 0o644); err != nil {
 		t.Fatal(err)

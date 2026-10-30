@@ -3,12 +3,27 @@ package sandbox
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
+// realTempDir returns a fresh temp dir by its canonical spelling, the form
+// the mount planner emits (on macOS the temp dir is behind a symlink).
+func realTempDir(t *testing.T) string {
+	t.Helper()
+	d, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
 func TestBubblewrapArgvShape(t *testing.T) {
-	root := t.TempDir()
+	if runtime.GOOS == "windows" {
+		t.Skip("bubblewrap mount planning works on POSIX paths")
+	}
+	root := realTempDir(t)
 	proj := filepath.Join(root, "project")
 	ssh := filepath.Join(root, "home", ".ssh")
 	key := filepath.Join(root, "home", "key.pem")
@@ -118,8 +133,11 @@ type tempEmpty struct{ dir string }
 func (e tempEmpty) EmptyDir() (string, error) { return e.dir, nil }
 
 func TestPlanLinuxMountsPlaceholders(t *testing.T) {
-	proj := t.TempDir()
-	empty := t.TempDir()
+	if runtime.GOOS == "windows" {
+		t.Skip("mount placeholders are not supported on Windows")
+	}
+	proj := realTempDir(t)
+	empty := realTempDir(t)
 	settings := filepath.Join(proj, ".gocode", "settings.json")
 	skills := filepath.Join(proj, ".gocode", "skills")
 	rc := filepath.Join(proj, ".bashrc")

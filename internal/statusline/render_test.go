@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -197,9 +198,14 @@ func TestExecRunner_EchoLine(t *testing.T) {
 
 func TestExecRunner_ReadsStdin(t *testing.T) {
 	// `cat` echoes the JSON context from stdin; the mapping keeps non-blank
-	// lines, and compact JSON is a single line.
+	// lines, and compact JSON is a single line. cmd.exe has no `cat`, so on
+	// Windows the built-in sort.exe copies the single stdin line instead.
+	command := "cat"
+	if runtime.GOOS == "windows" {
+		command = "sort"
+	}
 	r := &Renderer{Runner: ExecRunner{Timeout: 5 * time.Second}}
-	got := r.Render(context.Background(), &Config{Type: "command", Command: "cat"}, sampleContext())
+	got := r.Render(context.Background(), &Config{Type: "command", Command: command}, sampleContext())
 	var m map[string]any
 	if err := json.Unmarshal([]byte(got), &m); err != nil {
 		t.Fatalf("stdin was not round-tripped as JSON: %v (got %q)", err, got)

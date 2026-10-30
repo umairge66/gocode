@@ -177,12 +177,12 @@ func entrypointReadMode(fsys fsfacade.FS, scope, dir, cwd string) entrypointRead
 	if !within(d, root) || d == root {
 		return entrypointRegularFile
 	}
-	realRoot, err := fsfacade.Realpath(fsys, root)
+	realRoot, err := realpath(fsys, root)
 	if err != nil {
 		return entrypointNone
 	}
 	realRoot = normalizePath(realRoot)
-	if r, err := fsfacade.Realpath(fsys, d); err == nil {
+	if r, err := realpath(fsys, d); err == nil {
 		if within(normalizePath(r), realRoot) {
 			return entrypointRegularFile // "beneath"
 		}
@@ -204,7 +204,7 @@ func entrypointReadMode(fsys fsfacade.FS, scope, dir, cwd string) entrypointRead
 		missing = append([]string{existing[len(strings.TrimSuffix(parent, "/"))+1:]}, missing...)
 		existing = parent
 	}
-	r, err := fsfacade.Realpath(fsys, existing)
+	r, err := realpath(fsys, existing)
 	if err != nil {
 		return entrypointNone
 	}

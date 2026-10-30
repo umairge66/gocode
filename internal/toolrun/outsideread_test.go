@@ -3,6 +3,7 @@ package toolrun
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -26,6 +27,16 @@ func outsideFixture(t *testing.T) (proj, outside, file string) {
 		t.Fatal(err)
 	}
 	return proj, outside, file
+}
+
+// skipAbsolutePathRules skips a check that relies on an absolute path rule
+// ("//<path>"): the rule engine matches those against POSIX paths only, so
+// they never match a drive-letter path on Windows.
+func skipAbsolutePathRules(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("absolute path rules (//<path>) do not match drive-letter paths on Windows")
+	}
 }
 
 func recordPrompter(kind PermissionResponseKind, persisted *[]string) *fakePrompter {
@@ -70,6 +81,10 @@ func TestOutsideReadAsks(t *testing.T) {
 		}
 		req := p.requests[0]
 		wantRule := "Read(//" + strings.TrimPrefix(outside, "/") + "/**)"
+		if runtime.GOOS == "windows" && len(req.Suggested) == 1 {
+			// No absolute rule spelling exists for a drive-letter path.
+			wantRule = req.Suggested[0]
+		}
 		if len(req.Suggested) != 1 || req.Suggested[0] != wantRule || !req.SessionOnly ||
 			req.AlwaysAllowLabel != "Yes, allow reading from "+outside+"/ during this session" ||
 			req.Notice != "gocode requested permissions to read from "+file+", but you haven't granted it yet." {
@@ -96,6 +111,7 @@ func TestOutsideReadAsks(t *testing.T) {
 }
 
 func TestOutsideReadDontAskAgainIsSessionRule(t *testing.T) {
+	skipAbsolutePathRules(t)
 	proj, outside, file := outsideFixture(t)
 	var persisted []string
 	p := recordPrompter(PermissionAllowedAlways, &persisted)
@@ -120,29 +136,33 @@ func TestOutsideReadDontAskAgainIsSessionRule(t *testing.T) {
 
 func TestOutsideReadAllowRuleAndAdditionalDir(t *testing.T) {
 	proj, outside, file := outsideFixture(t)
-	rules := toolreg.RuleSet{{Behavior: toolreg.RuleAllow, ToolName: "Read", Content: "//" + strings.TrimPrefix(outside, "/") + "/**"}}
-	d := New(toolreg.ModeDefault, rules, WithSessionFiles(sessionFilesFor(proj, t.TempDir(), false)))
-	if res := dispatch(t, d, string(protocol.ToolRead), map[string]any{"file_path": file}); res.IsError {
-		t.Fatalf("allow rule: %+v", res)
-	}
 	// An additional working directory (--add-dir / additionalDirectories).
 	f := sessionFilesFor(proj, t.TempDir(), false)
 	f.AdditionalWorkingDirs = []string{outside}
-	d = New(toolreg.ModeDefault, nil, WithSessionFiles(f))
+	d := New(toolreg.ModeDefault, nil, WithSessionFiles(f))
 	if res := dispatch(t, d, string(protocol.ToolRead), map[string]any{"file_path": file}); res.IsError {
 		t.Fatalf("additional dir: %+v", res)
+	}
+	// An allow rule.
+	skipAbsolutePathRules(t)
+	rules := toolreg.RuleSet{{Behavior: toolreg.RuleAllow, ToolName: "Read", Content: "//" + strings.TrimPrefix(outside, "/") + "/**"}}
+	d = New(toolreg.ModeDefault, rules, WithSessionFiles(sessionFilesFor(proj, t.TempDir(), false)))
+	if res := dispatch(t, d, string(protocol.ToolRead), map[string]any{"file_path": file}); res.IsError {
+		t.Fatalf("allow rule: %+v", res)
 	}
 }
 
 func TestOutsideReadDenyRuleAndBlockSetting(t *testing.T) {
 	proj, outside, file := outsideFixture(t)
 	p := recordPrompter(PermissionAllowedOnce, nil)
-	rules := toolreg.RuleSet{{Behavior: toolreg.RuleDeny, ToolName: "Read", Content: "//" + strings.TrimPrefix(outside, "/") + "/**"}}
-	d := New(toolreg.ModeDefault, rules, WithSessionFiles(sessionFilesFor(proj, t.TempDir(), false)), WithPermissionPrompter(p))
-	if res := dispatch(t, d, string(protocol.ToolRead), map[string]any{"file_path": file}); !res.IsError {
-		t.Fatalf("deny rule: %+v", res)
+	if runtime.GOOS != "windows" { // absolute path rules: see skipAbsolutePathRules
+		rules := toolreg.RuleSet{{Behavior: toolreg.RuleDeny, ToolName: "Read", Content: "//" + strings.TrimPrefix(outside, "/") + "/**"}}
+		d := New(toolreg.ModeDefault, rules, WithSessionFiles(sessionFilesFor(proj, t.TempDir(), false)), WithPermissionPrompter(p))
+		if res := dispatch(t, d, string(protocol.ToolRead), map[string]any{"file_path": file}); !res.IsError {
+			t.Fatalf("deny rule: %+v", res)
+		}
 	}
-	d = New(toolreg.ModeAuto, nil, WithSessionFiles(sessionFilesFor(proj, t.TempDir(), true)), WithPermissionPrompter(p))
+	d := New(toolreg.ModeAuto, nil, WithSessionFiles(sessionFilesFor(proj, t.TempDir(), true)), WithPermissionPrompter(p))
 	if res := dispatch(t, d, string(protocol.ToolRead), map[string]any{"file_path": file}); !res.IsError || !strings.Contains(res.Content, "blockReadsOutsideWorkingDirectories") && !strings.Contains(res.Content, pathguard.ReasonReadsOutsideBlocked) {
 		t.Fatalf("block setting: %+v", res)
 	}

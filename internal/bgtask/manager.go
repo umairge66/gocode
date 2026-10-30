@@ -106,7 +106,8 @@ func WithOutputDir(dir string) Option {
 // the system temp directory. Its unpredictable name is chosen here; the
 // directory itself is created (owner-only, and never reusing an existing one)
 // when the first task starts, and removed on Shutdown. When it cannot be
-// created, output is kept in memory only.
+// created, output is kept in memory only. On Windows, where the 0700 mode is
+// not expressible, privacy comes from the per-user ACL of %TEMP%.
 func WithTempOutputDir() Option {
 	return func(m *Manager) {
 		var b [12]byte

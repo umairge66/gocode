@@ -214,7 +214,9 @@ func checkGolden(t *testing.T, name, got string) {
 	if err != nil {
 		t.Fatalf("%v (run with -update-prompty)", err)
 	}
-	if got != string(want) {
+	// A checkout with CRLF conversion (core.autocrlf on Windows) rewrites
+	// the golden file's line endings; compare on LF.
+	if got != strings.ReplaceAll(string(want), "\r\n", "\n") {
 		t.Errorf("%s differs:\ngot  %q\nwant %q", name, got, want)
 	}
 }

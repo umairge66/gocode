@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -77,7 +78,7 @@ func TestFSConfinedToProjectAndPluginFolders(t *testing.T) {
 	mustWrite(t, filepath.Join(outside, "secret.txt"), "SECRET")
 	mustWrite(t, filepath.Join(work, ".git", "HEAD"), "ref: refs/heads/main\n")
 	if err := os.Symlink(outside, filepath.Join(work, "escape")); err != nil {
-		t.Fatal(err)
+		t.Skip("symbolic links are not available:", err)
 	}
 	if err := os.Symlink(filepath.Join(outside, "secret.txt"), filepath.Join(work, "secret-link")); err != nil {
 		t.Fatal(err)
@@ -133,7 +134,7 @@ func TestFSConfinedToProjectAndPluginFolders(t *testing.T) {
 		{K: "read", P: "../" + filepath.Base(outside) + "/secret.txt"},
 		{K: "read", P: filepath.Join(work, "..", filepath.Base(outside), "secret.txt")},
 		{K: "read", P: filepath.Join(outside, "secret.txt")},
-		{K: "read", P: "/etc/passwd"},
+		{K: "read", P: systemFile()},
 		{K: "read", P: "escape/secret.txt"},
 		{K: "read", P: "secret-link"},
 		{K: "write", P: "escape/planted.txt", T: "x"},
@@ -188,6 +189,18 @@ func TestFSConfinedToProjectAndPluginFolders(t *testing.T) {
 	}
 }
 
+// systemFile is an absolute path to a file outside every allowed folder.
+func systemFile() string {
+	if runtime.GOOS == "windows" {
+		root := os.Getenv("SystemRoot")
+		if root == "" {
+			root = `C:\Windows`
+		}
+		return filepath.Join(root, "win.ini")
+	}
+	return "/etc/passwd"
+}
+
 func TestResolveFSPath(t *testing.T) {
 	root := t.TempDir()
 	real, err := filepath.EvalSymlinks(root)
@@ -195,7 +208,7 @@ func TestResolveFSPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(filepath.Join(real, "target"), filepath.Join(root, "link")); err != nil {
-		t.Fatal(err)
+		t.Skip("symbolic links are not available:", err)
 	}
 	if err := os.Mkdir(filepath.Join(root, "target"), 0o755); err != nil {
 		t.Fatal(err)

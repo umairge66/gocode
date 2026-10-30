@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/umairge66/gocode/internal/frontmatter"
-	"github.com/umairge66/gocode/internal/fsfacade"
 )
 
 // Rules directories.
@@ -104,7 +103,7 @@ func (l *loader) resolveLink(p string) (resolved string, isLink, ok bool) {
 	if fi.Mode()&fs.ModeSymlink == 0 {
 		return p, false, true
 	}
-	r, err := fsfacade.Realpath(l.fs, p)
+	r, err := realpath(l.fs, p)
 	if err != nil {
 		return "", true, false
 	}

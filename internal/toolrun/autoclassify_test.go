@@ -43,6 +43,11 @@ func (c *countingClassifier) calls() int {
 func autoFixture(t *testing.T) (proj, outside string) {
 	t.Helper()
 	root := t.TempDir()
+	// Canonical root: on macOS the temp dir sits behind the /var ->
+	// /private/var link, and a path allow rule must match every spelling.
+	if r, err := filepath.EvalSymlinks(root); err == nil {
+		root = r
+	}
 	proj, outside = filepath.Join(root, "proj"), filepath.Join(root, "outside")
 	for _, d := range []string{proj, outside} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
@@ -138,6 +143,7 @@ func TestAutoModeClassifierUnavailableAsksOrDenies(t *testing.T) {
 }
 
 func TestAutoModeDenyRuleBeatsClassifier(t *testing.T) {
+	skipAbsolutePathRules(t)
 	proj, outside := autoFixture(t)
 	c := &countingClassifier{res: automode.Result{Verdict: automode.VerdictAllow}}
 	rules := toolreg.RuleSet{{Behavior: toolreg.RuleDeny, ToolName: "Write", Content: "//" + strings.TrimPrefix(outside, "/") + "/**"}}

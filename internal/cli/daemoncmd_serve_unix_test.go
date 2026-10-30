@@ -34,8 +34,21 @@ func tempControl(sockPath string) daemonControl {
 	}
 }
 
+// shortSockDir returns a fresh directory under /tmp, removed when the test
+// ends: unix socket paths are limited to about 104 bytes, which t.TempDir()
+// under a long $TMPDIR (macOS's /var/folders/...) can exceed.
+func shortSockDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "gcd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
 func TestServeDaemonRoundTripAndCleanup(t *testing.T) {
-	dir := t.TempDir()
+	dir := shortSockDir(t)
 	sock := filepath.Join(dir, "control.sock")
 	ctrl := tempControl(sock)
 
@@ -71,7 +84,7 @@ func TestServeDaemonRoundTripAndCleanup(t *testing.T) {
 }
 
 func TestServeDaemonSingletonGuard(t *testing.T) {
-	dir := t.TempDir()
+	dir := shortSockDir(t)
 	sock := filepath.Join(dir, "control.sock")
 
 	// Start the first daemon.

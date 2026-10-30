@@ -9,7 +9,9 @@ import (
 )
 
 func TestListPathsBreadthFirstWithDirs(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	root := t.TempDir()
 	for p, body := range map[string]string{

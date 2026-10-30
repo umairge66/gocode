@@ -2,6 +2,8 @@ package pathguard
 
 import (
 	"io/fs"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -61,11 +63,22 @@ func (s *stallFS) touched(prefix string) bool {
 	return false
 }
 
+// skipPOSIXTree skips a test whose MemFS tree and requested paths are rooted
+// at "/": on Windows such paths are not absolute and the walk joins them to
+// the cwd and reports them with backslashes.
+func skipPOSIXTree(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-rooted paths")
+	}
+}
+
 func netSession(fsys fsfacade.FS) *SessionFiles {
 	return &SessionFiles{OriginalCwd: "/proj", Cwd: "/proj", Platform: "linux", FS: fsys, Stalls: &fsfacade.StallSet{}}
 }
 
 func TestResolvePathSurfacesAutomountLink(t *testing.T) {
+	skipPOSIXTree(t)
 	m := newStallFS()
 	m.MkdirAll("/proj")
 	m.Symlink("/net/fileserver/export", "/proj/share")
@@ -84,6 +97,7 @@ func TestResolvePathSurfacesAutomountLink(t *testing.T) {
 }
 
 func TestResolvePathOrdinarySpellingsUnchanged(t *testing.T) {
+	skipPOSIXTree(t)
 	m := newStallFS()
 	m.WriteFile("/real/dir/f.txt", nil)
 	m.Symlink("/real/dir", "/proj/link")
@@ -102,6 +116,7 @@ func TestResolvePathOrdinarySpellingsUnchanged(t *testing.T) {
 // A stalled mount must not hang the permission check: the probe times out
 // and the path is unresolved ("cut-short" when the walk budget ran out).
 func TestResolvePathStalledMountTimesOut(t *testing.T) {
+	skipPOSIXTree(t)
 	m := newStallFS()
 	m.MkdirAll("/mnt/nfs/dir")
 	release := make(chan struct{})
@@ -131,6 +146,7 @@ func TestResolvePathStalledMountTimesOut(t *testing.T) {
 }
 
 func TestResolvePathUnreadableAncestry(t *testing.T) {
+	skipPOSIXTree(t)
 	m := newStallFS()
 	m.WriteFile("/home/u/proj/f", nil)
 	m.WriteFile("/home/u/other/link-target", nil)
@@ -157,7 +173,7 @@ func TestLaunchAncestry(t *testing.T) {
 		{"", "/b", ""},
 	}
 	for _, c := range cases {
-		if got := LaunchAncestry(c.launch, c.cwd); got != c.want {
+		if got := LaunchAncestry(c.launch, c.cwd); got != filepath.FromSlash(c.want) {
 			t.Errorf("LaunchAncestry(%q,%q)=%q want %q", c.launch, c.cwd, got, c.want)
 		}
 	}

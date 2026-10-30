@@ -5,6 +5,7 @@ package sandbox
 import (
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
 
@@ -13,7 +14,7 @@ import (
 // recreated in its place, not anything reached through a parent that became
 // a symlink.
 func TestRemovePlaceholdersNeverFollowsOrOverreaches(t *testing.T) {
-	root := t.TempDir()
+	root := realTempDir(t)
 	proj := filepath.Join(root, "proj")
 	outside := filepath.Join(root, "outside")
 	for _, d := range []string{proj, outside} {
@@ -111,7 +112,7 @@ func TestRemovePlaceholdersNeverFollowsOrOverreaches(t *testing.T) {
 // path, or a symlinked parent, makes creation fail instead of writing
 // through it.
 func TestCreatePlaceholderNoFollow(t *testing.T) {
-	root := t.TempDir()
+	root := realTempDir(t)
 	target := filepath.Join(root, "target")
 	if err := os.Mkdir(target, 0o700); err != nil {
 		t.Fatal(err)
@@ -135,5 +136,39 @@ func TestCreatePlaceholderNoFollow(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(target, "y")); err == nil {
 		t.Fatal("placeholder created in the symlink's target")
+	}
+}
+
+// A placeholder deleted and replaced by a new empty file at the same path is
+// not mistaken for the placeholder, even on filesystems that immediately
+// reuse a freed inode number (ext4): the placeholder's inode stays allocated
+// until cleanup, so the replacement always gets a different number.
+func TestRemovePlaceholdersKeepsReplacementWithReusedName(t *testing.T) {
+	proj := realTempDir(t)
+	for i := 0; i < 20; i++ {
+		ph, err := createPlaceholder(filepath.Join(proj, ".zshrc"), false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(ph.Path); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(ph.Path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		fi, err := os.Lstat(ph.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st, ok := fi.Sys().(*syscall.Stat_t); ok && uint64(st.Ino) == ph.ino {
+			t.Fatalf("replacement file reused the placeholder's inode %d", ph.ino)
+		}
+		RemovePlaceholders([]Placeholder{ph})
+		if _, err := os.Stat(ph.Path); err != nil {
+			t.Fatalf("iteration %d: the replacement file was removed: %v", i, err)
+		}
+		if err := os.Remove(ph.Path); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

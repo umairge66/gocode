@@ -3,6 +3,8 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
 	"testing"
 	"time"
 )
@@ -286,18 +288,32 @@ func TestNewTransportSelection(t *testing.T) {
 	}
 }
 
-// TestStdioTransportFraming starts a stdio transport against a tiny shell
-// server that echoes a canned JSON-RPC response, exercising real process spawn
-// and newline framing.
+const framingHelperEnv = "GOCODE_MCP_FRAMING_HELPER"
+
+// TestStdioFramingHelper is the one-shot server TestStdioTransportFraming
+// starts: it writes the canned response line and exits.
+func TestStdioFramingHelper(t *testing.T) {
+	resp := os.Getenv(framingHelperEnv)
+	if resp == "" {
+		t.Skip("helper process only")
+	}
+	fmt.Fprintln(os.Stdout, resp)
+	os.Exit(0)
+}
+
+// TestStdioTransportFraming starts a stdio transport against a tiny server
+// process that echoes a canned JSON-RPC response, exercising real process
+// spawn and newline framing.
 func TestStdioTransportFraming(t *testing.T) {
 	// A one-shot "server": emit a JSON-RPC response line, then exit.
 	resp := `{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`
 	tr := NewStdioTransport(ServerConfig{
 		Type:    TransportStdio,
-		Command: "printf",
-		Args:    []string{resp + "\n"},
+		Command: os.Args[0],
+		Args:    []string{"-test.run=^TestStdioFramingHelper$"},
+		Env:     map[string]string{framingHelperEnv: resp},
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := tr.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)

@@ -279,6 +279,11 @@ func TestGenerateFilteringAndOutputs(t *testing.T) {
 
 	// HTML report.
 	wantPath := filepath.Join(home, "usage-data", "report-2026-03-05-090807.html")
+	wantURL := filepath.ToSlash(wantPath)
+	if !strings.HasPrefix(wantURL, "/") {
+		wantURL = "/" + wantURL
+	}
+	wantURL = "file://" + wantURL
 	if rep.HTMLPath != wantPath {
 		t.Fatalf("HTMLPath = %q, want %q", rep.HTMLPath, wantPath)
 	}
@@ -316,10 +321,10 @@ func TestGenerateFilteringAndOutputs(t *testing.T) {
 		t.Errorf("prompt prefix wrong:\n%.300s", p)
 	}
 	for _, want := range []string{
-		"\n\nReport URL: file://" + wantPath + "\nHTML file: " + wantPath + "\nFacets directory: " + filepath.Join(home, "usage-data", "facets") + "\n",
+		"\n\nReport URL: " + wantURL + "\nHTML file: " + wantPath + "\nFacets directory: " + filepath.Join(home, "usage-data", "facets") + "\n",
 		"# gocode Insights\n\n5 sessions total · 2 analyzed · 5 messages · 0h · 1 commits\n2026-03-02 to 2026-03-04\n\n## At a Glance",
 		"## At a Glance\n\n**What's working:** You **iterate** fast & <well>. See _Impressive Things You Did_.",
-		"Your shareable insights report is ready:\nfile://" + wantPath + "\n\nWant to dig into any section or try one of the suggestions?",
+		"Your shareable insights report is ready:\n" + wantURL + "\n\nWant to dig into any section or try one of the suggestions?",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("prompt missing %q\n---\n%s", want, p)

@@ -3,6 +3,7 @@ package mcphost
 import (
 	"encoding/json"
 	"path"
+	"path/filepath"
 	"runtime"
 
 	"github.com/umairge66/gocode/internal/fsfacade"
@@ -63,7 +64,13 @@ func ReadClaudeConfigs(opts ClaudeImportOptions) (user, project map[string]mcp.S
 	if doc, ok := readClaudeDoc(opts.FS, path.Join(opts.Home, ".claude.json")); ok {
 		mergeServers(user, decodeClaudeServers(doc.MCPServers))
 		if opts.Cwd != "" {
-			if pe, ok := doc.Projects[opts.Cwd]; ok {
+			// Claude Code keys projects by the cwd with forward slashes on
+			// Windows; accept either spelling.
+			pe, ok := doc.Projects[opts.Cwd]
+			if !ok {
+				pe, ok = doc.Projects[filepath.ToSlash(opts.Cwd)]
+			}
+			if ok {
 				mergeServers(project, decodeClaudeServers(pe.MCPServers))
 			}
 		}

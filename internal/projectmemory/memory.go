@@ -2,6 +2,8 @@ package projectmemory
 
 import (
 	"path"
+	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/umairge66/gocode/internal/fsfacade"
@@ -287,8 +289,8 @@ func ancestorsOutermostFirst(cwd string) []string {
 	for {
 		chain = append([]string{cwd}, chain...) // unshift
 		parent := dirOf(cwd)
-		if parent == cwd {
-			break // reached root
+		if parent == cwd || parent == "." {
+			break // reached root (a drive root such as "C:" has the parent ".")
 		}
 		cwd = parent
 	}
@@ -316,6 +318,26 @@ func dirOf(p string) string {
 // join joins a base directory and a relative sub-path in slash form.
 func join(base, rel string) string {
 	return normalizePath(base + "/" + rel)
+}
+
+// realpath resolves p through fsys and returns it in slash form. On Windows a
+// filesystem that resolves paths natively is used directly, since drive-letter
+// paths are not slash-rooted and cannot be walked component by component.
+func realpath(fsys fsfacade.FS, p string) (string, error) {
+	if runtime.GOOS == "windows" {
+		if rp, ok := fsys.(fsfacade.Realpather); ok {
+			r, err := rp.RealpathOS(filepath.FromSlash(p))
+			if err != nil {
+				return "", err
+			}
+			return normalizePath(r), nil
+		}
+	}
+	r, err := fsfacade.Realpath(fsys, p)
+	if err != nil {
+		return "", err
+	}
+	return normalizePath(r), nil
 }
 
 func itoa(n int) string { return itoa64(int64(n)) }
@@ -372,10 +394,10 @@ func (l *loader) mayRead(canon string, kind Kind, depth int) bool {
 		// An ancestor directory's own file: not repository-placed.
 		return true
 	}
-	if r, err := fsfacade.Realpath(l.fs, canon); err == nil {
+	if r, err := realpath(l.fs, canon); err == nil {
 		real := normalizePath(r)
 		cwdReal := l.cwd
-		if cr, err := fsfacade.Realpath(l.fs, l.cwd); err == nil {
+		if cr, err := realpath(l.fs, l.cwd); err == nil {
 			cwdReal = normalizePath(cr)
 		}
 		if real != canon && !within(real, cwdReal) && !within(real, l.cwd) {

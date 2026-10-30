@@ -27,6 +27,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -327,7 +329,7 @@ func Generate(ctx context.Context, opts Options) (Report, error) {
 	}
 
 	// 6. The prompt.
-	reportURL := "file://" + htmlPath
+	reportURL := fileURL(htmlPath)
 	insightsJSON := stringifyJS(insightsObj, "  ")
 	recLine := ""
 	if reco != nil {
@@ -355,4 +357,14 @@ func Generate(ctx context.Context, opts Options) (Report, error) {
 		Facets:         fm,
 		Recommendation: reco,
 	}, nil
+}
+
+// fileURL is the file:// URL for an absolute local path; Windows drive paths
+// become file:///C:/... with forward slashes.
+func fileURL(p string) string {
+	s := filepath.ToSlash(p)
+	if !strings.HasPrefix(s, "/") {
+		s = "/" + s
+	}
+	return (&url.URL{Scheme: "file", Path: s}).String()
 }

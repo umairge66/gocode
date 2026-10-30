@@ -3,6 +3,8 @@ package toolreg
 import (
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	pathguard "github.com/umairge66/gocode/internal/pathguard"
@@ -68,6 +70,9 @@ func TestPathRulesGitignoreSemantics(t *testing.T) {
 		{protocol.ToolEdit, filepath.Join(cwd, "secrets", "key"), false},
 	}
 	for _, c := range cases {
+		if runtime.GOOS == "windows" && strings.HasPrefix(c.path, "/") {
+			continue // a drive-less POSIX absolute path
+		}
 		dec := d.Decide(pathCall(c.tool, c.path), ModeBypassPermissions, rules, nil)
 		if got := dec.Behavior == BehaviorDeny; got != c.deny {
 			t.Errorf("%s %s: deny=%v want %v (%s)", c.tool, c.path, got, c.deny, dec.Reason)
@@ -117,6 +122,9 @@ func TestPathRulesCrossToolPropagation(t *testing.T) {
 	}
 	if dec := d.Decide(pathCall(protocol.ToolRead, target), ModeBypassPermissions, editDeny, nil); dec.Behavior == BehaviorDeny {
 		t.Errorf("Edit deny leaked onto Read")
+	}
+	if runtime.GOOS == "windows" {
+		return // the "//" root below is the POSIX filesystem root
 	}
 	readAll := RuleSet{{Behavior: RuleDeny, ToolName: "Read", Content: "//**", Source: "policySettings"}}
 	for _, tl := range []protocol.Tool{protocol.ToolRead, protocol.ToolGrep, protocol.ToolGlob, protocol.ToolEdit, protocol.ToolWrite} {

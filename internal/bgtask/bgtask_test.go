@@ -117,14 +117,15 @@ func TestStartEchoCompletes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Output: %v", err)
 	}
-	if got := out.Output; got != "a\nb\n" {
+	// PowerShell (the Windows shell) ends lines with CRLF.
+	if got := strings.ReplaceAll(out.Output, "\r\n", "\n"); got != "a\nb\n" {
 		t.Fatalf("output = %q, want %q", got, "a\nb\n")
 	}
 	if out.Truncated {
 		t.Fatalf("output unexpectedly truncated")
 	}
-	if out.TotalBytes != int64(len("a\nb\n")) {
-		t.Fatalf("total bytes = %d, want %d", out.TotalBytes, len("a\nb\n"))
+	if out.TotalBytes != int64(len(out.Output)) {
+		t.Fatalf("total bytes = %d, want %d", out.TotalBytes, len(out.Output))
 	}
 }
 

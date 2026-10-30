@@ -5,12 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/umairge66/gocode/internal/capbuf"
 	"os/exec"
 	"runtime"
 	"time"
 
+	"github.com/umairge66/gocode/internal/capbuf"
 	"github.com/umairge66/gocode/internal/envsec"
+	"github.com/umairge66/gocode/internal/proctree"
 )
 
 // Payload is the JSON document written to a hook command's stdin. The common
@@ -149,6 +150,11 @@ func (r *Runner) Run(ctx context.Context, hook CommandHook, payload Payload, opt
 	outBuf, errBuf := capbuf.New(1<<20, 64<<10), capbuf.New(1<<20, 64<<10)
 	cmd.Stdout = outBuf
 	cmd.Stderr = errBuf
+	// The hook runs in its own process group: on timeout the whole group is
+	// terminated (not just the shell), and WaitDelay bounds the wait for a
+	// descendant that keeps the output pipes open.
+	proctree.Prepare(cmd)
+	proctree.BindContext(cmd, proctree.Options{})
 
 	start := time.Now()
 	runErr := cmd.Run()

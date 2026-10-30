@@ -238,11 +238,20 @@ func TestToolUseSummary(t *testing.T) {
 }
 
 func TestDisplayURI(t *testing.T) {
-	cwd := filepath.Join(string(os.PathSeparator)+"work", "proj")
+	// Absolute on every OS (a drive letter is added on Windows).
+	abs := func(elem ...string) string {
+		p, err := filepath.Abs(filepath.Join(append([]string{string(os.PathSeparator)}, elem...)...))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	cwd := abs("work", "proj")
+	lib := abs("usr", "lib", "go", "src", "fmt", "print.go")
 	for in, want := range map[string]string{
-		lsp.PathToURI(filepath.Join(cwd, "a b", "c.go")):                                                    "a b/c.go",
-		lsp.PathToURI(filepath.Join(cwd, "..", "x.go")):                                                     "../x.go",
-		lsp.PathToURI(filepath.Join(string(os.PathSeparator)+"usr", "lib", "go", "src", "fmt", "print.go")): filepath.ToSlash(filepath.Join(string(os.PathSeparator)+"usr", "lib", "go", "src", "fmt", "print.go")),
+		lsp.PathToURI(filepath.Join(cwd, "a b", "c.go")): "a b/c.go",
+		lsp.PathToURI(filepath.Join(cwd, "..", "x.go")):  "../x.go",
+		lsp.PathToURI(lib): filepath.ToSlash(lib),
 	} {
 		if got := lsp.DisplayURI(in, cwd); got != want {
 			t.Errorf("DisplayURI(%q) = %q, want %q", in, got, want)

@@ -250,8 +250,13 @@ func TestAgentWorktreeIsolationGit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(cwd, filepath.Join(repo, ".gocode", "worktrees", "agent-a")) {
-		t.Fatalf("cwd = %q", cwd)
+	// The worktree lives under the repository's canonical root, which may
+	// differ in spelling from t.TempDir() (a symlinked temp dir on macOS, an
+	// 8.3 short name on Windows), so compare directory identity.
+	wantDir, err1 := os.Stat(filepath.Join(repo, ".gocode", "worktrees"))
+	gotDir, err2 := os.Stat(filepath.Dir(cwd))
+	if err1 != nil || err2 != nil || !os.SameFile(wantDir, gotDir) || !strings.HasPrefix(filepath.Base(cwd), "agent-a") {
+		t.Fatalf("cwd = %q (%v, %v)", cwd, err1, err2)
 	}
 	if _, err := os.Stat(cwd); !os.IsNotExist(err) || strings.Contains(out, "worktreePath:") {
 		t.Fatalf("unchanged worktree not cleaned up (stat err %v): %q", err, out)

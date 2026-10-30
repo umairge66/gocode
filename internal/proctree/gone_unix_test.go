@@ -4,6 +4,7 @@ package proctree
 
 import (
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"syscall"
@@ -30,7 +31,12 @@ func processGone(pid int) bool {
 	// Linux: an orphaned zombie not yet reaped by init still answers kill(0).
 	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
 	if err != nil {
-		return false
+		// No procfs (macOS, BSD): ask ps for the process state instead.
+		st, perr := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+		if perr != nil {
+			return false
+		}
+		return strings.HasPrefix(strings.TrimSpace(string(st)), "Z")
 	}
 	s := string(b)
 	if i := strings.LastIndexByte(s, ')'); i >= 0 && i+2 < len(s) {

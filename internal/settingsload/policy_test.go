@@ -1,6 +1,7 @@
 package settingsload
 
 import (
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -182,7 +183,7 @@ func TestComposePolicyValidationWarnings(t *testing.T) {
 	p := ComposePolicy(fsys, ctxWithOS(OSPolicyReadout{HKLM: strp(`{"bogusKey":1,"managedSourcesBehavior":"merge"}`)}))
 	joined := strings.Join(p.Warnings, "\n")
 	if !strings.Contains(joined, "hklm: Unrecognized field: bogusKey") ||
-		!strings.Contains(joined, "/etc/gocode/managed-settings.d/10.json: disableAllHooks") {
+		!strings.Contains(joined, filepath.FromSlash("/etc/gocode/managed-settings.d/10.json")+": disableAllHooks") {
 		t.Fatalf("warnings = %v", p.Warnings)
 	}
 }

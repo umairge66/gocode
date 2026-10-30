@@ -584,6 +584,12 @@ func bwrapSupportsDisableUserns(bin string) bool {
 	return strings.Contains(string(out), "--disable-userns")
 }
 
+// maxRunDirBaseLen bounds the directory the run dir is created in, so that
+// <base>/gocode-sbx-<up to 10 digits>/gocode-socks-<16 hex>.sock (57 bytes
+// beyond the base) fits the 104-byte Unix-socket path limit with room to
+// spare.
+const maxRunDirBaseLen = 44
+
 // makeRunDirLocked creates the session's private sandbox runtime directory:
 // a fresh 0700 directory next to (not inside) the sandbox-writable temp dir,
 // holding the proxy bridge sockets and the empty placeholder source. A
@@ -594,11 +600,19 @@ func (m *Manager) makeRunDirLocked() error {
 	if m.runDir != "" {
 		return nil
 	}
-	base := os.TempDir()
-	if t := m.opts.Paths.TempDir; t != "" && len(filepath.Dir(t)) < 40 {
-		// Next to the temp dir, when that keeps the bridge socket paths
-		// within the Unix-socket path limit (~108 bytes).
-		base = filepath.Dir(t)
+	// Prefer a directory next to the temp dir, then the system temp dir, then
+	// /tmp: the first whose bridge socket paths stay within the Unix-socket
+	// path limit (108 bytes on Linux, 104 on macOS).
+	candidates := []string{os.TempDir(), "/tmp"}
+	if t := m.opts.Paths.TempDir; t != "" {
+		candidates = append([]string{filepath.Dir(t)}, candidates...)
+	}
+	base := candidates[len(candidates)-1]
+	for _, c := range candidates {
+		if len(c) <= maxRunDirBaseLen {
+			base = c
+			break
+		}
 	}
 	d, err := os.MkdirTemp(base, "gocode-sbx-")
 	if err != nil {

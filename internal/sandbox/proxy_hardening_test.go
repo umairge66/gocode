@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -312,7 +313,16 @@ func TestProxyListensOnLoopbackOnlyAndSocketIsPrivate(t *testing.T) {
 	if a := p.tcp.Addr().(*net.TCPAddr); !a.IP.Equal(net.IPv4(127, 0, 0, 1)) {
 		t.Fatalf("proxy listens on %v", a)
 	}
-	dir := t.TempDir()
+	if runtime.GOOS == "windows" {
+		t.Skip("the Unix-socket bridge serves only the Linux sandbox; Windows has no file modes")
+	}
+	// A short directory: Unix socket paths are limited to about 104 bytes,
+	// which t.TempDir() under macOS's long $TMPDIR exceeds.
+	dir, err := os.MkdirTemp("/tmp", "gsbx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	sock := filepath.Join(dir, "p.sock")
 	if err := p.ServeUnix(sock); err != nil {
 		t.Fatal(err)

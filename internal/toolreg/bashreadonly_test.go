@@ -3,6 +3,7 @@ package toolreg
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -93,6 +94,13 @@ func TestIsReadOnlyBashCommand(t *testing.T) {
 		"cat 'unterminated", "ls \"unterminated",
 	}
 	for _, c := range readOnly {
+		if runtime.GOOS == "windows" && strings.HasPrefix(c, "xargs") {
+			// xargs is never read-only on Windows.
+			if IsReadOnlyBashCommand(c) {
+				t.Errorf("IsReadOnlyBashCommand(%q) = true on windows, want false", c)
+			}
+			continue
+		}
 		if !IsReadOnlyBashCommand(c) {
 			t.Errorf("IsReadOnlyBashCommand(%q) = false, want true", c)
 		}
@@ -147,11 +155,19 @@ func TestReadOnlyTableOrder(t *testing.T) {
 // Read-only Bash is allowed by the tool's own check in default mode, but only
 // for paths inside the working directory; rules still win.
 func TestReadOnlyBashAutoAllowPaths(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX paths in shell command lines and path rules")
+	}
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	outside := t.TempDir()
+	// The canonical spelling, so an allow rule written for it covers every
+	// spelling of a path below it (on macOS the temp dir is behind a symlink).
+	outside, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	d := &Decider{Registry: DefaultRegistry(), PathRules: rootsAt(dir)}
 	bash := func(cmd string) Call { return Call{Tool: protocol.ToolBash, Rule: "Bash", RuleContent: cmd} }
 	for _, cmd := range []string{"ls", "cat a.txt", "grep -r x .", "git status", "ls " + dir, "head " + filepath.Join(dir, "a.txt")} {

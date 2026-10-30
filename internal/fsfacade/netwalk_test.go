@@ -10,7 +10,8 @@ import (
 	"time"
 )
 
-// probeFS wraps MemFS: it records every probed path, can fail chosen paths
+// probeFS wraps MemFS: it records every probed path (as a slash path, since
+// the walker hands it OS-separated names), can fail chosen paths
 // with an errno, can block chosen paths until released (a stalled mount), and
 // can vouch for an unreadable directory through OpenDirNoFollow.
 type probeFS struct {
@@ -27,6 +28,7 @@ func newProbeFS() *probeFS {
 }
 
 func (p *probeFS) hit(name string) error {
+	name = toSlash(name)
 	p.mu.Lock()
 	p.probed = append(p.probed, name)
 	ch := p.block[name]
@@ -53,7 +55,7 @@ func (p *probeFS) Readlink(name string) (string, error) {
 }
 
 func (p *probeFS) OpenDirNoFollow(name string) error {
-	if p.dirsOpen[name] {
+	if p.dirsOpen[toSlash(name)] {
 		return nil
 	}
 	return &fs.PathError{Op: "opendir", Path: name, Err: syscall.EACCES}
