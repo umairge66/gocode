@@ -256,7 +256,6 @@ Tests use temporary directories and an isolated home directory, and never call a
 | `internal/sandbox`, `internal/pathguard`, `internal/envsec` | sandboxing and path, network and secret guards |
 | `internal/mcp*`, `internal/plugins`, `internal/skills`, `internal/lsp` | extensibility |
 | `internal/chromehost`, `extension/` | the Chrome native-messaging host and extension |
-| `bench/` | benchmark adapters ([Terminal-Bench](https://www.tbench.ai/) via Harbor) |
 
 ## License
 

@@ -2,7 +2,6 @@
 /gocode
 /gocode.exe
 /dist/
-/bench/gocode-linux-static
 # Personal per-project settings (not shared).
 .gocode/settings.local.json
 __pycache__/
