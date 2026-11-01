@@ -195,7 +195,7 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           report() {
-            msg=$(printf '%s\n' "$2" | tail -n 60 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            msg=$(printf '%s\n' "$2" | tail -n 80 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
             echo "::error title=$1::$msg"
             exit 1
           }
@@ -208,6 +208,7 @@ jobs:
             diag=$(
               set +e
               echo "exit code $code"; echo "$ver"; ls -l "$bin"; file "$bin"
+              echo "--- install.sh trace (end):"; printf '%s\n' "$out" | tail -n 25
               if [ "$RUNNER_OS" = macOS ]; then
                 codesign -dv "$bin" 2>&1; spctl --assess --type execute -v "$bin" 2>&1; xattr -l "$bin" 2>&1
               fi
