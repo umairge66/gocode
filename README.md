@@ -59,7 +59,21 @@ gocode is a coding agent that lives in your terminal. You describe what you want
 
 ## Install
 
-**Download the latest release** (these links always point at the newest version):
+**macOS, Linux, BSD:**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/umairge66/gocode/main/install.sh | sh
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/umairge66/gocode/main/install.ps1 | iex
+```
+
+The installer picks the build for your system, checks it against the release's `checksums.txt` and puts `gocode` in `~/.local/bin` (on Windows, `%LOCALAPPDATA%\Programs\gocode`, added to your PATH). Set `GOCODE_VERSION=0.1.1` for a specific release or `GOCODE_INSTALL_DIR` for another folder. After that, `gocode update` keeps it current.
+
+**Or download the latest release** (these links always point at the newest version):
 
 | Platform | Download |
 |---|---|
