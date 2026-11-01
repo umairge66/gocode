@@ -10,6 +10,18 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/umairge66/gocode/releases/latest"><img alt="Download gocode" src="https://img.shields.io/badge/Download-latest%20release-188038?style=for-the-badge&logo=github&logoColor=white"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/umairge66/gocode/releases/latest/download/gocode_linux_amd64.tar.gz"><img alt="Download for Linux (x86_64)" src="https://img.shields.io/badge/Linux-x86__64-34d27b?style=flat-square&logo=linux&logoColor=white"></a>
+  <a href="https://github.com/umairge66/gocode/releases/latest/download/gocode_darwin_arm64.tar.gz"><img alt="Download for macOS (Apple silicon)" src="https://img.shields.io/badge/macOS-Apple%20silicon-34d27b?style=flat-square&logo=apple&logoColor=white"></a>
+  <a href="https://github.com/umairge66/gocode/releases/latest/download/gocode_darwin_amd64.tar.gz"><img alt="Download for macOS (Intel)" src="https://img.shields.io/badge/macOS-Intel-34d27b?style=flat-square&logo=apple&logoColor=white"></a>
+  <a href="https://github.com/umairge66/gocode/releases/latest/download/gocode_windows_amd64.zip"><img alt="Download for Windows (x64)" src="https://img.shields.io/badge/Windows-x64-34d27b?style=flat-square&logo=windows&logoColor=white"></a>
+  <a href="https://github.com/umairge66/gocode/releases/latest"><img alt="All platforms" src="https://img.shields.io/badge/all%20platforms-%E2%86%92-34d27b?style=flat-square"></a>
+</p>
+
+<p align="center">
   <a href="https://github.com/umairge66/gocode/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/umairge66/gocode/actions/workflows/ci.yml/badge.svg"></a>
   <a href="https://github.com/umairge66/gocode/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/umairge66/gocode?include_prereleases&color=188038"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-188038"></a>
@@ -47,7 +59,16 @@ gocode is a coding agent that lives in your terminal. You describe what you want
 
 ## Install
 
-Every release on the [Releases page](https://github.com/umairge66/gocode/releases) has ready-made builds. Below, `<version>` is the release version without the `v` (e.g. `0.1.0`).
+**Download the latest release** (these links always point at the newest version):
+
+| Platform | Download |
+|---|---|
+| Linux | [x86_64](https://github.com/umairge66/gocode/releases/latest/download/gocode_linux_amd64.tar.gz) · [arm64](https://github.com/umairge66/gocode/releases/latest/download/gocode_linux_arm64.tar.gz) · [armv7](https://github.com/umairge66/gocode/releases/latest/download/gocode_linux_arm.tar.gz) · [386](https://github.com/umairge66/gocode/releases/latest/download/gocode_linux_386.tar.gz) |
+| macOS | [Apple silicon](https://github.com/umairge66/gocode/releases/latest/download/gocode_darwin_arm64.tar.gz) · [Intel](https://github.com/umairge66/gocode/releases/latest/download/gocode_darwin_amd64.tar.gz) |
+| Windows | [x64](https://github.com/umairge66/gocode/releases/latest/download/gocode_windows_amd64.zip) · [arm64](https://github.com/umairge66/gocode/releases/latest/download/gocode_windows_arm64.zip) · [x86](https://github.com/umairge66/gocode/releases/latest/download/gocode_windows_386.zip) |
+| BSD | [FreeBSD x86_64](https://github.com/umairge66/gocode/releases/latest/download/gocode_freebsd_amd64.tar.gz) · [FreeBSD arm64](https://github.com/umairge66/gocode/releases/latest/download/gocode_freebsd_arm64.tar.gz) · [OpenBSD](https://github.com/umairge66/gocode/releases/latest/download/gocode_openbsd_amd64.tar.gz) · [NetBSD](https://github.com/umairge66/gocode/releases/latest/download/gocode_netbsd_amd64.tar.gz) |
+
+AppImage, `.deb` and `.rpm` packages, the other Linux architectures, the Chrome extension and the signed `checksums.txt` are on the [Releases page](https://github.com/umairge66/gocode/releases/latest). Below, `<version>` is the release version without the `v` (e.g. `0.1.1`).
 
 **With Go installed**, the quickest way is:
 
@@ -55,7 +76,7 @@ Every release on the [Releases page](https://github.com/umairge66/gocode/release
 go install github.com/umairge66/gocode/cmd/gocode@latest
 ```
 
-| Platform | Download |
+| Platform | File names |
 |---|---|
 | Linux | `gocode-<version>-linux-<arch>.tar.gz` (`amd64`, `arm64`, `386`, `armv7`, `riscv64`, `ppc64le`, `s390x`), an AppImage, or a `.deb` / `.rpm` package |
 | macOS | `gocode-<version>-darwin-amd64.tar.gz` (Intel) or `-darwin-arm64.tar.gz` (Apple silicon) |
