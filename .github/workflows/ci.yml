@@ -204,12 +204,15 @@ jobs:
           bin="$RUNNER_TEMP/bin/gocode"
           ver=$("$bin" --version 2>&1) && code=0 || code=$?
           if [ "$code" -ne 0 ]; then
+            # Every probe may fail; none may end the step before the report.
             diag=$(
+              set +e
               echo "exit code $code"; echo "$ver"; ls -l "$bin"; file "$bin"
               if [ "$RUNNER_OS" = macOS ]; then
                 codesign -dv "$bin" 2>&1; spctl --assess --type execute -v "$bin" 2>&1; xattr -l "$bin" 2>&1
               fi
-            )
+              true
+            ) || true
             report "gocode --version failed" "$diag"
           fi
           echo "$ver"
