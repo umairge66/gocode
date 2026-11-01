@@ -11,9 +11,9 @@ import (
 	"io"
 	"net"
 	"os"
-	"strings"
 	"testing"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -322,15 +322,32 @@ func TestPipeSecurityDescriptor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSecurityInfo: %v", err)
 	}
-	me, _ := currentUserSID()
-	// Generic rights are mapped at creation (GA -> FA), so compare structure:
-	// a protected DACL with exactly the user and SYSTEM ACEs.
-	// The rights may print as "FA" or as a mask, depending on the system.
-	got := sd.String()
-	aces := strings.Split(strings.TrimPrefix(got, "D:P("), ")(")
-	if !strings.HasPrefix(got, "D:P(") || len(aces) != 2 ||
-		!strings.HasPrefix(aces[0], "A;;") || !strings.HasSuffix(aces[0], ";;;"+me.String()) ||
-		!strings.HasPrefix(aces[1], "A;;") || !strings.HasSuffix(aces[1], ";;;SY)") {
-		t.Fatalf("pipe DACL = %q, want a protected DACL allowing only %s and SYSTEM", got, me)
+	me, err := currentUserSID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	system, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Compare the entries, not the descriptor's text: generic rights are
+	// mapped at creation, and well-known accounts print as aliases ("LA").
+	ctrl, _, err := sd.Control()
+	if err != nil || ctrl&windows.SE_DACL_PROTECTED == 0 {
+		t.Fatalf("DACL not protected: %s (%v)", sd, err)
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil || dacl == nil || dacl.AceCount != 2 {
+		t.Fatalf("pipe DACL = %s, want two entries (%v)", sd, err)
+	}
+	for i, want := range []*windows.SID{me, system} {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(dacl, uint32(i), &ace); err != nil {
+			t.Fatal(err)
+		}
+		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
+		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE || !sid.Equals(want) {
+			t.Fatalf("pipe DACL = %s: entry %d is not an allow entry for %s", sd, i, want)
+		}
 	}
 }

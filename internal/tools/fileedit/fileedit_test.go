@@ -467,3 +467,23 @@ func TestSchemasAreValidJSON(t *testing.T) {
 		t.Fatal("names")
 	}
 }
+
+// A same-size change that keeps the mtime (a coarse file clock) right after
+// the read is still seen: a recent mtime is not trusted on its own.
+func TestTrackerSeesSameTickChange(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "s.txt")
+	writeFile(t, p, "orig")
+	tr := NewFileStateTracker()
+	readThen(t, tr, p)
+	info, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, p, "edit")
+	if err := os.Chtimes(p, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	if tr.WasRead(p) {
+		t.Fatal("a same-size change within the clock tick was not detected")
+	}
+}

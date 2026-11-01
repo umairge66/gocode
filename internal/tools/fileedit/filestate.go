@@ -40,7 +40,16 @@ type fileState struct {
 	modTime time.Time
 	size    int64
 	hash    [sha256.Size]byte
+	// recorded is when the state was taken. A file whose mtime is this
+	// close to it may have changed again within the same clock tick.
+	recorded time.Time
 }
+
+// racyWindow is how far a file's mtime must lie before its recording for
+// mtime and size alone to prove it unchanged. File-time resolution is coarse
+// on some systems (Windows' clock tick, FAT's 2 s), so a same-size write right
+// after a read can leave both unchanged; such files are compared by content.
+const racyWindow = 2 * time.Second
 
 // FileStateTracker records, per absolute path, the (mtime, size, sha256) of a
 // file as of the last time the agent read or wrote it. Edit and MultiEdit
@@ -72,7 +81,7 @@ func normPath(p string) string {
 
 // Record stores the state of path given its full on-disk bytes and stat info.
 func (t *FileStateTracker) Record(path string, data []byte, info os.FileInfo) {
-	st := fileState{hash: sha256.Sum256(data)}
+	st := fileState{hash: sha256.Sum256(data), recorded: time.Now()}
 	if info != nil {
 		st.modTime = info.ModTime()
 		st.size = info.Size()
@@ -111,8 +120,9 @@ func (t *FileStateTracker) Forget(path string) {
 
 // Check returns nil when path was recorded and is unchanged on disk,
 // ErrFileNotRead when it was never recorded, and ErrFileModified when it
-// changed since. It compares mtime first, then content, so
-// a touched-but-identical file still counts as unchanged.
+// changed since. It compares mtime and size first (unless the mtime was too
+// close to the recording to be trusted), then content, so a
+// touched-but-identical file still counts as unchanged.
 func (t *FileStateTracker) Check(path string) error {
 	key := normPath(path)
 	t.mu.Lock()
@@ -125,7 +135,7 @@ func (t *FileStateTracker) Check(path string) error {
 	if err != nil {
 		return ErrFileModified
 	}
-	if info.ModTime().Equal(st.modTime) && info.Size() == st.size {
+	if info.ModTime().Equal(st.modTime) && info.Size() == st.size && st.recorded.Sub(st.modTime) >= racyWindow {
 		return nil
 	}
 	data, err := os.ReadFile(key)
