@@ -44,6 +44,13 @@ func spawnStdio(_ string, cfg ServerConfig, dir string) (Transport, error) {
 // stderrReporter is implemented by transports that keep server stderr.
 type stderrReporter interface{ Stderr() string }
 
+// exitNotifier is implemented by transports that report the process exit.
+type exitNotifier interface{ Exited() <-chan struct{} }
+
+// crashStderrWait bounds how long a crash report waits for the process to
+// exit (and its stderr to be complete) after the connection ended.
+const crashStderrWait = time.Second
+
 // Server is one configured language server: it is started on first use,
 // marked "error" when its process dies, and started again on the next use
 // unless crash recovery is exhausted.
@@ -147,9 +154,18 @@ func (s *Server) Start(ctx context.Context) error {
 	s.mu.Unlock()
 	client, err := s.launch(ctx)
 	if err != nil {
+		// The process died while starting (the connection ended, or a
+		// write failed first): that is a crash, whichever was noticed.
+		died := false
+		if client != nil {
+			s.mu.Lock()
+			t := s.transport
+			s.mu.Unlock()
+			awaitExit(t)
+			died = client.Err() != nil || hasExited(t)
+		}
 		s.mu.Lock()
-		if client != nil && client.Err() != nil {
-			// The connection died while starting: that is a crash.
+		if died {
 			s.recordCrashLocked(client, s.transport)
 		}
 		if s.state == StateError && s.lastErr != nil && s.crashedClient == client {
@@ -242,12 +258,40 @@ func (s *Server) launch(ctx context.Context) (*Client, error) {
 // starting or running (not during a requested stop).
 func (s *Server) watch(c *Client, t Transport) {
 	<-c.Done()
+	awaitExit(t)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.client != c || (s.state != StateRunning && s.state != StateStarting) {
 		return
 	}
 	s.recordCrashLocked(c, t)
+}
+
+// awaitExit waits, briefly, for the transport's process to exit. A
+// connection ends when stdout closes, which can be before the server's last
+// stderr lines are copied; they are complete once the process has exited, so
+// the crash report can then say why the server died.
+func awaitExit(t Transport) {
+	if e, ok := t.(exitNotifier); ok {
+		select {
+		case <-e.Exited():
+		case <-time.After(crashStderrWait):
+		}
+	}
+}
+
+// hasExited reports whether the transport's process is known to have exited.
+func hasExited(t Transport) bool {
+	e, ok := t.(exitNotifier)
+	if !ok {
+		return false
+	}
+	select {
+	case <-e.Exited():
+		return true
+	default:
+		return false
+	}
 }
 
 // recordCrashLocked counts a crash of client c once and keeps its reason.
