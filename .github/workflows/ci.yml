@@ -71,7 +71,7 @@ jobs:
   linux-checks:
     name: linux checks
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -80,7 +80,17 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
+
+      # Its own build cache: the test job saves the shared setup-go cache
+      # first, so the race and 32-bit builds would never be kept there.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-checks-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: go-checks-${{ hashFiles('go.sum') }}-
 
       - name: Verify module checksums
         run: go mod verify
@@ -119,12 +129,47 @@ jobs:
           python3 scripts/gen-notices.py
           git diff --exit-code THIRD_PARTY_NOTICES
 
-      - name: Cross-compile every release target
+  # Every release target builds, in parallel groups, each with its own cache.
+  cross-compile:
+    name: build (${{ matrix.group }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: linux
+            targets: linux/amd64 linux/arm64 linux/386 linux/arm
+          - group: linux-other
+            targets: linux/riscv64 linux/ppc64le linux/s390x
+          - group: darwin
+            targets: darwin/amd64 darwin/arm64
+          - group: windows
+            targets: windows/amd64 windows/arm64 windows/386
+          - group: bsd
+            targets: freebsd/amd64 freebsd/arm64 openbsd/amd64 netbsd/amd64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-cross-${{ matrix.group }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: go-cross-${{ matrix.group }}-${{ hashFiles('go.sum') }}-
+
+      - name: Build
         run: |
           set -eu
-          for t in linux/amd64 linux/arm64 linux/386 linux/arm linux/riscv64 linux/ppc64le linux/s390x \
-                   darwin/amd64 darwin/arm64 windows/amd64 windows/arm64 windows/386 \
-                   freebsd/amd64 freebsd/arm64 openbsd/amd64 netbsd/amd64; do
+          for t in ${{ matrix.targets }}; do
             echo "::group::$t"
             CGO_ENABLED=0 GOOS=${t%/*} GOARCH=${t#*/} GOARM=7 go build -trimpath -o /dev/null ./cmd/gocode
             echo "::endgroup::"
