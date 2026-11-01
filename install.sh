@@ -71,7 +71,7 @@ fi
 tmp="$(mktemp -d 2>/dev/null || mktemp -d -t gocode)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
-say "Downloading gocode for $os/$arch…"
+say "Downloading gocode for $os/$arch..."
 fetch "$base/$archive" "$tmp/$archive" || fail "download failed: $base/$archive"
 fetch "$base/checksums.txt" "$tmp/checksums.txt" || fail "download failed: $base/checksums.txt"
 
