@@ -272,3 +272,32 @@ func TestUpdateRefusesWrongKey(t *testing.T) {
 		t.Fatal("installed despite an untrusted signature")
 	}
 }
+
+// A Homebrew-installed gocode is never replaced in place: update points to
+// brew, --check names it too, and nothing is downloaded.
+func TestUpdateLeavesManagedInstallToItsOwner(t *testing.T) {
+	srv, downloads := fakeReleaseServer(t, "v1.3.0", []byte("NEW BINARY"))
+	h := setupUpdate(t, srv, "1.2.0", map[string]string{"GOCODE_UPDATE_REPO": "acme/tool"})
+	cellar := filepath.Join(t.TempDir(), "Cellar", "gocode", "1.2.0", "bin")
+	if err := os.MkdirAll(cellar, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h.exe = filepath.Join(cellar, "gocode")
+	if err := os.WriteFile(h.exe, []byte("OLD"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := Run(h.env, []string{"gocode", "update"}); code != 1 {
+		t.Fatalf("update exit %d, want 1; out=%s err=%s", code, h.out, h.errb)
+	}
+	if !strings.Contains(h.out.String(), "installed by Homebrew, so it is updated there: brew upgrade gocode") {
+		t.Errorf("output:\n%s", h.out)
+	}
+	h.out.Reset()
+	if code := Run(h.env, []string{"gocode", "update", "--check"}); code != 0 || !strings.Contains(h.out.String(), "brew upgrade gocode") {
+		t.Errorf("--check exit %d output:\n%s", code, h.out)
+	}
+	if got, _ := os.ReadFile(h.exe); string(got) != "OLD" || *downloads != 0 || h.restarted != "" {
+		t.Errorf("managed binary touched: %q, %d downloads, restarted %q", got, *downloads, h.restarted)
+	}
+}

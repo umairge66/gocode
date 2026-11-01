@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 
 	"github.com/umairge66/gocode/internal/fsfacade"
@@ -47,6 +48,7 @@ var (
 	updateCurrentVersion                  = func() string { return updater.CurrentVersion }
 	updateSettingsRepo                    = loadUpdateRepo
 	updateGOOS, updateGOARCH              = "", "" // empty → runtime values
+	updateFileExists                      = func(p string) bool { _, err := os.Stat(p); return err == nil }
 	updateRestart                         = func(exe string) error {
 		r := &updater.Restarter{Env: append(os.Environ(), updateRestartedEnvVar+"=1")}
 		return r.Restart(exe)
@@ -180,14 +182,30 @@ func runUpdateCmd(env *Env, verb string, rest []string) int {
 		fmt.Fprintf(env.Stdout, "gocode is up to date (%s).\n", res.Reason)
 		return 0
 	}
+	// An install a package manager owns is updated through it, never
+	// overwritten in place.
+	exe, exeErr := updateExecutable()
+	if exeErr == nil {
+		goos := updateGOOS
+		if goos == "" {
+			goos = runtime.GOOS
+		}
+		if m, ok := updater.ManagedInstall(exe, goos, repo, env.Getenv, updateFileExists); ok {
+			fmt.Fprintf(env.Stdout, "Update available: %s → %s.\n", res.Current, res.Latest)
+			fmt.Fprintf(env.Stdout, "gocode was installed by %s, so it is updated there: %s\n", m.By, m.Upgrade)
+			if f.check {
+				return 0
+			}
+			return 1
+		}
+	}
 	if f.check {
 		fmt.Fprintf(env.Stdout, "Update available: %s → %s. Run 'gocode update' to install.\n", res.Current, res.Latest)
 		return 0
 	}
 
 	fmt.Fprintf(env.Stdout, "Updating gocode: %s → %s\n", res.Current, res.Latest)
-	exe, err := updateExecutable()
-	if err != nil {
+	if err := exeErr; err != nil {
 		return errf("%s", strings.TrimPrefix(err.Error(), "updater: "))
 	}
 	u.Executable = exe
