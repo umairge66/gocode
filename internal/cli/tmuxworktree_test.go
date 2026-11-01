@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"math/rand"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -28,7 +29,7 @@ func TestWorktreeDerivations(t *testing.T) {
 		if got := worktreeBranchName(c.name); got != c.wantBranch {
 			t.Errorf("worktreeBranchName(%q)=%q want %q", c.name, got, c.wantBranch)
 		}
-		if got := worktreePath("/home/u/myrepo", c.name); got != c.wantPath {
+		if got := worktreePath("/home/u/myrepo", c.name); got != filepath.FromSlash(c.wantPath) {
 			t.Errorf("worktreePath(%q)=%q want %q", c.name, got, c.wantPath)
 		}
 		if got := generateTmuxSessionName("/home/u/myrepo", worktreeBranchName(c.name)); got != c.wantSess {
@@ -284,7 +285,7 @@ func TestExecIntoTmuxWorktreeHappyPath(t *testing.T) {
 	if !strings.Contains(joined, "-e GOCODE_CODE_TMUX_SESSION=myrepo_worktree-feature") {
 		t.Errorf("missing session env flag: %v", fg)
 	}
-	if !strings.Contains(joined, "-c /home/u/myrepo/.gocode/worktrees/feature -- /bin/gocode") {
+	if !strings.Contains(joined, "-c "+filepath.FromSlash("/home/u/myrepo/.gocode/worktrees/feature")+" -- /bin/gocode") {
 		t.Errorf("missing -c/-- exec tail: %v", fg)
 	}
 }

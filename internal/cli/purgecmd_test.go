@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,7 +18,7 @@ func purgeTree(t *testing.T, f *subcmdFixture) (data, other string) {
 	t.Helper()
 	data = filepath.Join(f.home, ".config", "gocode")
 	proj := filepath.Join(data, "projects", sessionstore.EscapeCwd(f.cwd))
-	subcmdWriteFile(t, filepath.Join(proj, purgeSID+".jsonl"), `{"type":"user","cwd":"`+f.cwd+`"}`+"\n")
+	subcmdWriteFile(t, filepath.Join(proj, purgeSID+".jsonl"), `{"type":"user","cwd":`+jsonString(f.cwd)+`}`+"\n")
 	subcmdWriteFile(t, filepath.Join(proj, "memory", "notes.md"), "m")
 	subcmdWriteFile(t, filepath.Join(data, "tasks", purgeSID, "1.json"), "{}")
 	subcmdWriteFile(t, filepath.Join(data, "debug", purgeSID+".txt"), "log")
@@ -26,10 +27,10 @@ func purgeTree(t *testing.T, f *subcmdFixture) (data, other string) {
 	other = filepath.Join(data, "projects", sessionstore.EscapeCwd(otherCwd))
 	subcmdWriteFile(t, filepath.Join(other, "99999999-2222-4333-8444-555555555555.jsonl"), "{}\n")
 	subcmdWriteFile(t, filepath.Join(data, "history.jsonl"),
-		`{"display":"a","project":"`+f.cwd+`"}`+"\n"+
-			`{"display":"b","project":"`+otherCwd+`"}`+"\n"+
-			`{"display":"c","project":"`+f.cwd+`/sub"}`+"\n")
-	subcmdWriteFile(t, filepath.Join(data, ".gocode.json"), `{"theme":"x","projects":{"`+f.cwd+`":{"trusted":true},"`+otherCwd+`":{}}}`)
+		`{"display":"a","project":`+jsonString(f.cwd)+`}`+"\n"+
+			`{"display":"b","project":`+jsonString(otherCwd)+`}`+"\n"+
+			`{"display":"c","project":`+jsonString(filepath.Join(f.cwd, "sub"))+`}`+"\n")
+	subcmdWriteFile(t, filepath.Join(data, ".gocode.json"), `{"theme":"x","projects":{`+jsonString(f.cwd)+`:{"trusted":true},`+jsonString(otherCwd)+`:{}}}`)
 	return data, other
 }
 
@@ -40,7 +41,7 @@ func TestPurgeDryRunListsPlanOnly(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d", code)
 	}
-	for _, want := range []string{"Purge plan for " + f.cwd, "tasks for session " + purgeSID, "debug log for session", "file edit history for session", "project transcripts (.jsonl) and memory/", `config: projects["` + f.cwd + `"]`, "2 prompt(s) typed in this project", "Dry run: 6 item(s) would be deleted."} {
+	for _, want := range []string{"Purge plan for " + f.cwd, "tasks for session " + purgeSID, "debug log for session", "file edit history for session", "project transcripts (.jsonl) and memory/", fmt.Sprintf("config: projects[%q]", f.cwd), "2 prompt(s) typed in this project", "Dry run: 6 item(s) would be deleted."} {
 		if !strings.Contains(out, want) {
 			t.Errorf("plan missing %q:\n%s", want, out)
 		}
@@ -70,7 +71,7 @@ func TestPurgeDeletesOnlyThisProject(t *testing.T) {
 		t.Errorf("history = %q", hist)
 	}
 	cfg := subcmdReadFile(t, filepath.Join(f.home, ".config", "gocode", ".gocode.json"))
-	if strings.Contains(cfg, `"`+f.cwd+`"`) || !strings.Contains(cfg, "elsewhere") || !strings.Contains(cfg, `"theme"`) {
+	if strings.Contains(cfg, jsonString(f.cwd)) || !strings.Contains(cfg, "elsewhere") || !strings.Contains(cfg, `"theme"`) {
 		t.Errorf("config = %s", cfg)
 	}
 	if _, err := os.Stat(f.cwd); err != nil {

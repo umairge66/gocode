@@ -300,8 +300,8 @@ func TestHeadlessPlanModeRefusesEdit(t *testing.T) {
 		t.Fatal(err)
 	}
 	model := &planScriptCaller{turns: []agent.Message{
-		agent.AssistantMessage(agent.ToolUseBlock("tu_r", "Read", json.RawMessage(`{"file_path":"`+target+`"}`))),
-		agent.AssistantMessage(agent.ToolUseBlock("tu_e", "Edit", json.RawMessage(`{"file_path":"`+target+`","old_string":"return a + b","new_string":"return a + b\n\ndef div(a, b):\n    return a / b"}`))),
+		agent.AssistantMessage(agent.ToolUseBlock("tu_r", "Read", json.RawMessage(`{"file_path":`+jsonString(target)+`}`))),
+		agent.AssistantMessage(agent.ToolUseBlock("tu_e", "Edit", json.RawMessage(`{"file_path":`+jsonString(target)+`,"old_string":"return a + b","new_string":"return a + b\n\ndef div(a, b):\n    return a / b"}`))),
 	}}
 	s := &printSession{
 		Model:     "anthropic/claude-3.5-sonnet",

@@ -106,6 +106,7 @@ func Realpath(fsys FS, p string) (string, error) {
 // resolveAbs makes p absolute, resolving a relative path against fsys's working
 // directory (Cwder) or "/". The result is lexically cleaned.
 func resolveAbs(fsys FS, p string) string {
+	p = toSlash(p)
 	if path.IsAbs(p) {
 		return path.Clean(p)
 	}

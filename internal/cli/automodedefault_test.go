@@ -274,7 +274,15 @@ func TestAutoDefaultNudgeAccept(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("user settings %v / state %v not updated", f.readJSON(f.userSettingsPath()), state)
+			var errs []string
+			prog.mu.Lock()
+			for _, m := range prog.sent {
+				if e, ok := m.(ui.AppendErrorMsg); ok {
+					errs = append(errs, e.Text)
+				}
+			}
+			prog.mu.Unlock()
+			t.Fatalf("user settings %v / state %v not updated; errors %q", f.readJSON(f.userSettingsPath()), state, errs)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}

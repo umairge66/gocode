@@ -497,7 +497,7 @@ func FormatNewDiagnostics(files []FileDiagnostics) string {
 		for _, d := range f.Diagnostics {
 			lines = append(lines, "  "+formatDiagnosticLine(d))
 		}
-		name := f.Path[strings.LastIndex(f.Path, "/")+1:]
+		name := f.Path[strings.LastIndexAny(f.Path, `/\`)+1:]
 		if name == "" {
 			name = f.Path
 		}

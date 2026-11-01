@@ -3,6 +3,7 @@ package cli
 import (
 	"github.com/umairge66/gocode/internal/envutil"
 	"github.com/umairge66/gocode/internal/headless"
+	"github.com/umairge66/gocode/internal/platform"
 	"golang.org/x/term"
 
 	"fmt"
@@ -53,7 +54,7 @@ func DefaultEnv() *Env {
 		Stdin:     os.Stdin,
 		StdinTTY:  isTerminal(os.Stdin),
 		StdoutTTY: isTerminal(os.Stdout),
-		Cwd:       os.Getwd,
+		Cwd:       platform.Getwd,
 	}
 }
 

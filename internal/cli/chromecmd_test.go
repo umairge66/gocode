@@ -54,7 +54,7 @@ func writeFixtureExtension(t *testing.T) string {
 func TestChromeInstall_WritesWellFormedManifest(t *testing.T) {
 	hostDir := t.TempDir()
 	extDir := writeFixtureExtension(t)
-	bin := "/opt/gocode/gocode"
+	bin := filepath.Join(t.TempDir(), "gocode")
 
 	ci, out, errb := newTestInstaller(hostDir, bin)
 	code := ci.install(chromeFlags{browser: "chrome", extensionDir: extDir})
@@ -169,8 +169,8 @@ func TestNativeHostDirFor_PerOS(t *testing.T) {
 		if err != nil {
 			t.Fatalf("nativeHostDirFor(%s,%s): %v", c.goos, c.browser, err)
 		}
-		if got != c.want {
-			t.Errorf("nativeHostDirFor(%s,%s) = %q, want %q", c.goos, c.browser, got, c.want)
+		if want := filepath.FromSlash(c.want); got != want {
+			t.Errorf("nativeHostDirFor(%s,%s) = %q, want %q", c.goos, c.browser, got, want)
 		}
 	}
 	// Windows uses %LOCALAPPDATA% and ignores the browser for the file location.

@@ -2,7 +2,7 @@ package agentsdef
 
 import (
 	"encoding/json"
-	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/umairge66/gocode/internal/frontmatter"
@@ -146,7 +146,7 @@ func BuildFileDescriptor(pr ParseResult, filePath, baseDir string, source Source
 		Skills:           fm.Skills,
 		SystemPrompt:     strings.TrimSpace(pr.Body),
 		Source:           source,
-		Filename:         strings.TrimSuffix(path.Base(filePath), ".md"),
+		Filename:         strings.TrimSuffix(filepath.Base(filePath), ".md"),
 		FilePath:         filePath,
 		BaseDir:          baseDir,
 		Background:       fm.Background,

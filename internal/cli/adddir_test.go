@@ -52,7 +52,7 @@ func TestAddDirFlagReachesSession(t *testing.T) {
 // directories for the permission checks and writable roots of the sandbox.
 func TestAddDirIsWorkingDirectoryAndSandboxWritable(t *testing.T) {
 	extra, fromSettings := t.TempDir(), t.TempDir()
-	env, _, _, cwd := sessionEnv(t, `{"permissions":{"additionalDirectories":["`+fromSettings+`"]},"sandbox":{"enabled":true}}`)
+	env, _, _, cwd := sessionEnv(t, `{"permissions":{"additionalDirectories":[`+jsonString(fromSettings)+`]},"sandbox":{"enabled":true}}`)
 
 	files := newSessionFileChecks(env, extra)
 	for _, d := range []string{cwd, extra, fromSettings} {

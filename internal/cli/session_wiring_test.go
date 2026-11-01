@@ -691,3 +691,9 @@ func TestRunMCPList(t *testing.T) {
 		t.Fatal("mcp list did not close the host")
 	}
 }
+
+// jsonString is s as a JSON string literal (Windows paths carry backslashes).
+func jsonString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}

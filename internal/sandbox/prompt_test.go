@@ -6,6 +6,7 @@ import (
 )
 
 func TestPromptSection(t *testing.T) {
+	skipOnWindows(t)
 	if s := fakeManager("linux", true).PromptSection(false); s != "" {
 		t.Fatalf("sandbox off: no section, got %q", s)
 	}

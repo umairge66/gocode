@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -324,9 +325,12 @@ func TestPipeSecurityDescriptor(t *testing.T) {
 	me, _ := currentUserSID()
 	// Generic rights are mapped at creation (GA -> FA), so compare structure:
 	// a protected DACL with exactly the user and SYSTEM ACEs.
+	// The rights may print as "FA" or as a mask, depending on the system.
 	got := sd.String()
-	want := "D:P(A;;FA;;;" + me.String() + ")(A;;FA;;;SY)"
-	if got != want {
-		t.Fatalf("pipe DACL = %q, want %q", got, want)
+	aces := strings.Split(strings.TrimPrefix(got, "D:P("), ")(")
+	if !strings.HasPrefix(got, "D:P(") || len(aces) != 2 ||
+		!strings.HasPrefix(aces[0], "A;;") || !strings.HasSuffix(aces[0], ";;;"+me.String()) ||
+		!strings.HasPrefix(aces[1], "A;;") || !strings.HasSuffix(aces[1], ";;;SY)") {
+		t.Fatalf("pipe DACL = %q, want a protected DACL allowing only %s and SYSTEM", got, me)
 	}
 }

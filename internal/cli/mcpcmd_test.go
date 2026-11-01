@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -291,7 +292,7 @@ func TestMCPWritePreservesFile(t *testing.T) {
 	if doc["theme"] != "dark" || servers["old"] == nil || servers["new"] == nil {
 		t.Errorf("doc = %v", doc)
 	}
-	if st, _ := os.Stat(f.userSettingsPath()); st.Mode().Perm() != 0o640 {
+	if st, _ := os.Stat(f.userSettingsPath()); st.Mode().Perm() != 0o640 && runtime.GOOS != "windows" {
 		t.Errorf("mode = %v", st.Mode().Perm())
 	}
 	// A malformed file is never clobbered.

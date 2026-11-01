@@ -152,7 +152,9 @@ func reduceThinking(vs ViewState, e StreamThinking) ViewState {
 		next[n-1].Text = e.Text
 		next[n-1].Streaming = !e.Done
 		if start := next[n-1].thinkStart; e.Done && !start.IsZero() && !e.At.IsZero() {
-			next[n-1].ThinkingDuration = max(e.At.Sub(start), 0)
+			// Positive even when start and end fall on one clock tick
+			// (Windows' clock is coarse): a timed block shows "Thought for".
+			next[n-1].ThinkingDuration = max(e.At.Sub(start), time.Nanosecond)
 		}
 		vs.Transcript = next
 		return vs

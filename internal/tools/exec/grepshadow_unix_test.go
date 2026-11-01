@@ -318,7 +318,9 @@ func TestGrepShadowKeepsLineNumbers(t *testing.T) {
 	cmd := "true\nno_such_command_xyz"
 	_, plain, _ := shellRun(t, bash, root, "/usr/bin", cmd, "")
 	_, shadowed, _ := shellRun(t, bash, root, "/usr/bin", GrepShadowPrefix(bash, "/x/ugrep")+cmd, "")
-	if plain != shadowed || !strings.Contains(plain, "line 2") {
+	// bash 3.2 (macOS) numbers -c scripts differently; what matters is that
+	// the shadow does not change the number.
+	if plain != shadowed || !strings.Contains(plain, "no_such_command_xyz") {
 		t.Fatalf("stderr changed: %q vs %q", plain, shadowed)
 	}
 }

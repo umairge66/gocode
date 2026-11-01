@@ -1,6 +1,7 @@
 package configimport
 
 import (
+	"path/filepath"
 	"reflect"
 	"testing"
 )
@@ -143,10 +144,10 @@ func TestValidateArgPlaceholdersSafe(t *testing.T) {
 }
 
 func TestContainedJoin(t *testing.T) {
-	if got := containedJoin("/base", "sub/x"); got != "/base/sub/x" {
+	if got := containedJoin(filepath.FromSlash("/base"), "sub/x"); got != filepath.FromSlash("/base/sub/x") {
 		t.Errorf("containedJoin inside = %q", got)
 	}
-	if got := containedJoin("/base", "../escape"); got != "" {
+	if got := containedJoin(filepath.FromSlash("/base"), "../escape"); got != "" {
 		t.Errorf("containedJoin escape = %q, want empty", got)
 	}
 }

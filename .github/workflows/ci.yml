@@ -40,6 +40,16 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # The runner's default temp folder is spelled with an 8.3 short name
+      # (C:\Users\RUNNER~1\...), which the permission checks refuse as a
+      # suspicious spelling; tests use a long-name folder instead.
+      - name: Long-name temp folder
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          echo "TEMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "TMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+
       - name: Test
         shell: bash
         run: |

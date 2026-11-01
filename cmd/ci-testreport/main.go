@@ -23,6 +23,7 @@ import (
 const (
 	maxBlockLines   = 80
 	maxMessageBytes = 6000
+	maxPackedBytes  = 60000
 	maxSummaryBytes = 900 << 10
 	maxListedNames  = 100
 	tailLines       = 40
@@ -178,6 +179,21 @@ func body(lines []string) string {
 	return s
 }
 
+// packed joins the output of several failures into one annotation message,
+// for the failures past the per-step annotation limit.
+func packed(fails []failure) string {
+	var b strings.Builder
+	for i, f := range fails {
+		block := body(f.lines) + "\n\n"
+		if b.Len()+len(block) > maxPackedBytes {
+			fmt.Fprintf(&b, "… %d more; see the job summary\n", len(fails)-i)
+			break
+		}
+		b.WriteString(block)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
 func annotate(w io.Writer, title, msg string) {
 	fmt.Fprintf(w, "::error title=%s::%s\n", escapeProperty(title), escapeData(msg))
 }
@@ -209,7 +225,8 @@ func report(w io.Writer, summary io.Writer, title string, limit int, path string
 	}
 	annotate(w, fmt.Sprintf("%s: %d failing", title, len(fails)), strings.Join(names, "\n"))
 	for i, f := range fails {
-		if i == limit {
+		if i == limit-1 && len(fails) > limit {
+			annotate(w, fmt.Sprintf("%s: %d more", title, len(fails)-i), packed(fails[i:]))
 			break
 		}
 		annotate(w, title+": "+f.label(), body(f.lines))

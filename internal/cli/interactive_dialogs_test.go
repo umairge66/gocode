@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -286,7 +287,7 @@ func TestInteractiveSession_LoginSavesKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("auth file not written: %v", err)
 	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
+	if perm := info.Mode().Perm(); perm != 0o600 && runtime.GOOS != "windows" {
 		t.Fatalf("auth file perm = %o, want 0600", perm)
 	}
 	// A fresh resolver (same precedence as the banner / auth status) finds it.

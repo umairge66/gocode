@@ -48,6 +48,7 @@ func bashInput(t *testing.T, cmd string, dds any) agent.ToolUse {
 }
 
 func TestSandboxedBashAutoAllowedAndWrapped(t *testing.T) {
+	skipOnWindows(t)
 	sb := &fakeSandbox{enabled: true, autoAllow: true}
 	d := New(toolreg.ModeDefault, nil, WithSandbox(sb))
 	res, err := d.Dispatch(context.Background(), bashInput(t, "echo hi", nil))
@@ -116,6 +117,7 @@ func TestSandboxBashNoAutoAllow(t *testing.T) {
 }
 
 func TestSandboxDangerouslyDisableNeedsPrompt(t *testing.T) {
+	skipOnWindows(t)
 	sb := &fakeSandbox{enabled: true, autoAllow: true}
 	fp := &fakePrompter{respond: func(PermissionRequest) (PermissionResponse, error) {
 		return PermissionResponse{Kind: PermissionAllowedOnce}, nil

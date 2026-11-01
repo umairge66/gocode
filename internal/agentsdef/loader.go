@@ -1,7 +1,7 @@
 package agentsdef
 
 import (
-	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -170,11 +170,11 @@ func Load(fsys fsfacade.FS, opts LoadOptions) *Registry {
 	// projectSettings — added directories first (lower effective precedence on
 	// equal-name collisions, since the main project is added afterward).
 	for _, dir := range opts.AdditionalDirs {
-		root := path.Join(dir, gocodeDirName, agentsDirName)
+		root := filepath.Join(dir, gocodeDirName, agentsDirName)
 		reg.AddAll(opts.projectScope(fsys, root, true))
 	}
 	if opts.ProjectDir != "" {
-		root := path.Join(opts.ProjectDir, gocodeDirName, agentsDirName)
+		root := filepath.Join(opts.ProjectDir, gocodeDirName, agentsDirName)
 		reg.AddAll(opts.projectScope(fsys, root, false))
 	}
 
@@ -186,7 +186,7 @@ func Load(fsys fsfacade.FS, opts LoadOptions) *Registry {
 
 	// policySettings (managed)
 	if opts.ManagedDir != "" {
-		root := path.Join(opts.ManagedDir, gocodeDirName, agentsDirName)
+		root := filepath.Join(opts.ManagedDir, gocodeDirName, agentsDirName)
 		reg.AddAll(DiscoverScope(fsys, root, SourcePolicy, root, false))
 	}
 
@@ -212,7 +212,7 @@ func DiscoverScope(fsys fsfacade.FS, root string, source Source, baseDir string,
 			return
 		}
 		for _, e := range entries {
-			full := path.Join(dir, e.Name())
+			full := filepath.Join(dir, e.Name())
 			if e.IsDir() {
 				walk(full)
 				continue

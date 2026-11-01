@@ -53,6 +53,7 @@ func TestParseSettingsStrictModeHeldByTrustedTier(t *testing.T) {
 }
 
 func TestParseSettingsPolicyLock(t *testing.T) {
+	skipOnWindows(t)
 	s := ParseSettings([]Layer{
 		layer("userSettings", sb(map[string]any{"enabled": false})),
 		layer("policySettings", sb(map[string]any{"enabled": true, "failIfUnavailable": true, "enabledPlatforms": []any{"linux"}, "bwrapPath": "/opt/bwrap", "socatPath": "relative/socat"})),
@@ -124,6 +125,7 @@ func TestParseSettingsNetwork(t *testing.T) {
 }
 
 func TestParseSettingsFilesystemPaths(t *testing.T) {
+	skipOnWindows(t)
 	pc := PathContext{Cwd: "/work/proj", Home: "/home/u", ConfigDir: "/home/u/.gocode"}
 	s := ParseSettings([]Layer{
 		{Source: "userSettings", BaseDir: "/home/u/.gocode", Settings: map[string]any{
@@ -164,6 +166,7 @@ func TestParseSettingsFilesystemPaths(t *testing.T) {
 }
 
 func TestBuildRuntimeConfigProtectsSensitivePaths(t *testing.T) {
+	skipOnWindows(t)
 	proj := t.TempDir()
 	s := ParseSettings([]Layer{layer("userSettings", sb(map[string]any{"enabled": true}))}, PathContext{Cwd: proj, Home: "/home/u"})
 	rc := BuildRuntimeConfig(s, SessionPaths{
@@ -297,6 +300,7 @@ func TestUnavailableAndStartupNotice(t *testing.T) {
 }
 
 func TestParseSettingsCredentials(t *testing.T) {
+	skipOnWindows(t)
 	s := ParseSettings([]Layer{{Source: "userSettings", BaseDir: "/home/u/.gocode", Settings: sb(map[string]any{
 		"credentials": map[string]any{
 			"envVars": []any{map[string]any{"name": "GITHUB_TOKEN", "mode": "deny"}, map[string]any{"name": "NPM_TOKEN", "mode": "mask"}},

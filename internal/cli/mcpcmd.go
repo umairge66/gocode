@@ -1898,9 +1898,18 @@ func runMCPAddFromDesktop(env *Env, args []string) int {
 		return 0
 	}
 
+	// A server that is configured only because gocode reads the Claude
+	// Desktop config itself (macOS) is the one being imported, not a
+	// collision.
 	existing := map[string]bool{}
 	v := gatherMCPForCLI(env, newPrintSession(env, &DispatchDefaults{}))
+	fromClaude, _ := claudeMCPImport(env, v.ordered, false)
 	for _, l := range v.listed(true) {
+		if _, interop := fromClaude[l.name]; interop {
+			if _, own := v.rawConfig(env, l.name, l.scope); !own {
+				continue
+			}
+		}
 		existing[l.name] = true
 	}
 	selected := map[string]bool{}

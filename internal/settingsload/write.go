@@ -200,7 +200,7 @@ func writeSettingsObject(path string, obj map[string]any) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmpName, path); err != nil {
+	if err := replaceFile(tmpName, path); err != nil {
 		return err
 	}
 	return nil

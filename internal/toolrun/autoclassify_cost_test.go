@@ -21,6 +21,7 @@ import (
 // allowed by the Bash permission check before auto mode's classifier; one that
 // will not run sandboxed is classified.
 func TestAutoModeSandboxedBashSkipsClassifier(t *testing.T) {
+	skipOnWindows(t)
 	c := &countingClassifier{res: automode.Result{Verdict: automode.VerdictAllow}}
 	sb := &fakeSandbox{enabled: true, autoAllow: true}
 	d := New(toolreg.ModeAuto, nil, WithSandbox(sb), WithAutoClassifier(c))

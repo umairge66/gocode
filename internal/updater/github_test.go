@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -598,7 +599,7 @@ func TestUpdaterEndToEnd(t *testing.T) {
 			if !bytes.Equal(got, newBin) {
 				t.Fatalf("executable = %q", got)
 			}
-			if fi, _ := os.Stat(u.Executable); fi.Mode().Perm()&0o111 == 0 {
+			if fi, _ := os.Stat(u.Executable); fi.Mode().Perm()&0o111 == 0 && runtime.GOOS != "windows" {
 				t.Errorf("installed binary not executable: %v", fi.Mode())
 			}
 			// staging cleaned up
