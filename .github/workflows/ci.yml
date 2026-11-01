@@ -189,11 +189,30 @@ jobs:
         with:
           persist-credentials: false
 
+      # Failures are reported as annotations with the traced output, which
+      # are readable without signing in to see the job log.
       - name: install.sh
         if: runner.os != 'Windows'
         run: |
-          GOCODE_INSTALL_DIR="$RUNNER_TEMP/bin" sh install.sh
-          "$RUNNER_TEMP/bin/gocode" --version
+          report() {
+            msg=$(printf '%s\n' "$2" | tail -n 60 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=$1::$msg"
+            exit 1
+          }
+          out=$(GOCODE_INSTALL_DIR="$RUNNER_TEMP/bin" sh -x install.sh 2>&1) || report "install.sh failed ($?)" "$out"
+          echo "$out"
+          bin="$RUNNER_TEMP/bin/gocode"
+          ver=$("$bin" --version 2>&1) && code=0 || code=$?
+          if [ "$code" -ne 0 ]; then
+            diag=$(
+              echo "exit code $code"; echo "$ver"; ls -l "$bin"; file "$bin"
+              if [ "$RUNNER_OS" = macOS ]; then
+                codesign -dv "$bin" 2>&1; spctl --assess --type execute -v "$bin" 2>&1; xattr -l "$bin" 2>&1
+              fi
+            )
+            report "gocode --version failed" "$diag"
+          fi
+          echo "$ver"
 
       - name: install.ps1
         if: runner.os == 'Windows'
