@@ -58,6 +58,9 @@ func ListPaths(ctx context.Context, root string, opt ListOptions, visit func(rel
 	type pending struct {
 		abs, rel string
 		chain    []*dirIgnores
+		// loadOwn: the directory's own ignore files are read from its listing
+		// and added to chain (the root's are already in it).
+		loadOwn bool
 	}
 	queue := []pending{{abs: root, chain: chain}}
 	visited := 0
@@ -71,6 +74,9 @@ func ListPaths(ctx context.Context, root string, opt ListOptions, visit func(rel
 		entries, rerr := os.ReadDir(dir.abs)
 		if rerr != nil {
 			continue
+		}
+		if dir.loadOwn && filter.useIgnores {
+			dir.chain = append(dir.chain[:len(dir.chain):len(dir.chain)], dirIgnoresFromEntries(dir.abs, entries))
 		}
 		for _, e := range entries {
 			if e.Type()&os.ModeSymlink != 0 {
@@ -102,11 +108,7 @@ func ListPaths(ctx context.Context, root string, opt ListOptions, visit func(rel
 				return false, nil
 			}
 			if isDir {
-				next := dir.chain
-				if filter.useIgnores {
-					next = append(dir.chain[:len(dir.chain):len(dir.chain)], loadDirIgnores(abs))
-				}
-				queue = append(queue, pending{abs: abs, rel: rel, chain: next})
+				queue = append(queue, pending{abs: abs, rel: rel, chain: dir.chain, loadOwn: true})
 			}
 		}
 	}

@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
+	"sync"
 )
 
 // This file holds the walker that picks the files the Grep and Glob tools
@@ -334,6 +336,44 @@ func loadDirIgnores(dir string) *dirIgnores {
 	return d
 }
 
+// dirIgnoresFromEntries is loadDirIgnores for a directory whose listing the
+// walker has already read: only the ignore files the listing shows are
+// opened, instead of probing for each name (most directories have none).
+func dirIgnoresFromEntries(dir string, entries []os.DirEntry) *dirIgnores {
+	d := &dirIgnores{dir: dir}
+	for _, e := range entries {
+		switch ignoreFileName(e.Name()) {
+		case ".rgignore":
+			d.rgignore = loadIgnoreFile(filepath.Join(dir, e.Name()), dir)
+		case ".ignore":
+			d.ignore = loadIgnoreFile(filepath.Join(dir, e.Name()), dir)
+		case ".gitignore":
+			d.gitign = loadIgnoreFile(filepath.Join(dir, e.Name()), dir)
+		case ".git":
+			d.hasGit = true
+		}
+	}
+	return d
+}
+
+// ignoreFileName is the ignore-file (or .git) name a directory entry
+// stands for, or "". On case-insensitive file systems (macOS, Windows) the
+// names match in any case, as opening them by name would.
+func ignoreFileName(name string) string {
+	if len(name) < 4 || name[0] != '.' {
+		return ""
+	}
+	for _, want := range [...]string{".rgignore", ".ignore", ".gitignore", ".git"} {
+		if name == want || (caseInsensitiveFS && strings.EqualFold(name, want)) {
+			return want
+		}
+	}
+	return ""
+}
+
+// caseInsensitiveFS reports the default file systems of macOS and Windows.
+var caseInsensitiveFS = runtime.GOOS == "darwin" || runtime.GOOS == "windows"
+
 // walkFilter decides, for every entry under the search root, whether the
 // built-in walker keeps it (files) or descends into it (directories).
 type walkFilter struct {
@@ -497,37 +537,83 @@ func (f *walkFilter) ignoreMatch(abs string, isDir bool, chain []*dirIgnores) ma
 // Symlinks are not followed. Unreadable directories are
 // skipped.
 func walkFiles(root string, f *walkFilter, chain []*dirIgnores) []string {
-	var out []string
-	var walk func(dir string, chain []*dirIgnores)
-	walk = func(dir string, chain []*dirIgnores) {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			return
+	w := &parallelWalk{f: f, sem: make(chan struct{}, walkWorkers())}
+	return w.dir(root, chain, false)
+}
+
+// walkWorkers bounds the directories read at once.
+func walkWorkers() int {
+	n := runtime.GOMAXPROCS(0) * 2
+	if n < 4 {
+		n = 4
+	}
+	if n > 32 {
+		n = 32
+	}
+	return n
+}
+
+// parallelWalk lists a tree with several directories read at once. The result
+// is the same, in the same order, as a sequential depth-first walk: each
+// directory's files and subtrees are joined in listing order.
+type parallelWalk struct {
+	f   *walkFilter
+	sem chan struct{} // free worker slots
+}
+
+// dir lists dir's subtree. chain holds the ignore rules of dir's ancestors;
+// with loadOwn, dir's own ignore files are read from its listing and added
+// (the search root's own are already in chain).
+func (w *parallelWalk) dir(dir string, chain []*dirIgnores, loadOwn bool) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	if loadOwn && w.f.useIgnores {
+		chain = append(chain[:len(chain):len(chain)], dirIgnoresFromEntries(dir, entries))
+	}
+	// parts[i] is entry i's contribution: the file itself, or its subtree.
+	parts := make([][]string, len(entries))
+	var wg sync.WaitGroup
+	for i, e := range entries {
+		if e.Type()&os.ModeSymlink != 0 {
+			continue
 		}
-		for _, e := range entries {
-			if e.Type()&os.ModeSymlink != 0 {
-				continue
-			}
-			abs := filepath.Join(dir, e.Name())
-			isDir := e.IsDir()
-			if !e.Type().IsRegular() && !isDir {
-				continue
-			}
-			if !f.decide(abs, e.Name(), isDir, chain) {
-				continue
-			}
-			if isDir {
-				next := chain
-				if f.useIgnores {
-					next = append(chain[:len(chain):len(chain)], loadDirIgnores(abs))
-				}
-				walk(abs, next)
-				continue
-			}
-			out = append(out, abs)
+		abs := filepath.Join(dir, e.Name())
+		isDir := e.IsDir()
+		if !e.Type().IsRegular() && !isDir {
+			continue
+		}
+		if !w.f.decide(abs, e.Name(), isDir, chain) {
+			continue
+		}
+		if !isDir {
+			parts[i] = []string{abs}
+			continue
+		}
+		// A free slot takes the subtree in another goroutine; with none
+		// free, it is walked here (so the walk never waits on itself).
+		select {
+		case w.sem <- struct{}{}:
+			wg.Add(1)
+			go func(i int, abs string) {
+				defer wg.Done()
+				defer func() { <-w.sem }()
+				parts[i] = w.dir(abs, chain, true)
+			}(i, abs)
+		default:
+			parts[i] = w.dir(abs, chain, true)
 		}
 	}
-	walk(root, chain)
+	wg.Wait()
+	n := 0
+	for _, p := range parts {
+		n += len(p)
+	}
+	out := make([]string, 0, n)
+	for _, p := range parts {
+		out = append(out, p...)
+	}
 	return out
 }
 

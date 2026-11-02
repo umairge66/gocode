@@ -26,6 +26,11 @@ it refuses to publish a version that has no section here.
 - When the scratchpad cannot be used (for example its directory is a symlink
   or belongs to another user), gocode now says so at startup instead of
   silently running without one.
+- **Faster Grep and Glob on large trees.** Directories are listed several at
+  a time, and ignore files (`.gitignore`, `.ignore`, `.rgignore`) are found
+  from the directory listing instead of being looked up in every directory.
+  Listing a tree is about 3 to 4 times faster (88,000 files: about 0.85 s to
+  0.2 s); results and their order are unchanged.
 
 ## [0.1.4] - 2026-11-02
 
