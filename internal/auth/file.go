@@ -89,6 +89,26 @@ func SaveProviderKey(path string, p Provider, key string) error {
 	})
 }
 
+// RemoveProviderKey deletes provider p's key from the auth file at path,
+// keeping every other key and unknown field. It reports whether a key was
+// there; a missing file or key is not an error.
+func RemoveProviderKey(path string, p Provider) (bool, error) {
+	if strings.TrimSpace(path) == "" {
+		return false, errors.New("auth: empty auth file path")
+	}
+	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	removed := false
+	err := mutateAuthFile(path, func(apiKeys map[string]string) {
+		if _, ok := apiKeys[string(p)]; ok {
+			delete(apiKeys, string(p))
+			removed = true
+		}
+	})
+	return removed, err
+}
+
 // mutateAuthFile reads the auth file at path (tolerating a missing file as an
 // empty document), applies mutate to its decoded "apiKeys" map, and writes the
 // result back atomically with 0600 permissions. Unknown top-level fields are

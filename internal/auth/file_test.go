@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -230,5 +231,32 @@ func TestDefaultAuthFilePath(t *testing.T) {
 	}
 	if got := DefaultAuthFilePath(""); got != AuthFileName {
 		t.Errorf("DefaultAuthFilePath(\"\") = %q, want %q", got, AuthFileName)
+	}
+}
+
+func TestRemoveProviderKeyKeepsTheRest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.json")
+	if err := os.WriteFile(path, []byte(`{"apiKeys":{"openrouter":"k1","groq":"k2"},"other":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := RemoveProviderKey(path, Provider("openrouter"))
+	if err != nil || !removed {
+		t.Fatalf("remove = %v, %v", removed, err)
+	}
+	if _, ok := (FileKeyStore{Path: path}).ProviderKey(Provider("openrouter")); ok {
+		t.Error("openrouter key still there")
+	}
+	if v, ok := (FileKeyStore{Path: path}).ProviderKey(Provider("groq")); !ok || v != "k2" {
+		t.Errorf("groq key = %q, %v", v, ok)
+	}
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), `"other": 1`) {
+		t.Errorf("unknown field lost: %s", data)
+	}
+	if removed, err := RemoveProviderKey(path, Provider("openrouter")); removed || err != nil {
+		t.Errorf("second remove = %v, %v", removed, err)
+	}
+	if removed, err := RemoveProviderKey(filepath.Join(t.TempDir(), "none.json"), Provider("x")); removed || err != nil {
+		t.Errorf("missing file = %v, %v", removed, err)
 	}
 }

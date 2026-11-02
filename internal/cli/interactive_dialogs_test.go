@@ -653,3 +653,25 @@ func TestChooseGreetingPicksFromTheList(t *testing.T) {
 		}
 	}
 }
+
+// /login on a provider that already has a key says where the key comes from
+// and offers what can be done there; the key itself is never shown.
+func TestExistingKeyDialog(t *testing.T) {
+	values := func(d *ui.Dialog) []string {
+		var v []string
+		for _, o := range d.Options {
+			v = append(v, o.Value)
+		}
+		return v
+	}
+	saved := existingKeyDialog("openrouter", "auth.json", "~/.config/gocode/auth.json")
+	if saved.Title != "OPENROUTER key is already set" || !strings.Contains(strings.Join(saved.Body, " "), "~/.config/gocode/auth.json") ||
+		strings.Join(values(saved), ",") != "replace,remove,cancel" {
+		t.Errorf("saved key dialog = %+v", saved)
+	}
+	env := existingKeyDialog("openrouter", "OPENROUTER_API_KEY", "x")
+	if body := strings.Join(env.Body, " "); !strings.Contains(body, "OPENROUTER_API_KEY environment variable") || !strings.Contains(body, "shell profile") ||
+		strings.Join(values(env), ",") != "replace,cancel" {
+		t.Errorf("env key dialog = %+v", env)
+	}
+}

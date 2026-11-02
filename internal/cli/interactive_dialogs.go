@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -494,7 +496,87 @@ func (d *interactiveDialogs) login(arg string) {
 	if !ok {
 		return
 	}
+	if _, source, found := newKeyResolver(d.env).ResolveProviderKey(auth.Provider(prov)); found {
+		d.manageExistingKey(prov, source)
+		return
+	}
 	d.promptAndSaveKey(prov)
+}
+
+// Choices of the existing-key dialog.
+const (
+	keyReplace = "replace"
+	keyRemove  = "remove"
+	keyCancel  = "cancel"
+)
+
+// existingKeyDialog describes where prov's current key comes from and offers
+// to replace it, remove the saved one, or leave it. The key itself is never
+// shown.
+func existingKeyDialog(prov, source, authPath string) *ui.Dialog {
+	name := strings.ToUpper(prov)
+	dlg := &ui.Dialog{Kind: ui.DialogAsk, Title: name + " key is already set"}
+	switch source {
+	case string(auth.SourceAuthFile):
+		dlg.Body = []string{"Saved by /login in " + authPath + "."}
+		dlg.Options = []ui.DialogOption{
+			{Label: "Replace the key", Value: keyReplace},
+			{Label: "Remove the saved key", Value: keyRemove},
+			{Label: "Cancel", Value: keyCancel},
+		}
+	case string(auth.SourceProviderSettings), string(auth.SourceAPIKeyHelper):
+		dlg.Body = []string{"It comes from your settings (" + source + "). A key saved here is used instead."}
+		dlg.Options = []ui.DialogOption{
+			{Label: "Save a different key here", Value: keyReplace},
+			{Label: "Cancel", Value: keyCancel},
+		}
+	default: // an environment variable
+		dlg.Body = []string{
+			"It comes from the " + source + " environment variable, which always wins over a key saved here.",
+			"To change it, edit or remove " + source + " where it is set (for example your shell profile), then restart gocode.",
+		}
+		dlg.Options = []ui.DialogOption{
+			{Label: "Save a key here anyway (used once " + source + " is unset)", Value: keyReplace},
+			{Label: "Cancel", Value: keyCancel},
+		}
+	}
+	return dlg
+}
+
+// manageExistingKey runs the existing-key dialog for prov and acts on it.
+func (d *interactiveDialogs) manageExistingKey(prov, source string) {
+	shown := d.authPath
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if rel, err := filepath.Rel(home, d.authPath); err == nil && !strings.HasPrefix(rel, "..") {
+			shown = filepath.Join("~", rel)
+		}
+	}
+	r, ok := d.openAndWait(context.Background(), existingKeyDialog(prov, source, shown))
+	if !ok || r.cancelled {
+		return
+	}
+	switch firstChosen(r.values) {
+	case keyReplace:
+		d.promptAndSaveKey(prov)
+	case keyRemove:
+		removed, err := auth.RemoveProviderKey(d.authPath, auth.Provider(prov))
+		switch {
+		case err != nil:
+			d.sendMsg(ui.AppendErrorMsg{Text: "Could not remove the key: " + err.Error()})
+		case !removed:
+			d.sendMsg(ui.AppendSystemMsg{Text: "No saved " + strings.ToUpper(prov) + " key to remove."})
+		default:
+			msg := "Removed the saved " + strings.ToUpper(prov) + " key."
+			d.idMu.Lock()
+			active := d.provider
+			d.idMu.Unlock()
+			if prov == active {
+				msg += " This session keeps using it until you restart gocode; run /login to add a new one."
+			}
+			d.sendBanner()
+			d.sendMsg(ui.AppendSystemMsg{Text: msg})
+		}
+	}
 }
 
 // promptAndSaveKey opens the masked key prompt for prov, saves the entered key to
@@ -530,6 +612,12 @@ func (d *interactiveDialogs) promptAndSaveKey(prov string) {
 	// no-key warning for the active provider clears.
 	d.sendBanner()
 	d.sendMsg(ui.AppendSystemMsg{Text: "Saved " + strings.ToUpper(prov) + " key"})
+	for _, v := range auth.ProviderEnvVars(auth.Provider(prov)) {
+		if strings.TrimSpace(d.env.Getenv(v)) != "" {
+			d.sendMsg(ui.AppendSystemMsg{Text: v + " is set in your environment and wins over the saved key when gocode starts; unset it to use the saved key."})
+			break
+		}
+	}
 	if needModel {
 		// There is no default model: with the key in, pick one now.
 		d.sendMsg(ui.AppendSystemMsg{Text: "Now pick a model."})
