@@ -19,6 +19,14 @@ it refuses to publish a version that has no section here.
   - Both say when a provider environment variable is set, since it wins over
     the saved key.
 
+### Changed
+
+- Subagents are told about the session scratchpad too, so their temporary
+  files go there instead of `/tmp`.
+- When the scratchpad cannot be used (for example its directory is a symlink
+  or belongs to another user), gocode now says so at startup instead of
+  silently running without one.
+
 ## [0.1.4] - 2026-11-02
 
 ### Added

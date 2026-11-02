@@ -8,6 +8,7 @@ import (
 	"github.com/umairge66/gocode/internal/pathguard"
 	"github.com/umairge66/gocode/internal/sandbox"
 	"github.com/umairge66/gocode/internal/sessionstore"
+	"github.com/umairge66/gocode/internal/subagent"
 )
 
 // scratchpadDisableEnv turns the session scratchpad off when truthy.
@@ -20,27 +21,34 @@ const scratchpadDisableEnv = "GOCODE_DISABLE_SCRATCHPAD"
 //
 // The temp root must be a private directory owned by this user (it lives
 // under the shared temp directory, where another user could have created the
-// name first); everything below it is created 0700. On any failure, or for
-// a diskless session, there is no scratchpad and "" is returned.
-func sessionScratchpad(getenv func(string) string, cwd, sessionID string, diskless bool) string {
+// name first); everything below it is created 0700. A diskless session, or
+// one with GOCODE_DISABLE_SCRATCHPAD set, has none ("" and a nil error); a
+// directory that cannot be used returns "" and the reason.
+func sessionScratchpad(getenv func(string) string, cwd, sessionID string, diskless bool) (string, error) {
 	if getenv == nil {
 		getenv = func(string) string { return "" }
 	}
 	if diskless || envutil.EnvTruthy(getenv(scratchpadDisableEnv)) || strings.TrimSpace(sessionID) == "" || cwd == "" {
-		return ""
+		return "", nil
 	}
 	if strings.ContainsAny(sessionID, `/\`) || sessionID == "." || sessionID == ".." {
-		return ""
+		return "", nil
 	}
 	root := sandbox.TempRoot(getenv)
 	if err := sandbox.EnsurePrivateDir(root); err != nil {
-		return ""
+		return "", err
 	}
 	dir := filepath.Join(root, sessionstore.EscapeCwd(cwd), sessionID, "scratchpad")
 	if err := sandbox.EnsurePrivateDir(dir); err != nil {
-		return ""
+		return "", err
 	}
-	return dir
+	return dir, nil
+}
+
+// scratchpadNotice is the one-line startup notice when the scratchpad
+// cannot be used.
+func scratchpadNotice(err error) string {
+	return "No scratchpad for this session: " + err.Error() + ". Temporary files outside the project will ask for permission."
 }
 
 // scratchpadPromptSection tells the model about the session scratchpad.
@@ -59,4 +67,19 @@ func withScratchpad(f *pathguard.SessionFiles, dir string) *pathguard.SessionFil
 		f.ScratchpadDir = dir
 	}
 	return f
+}
+
+// withScratchpadSection adds the scratchpad section to what memoryFor gives a
+// subagent's prompt, so subagents use the session scratchpad too.
+func withScratchpadSection(memoryFor func(subagent.AgentType) string, dir string) func(subagent.AgentType) string {
+	sec := scratchpadPromptSection(dir)
+	if sec == "" || memoryFor == nil {
+		return memoryFor
+	}
+	return func(a subagent.AgentType) string {
+		if m := memoryFor(a); m != "" {
+			return m + "\n\n" + sec
+		}
+		return sec
+	}
 }

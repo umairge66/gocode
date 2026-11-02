@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/umairge66/gocode/internal/subagent"
 )
 
 func TestSessionScratchpad(t *testing.T) {
@@ -15,9 +17,9 @@ func TestSessionScratchpad(t *testing.T) {
 	getenv := func(k string) string { return env[k] }
 	cwd := filepath.Join(tmp, "proj")
 
-	dir := sessionScratchpad(getenv, cwd, "sid-1", false)
-	if dir == "" {
-		t.Fatal("no scratchpad")
+	dir, err := sessionScratchpad(getenv, cwd, "sid-1", false)
+	if dir == "" || err != nil {
+		t.Fatalf("no scratchpad: %v", err)
 	}
 	if filepath.Base(dir) != "scratchpad" || filepath.Base(filepath.Dir(dir)) != "sid-1" {
 		t.Errorf("dir %q", dir)
@@ -30,26 +32,30 @@ func TestSessionScratchpad(t *testing.T) {
 		t.Errorf("mode %v, want 0700", fi.Mode().Perm())
 	}
 	// The same session gets the same directory back.
-	if again := sessionScratchpad(getenv, cwd, "sid-1", false); again != dir {
+	if again, _ := sessionScratchpad(getenv, cwd, "sid-1", false); again != dir {
 		t.Errorf("again %q, want %q", again, dir)
 	}
-	if other := sessionScratchpad(getenv, cwd, "sid-2", false); other == dir || other == "" {
+	if other, _ := sessionScratchpad(getenv, cwd, "sid-2", false); other == dir || other == "" {
 		t.Errorf("another session got %q", other)
 	}
 
-	for name, got := range map[string]string{
-		"diskless":   sessionScratchpad(getenv, cwd, "sid-3", true),
-		"no session": sessionScratchpad(getenv, cwd, "", false),
-		"bad id":     sessionScratchpad(getenv, cwd, "../x", false),
-		"no cwd":     sessionScratchpad(getenv, "", "sid-3", false),
+	// Turned off on purpose: no directory and no error (so no notice).
+	for name, c := range map[string]struct {
+		cwd, id  string
+		diskless bool
+	}{
+		"diskless":   {cwd, "sid-3", true},
+		"no session": {cwd, "", false},
+		"bad id":     {cwd, "../x", false},
+		"no cwd":     {"", "sid-3", false},
 	} {
-		if got != "" {
-			t.Errorf("%s: got %q", name, got)
+		if got, err := sessionScratchpad(getenv, c.cwd, c.id, c.diskless); got != "" || err != nil {
+			t.Errorf("%s: got %q, %v", name, got, err)
 		}
 	}
 	env[scratchpadDisableEnv] = "1"
-	if got := sessionScratchpad(getenv, cwd, "sid-4", false); got != "" {
-		t.Errorf("disabled: got %q", got)
+	if got, err := sessionScratchpad(getenv, cwd, "sid-4", false); got != "" || err != nil {
+		t.Errorf("disabled: got %q, %v", got, err)
 	}
 }
 
@@ -70,8 +76,12 @@ func TestSessionScratchpadRefusesForeignRoot(t *testing.T) {
 	if err := os.Symlink(elsewhere, root); err != nil {
 		t.Fatal(err)
 	}
-	if got := sessionScratchpad(getenv, "/proj", "sid", false); got != "" {
-		t.Errorf("used a symlinked root: %q", got)
+	got, err := sessionScratchpad(getenv, "/proj", "sid", false)
+	if got != "" || err == nil {
+		t.Fatalf("used a symlinked root: %q, %v", got, err)
+	}
+	if n := scratchpadNotice(err); !strings.Contains(n, "No scratchpad for this session") || !strings.Contains(n, "not a directory") {
+		t.Errorf("notice %q", n)
 	}
 }
 
@@ -84,5 +94,24 @@ func TestScratchpadPromptSection(t *testing.T) {
 		if !strings.Contains(s, want) {
 			t.Errorf("section lacks %q:\n%s", want, s)
 		}
+	}
+}
+
+func TestWithScratchpadSection(t *testing.T) {
+	mem := func(a subagent.AgentType) string {
+		if a.Name == "empty" {
+			return ""
+		}
+		return "# Memory"
+	}
+	f := withScratchpadSection(mem, "/tmp/pad")
+	if got := f(subagent.AgentType{Name: "x"}); !strings.HasPrefix(got, "# Memory\n\n# Scratchpad") || !strings.Contains(got, "`/tmp/pad`") {
+		t.Errorf("got %q", got)
+	}
+	if got := f(subagent.AgentType{Name: "empty"}); !strings.HasPrefix(got, "# Scratchpad") {
+		t.Errorf("empty memory: %q", got)
+	}
+	if got := withScratchpadSection(mem, "")(subagent.AgentType{Name: "x"}); got != "# Memory" {
+		t.Errorf("no scratchpad: %q", got)
 	}
 }

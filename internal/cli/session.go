@@ -346,7 +346,11 @@ func buildSession(ctx context.Context, env *Env, s *printSession, caller agent.M
 	if sessionID == "" {
 		sessionID = ids.RandomUUID()
 	}
-	r.scratchpad = sessionScratchpad(envGet(env), sctx.Cwd, sessionID, sctx.Diskless)
+	if dir, err := sessionScratchpad(envGet(env), sctx.Cwd, sessionID, sctx.Diskless); err != nil {
+		r.notices = append(r.notices, scratchpadNotice(err))
+	} else {
+		r.scratchpad = dir
+	}
 
 	// (1) Plugins, once.
 	pluginReg, enabled, noMCP := discoverPlugins(env, s, paths, ordered)
@@ -703,7 +707,7 @@ func (r *sessionRuntime) wireAgentTools(env *Env, s *printSession, caller agent.
 	// persistent memory section when its definition sets `memory`.
 	// subagent.AssembleSystemPrompt weaves it into the child prompt.
 	at.AgentMemoryEnabled = agentMemoryEnabled(env)
-	at.MemoryFor = subagentMemoryFor(env, paths, r.memory)
+	at.MemoryFor = withScratchpadSection(subagentMemoryFor(env, paths, r.memory), r.scratchpad)
 	at.NewDispatcher = func(allowed []string) agent.ToolDispatcher { return r.childDispatcher(at, 1, allowed) }
 	at.ToolSchemas = func(allowed []string) []agent.ToolSchema { return r.childDispatcher(at, 1, allowed).Schemas() }
 	// A forked skill's allowed-/disallowed-tools are layered on its subagent's

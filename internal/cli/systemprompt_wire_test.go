@@ -60,8 +60,8 @@ func TestBuildSession_SetsSystemPromptWithMemory(t *testing.T) {
 }
 
 // TestBuildSession_NoMemoryStillHasSystem: with no gocode.md, conv.System is
-// still the non-empty base prompt and MemoryFor yields nothing for a plain
-// agent (no empty memory section leaks into subagents).
+// still the non-empty base prompt and MemoryFor gives a plain agent only the
+// scratchpad section (no empty memory section leaks into subagents).
 func TestBuildSession_NoMemoryStillHasSystem(t *testing.T) {
 	env, _, _, _ := sessionEnv(t, "")
 	s := &printSession{Model: "parent-model", Provider: providerOpenRouter}
@@ -75,8 +75,12 @@ func TestBuildSession_NoMemoryStillHasSystem(t *testing.T) {
 		t.Error("memory header should be absent when no gocode.md exists")
 	}
 	if rt.agentTool != nil && rt.agentTool.MemoryFor != nil {
-		if got := rt.agentTool.MemoryFor(subagent.AgentType{Name: "general-purpose"}); got != "" {
-			t.Errorf("MemoryFor should be empty when there is no project memory, got %q", got)
+		got := rt.agentTool.MemoryFor(subagent.AgentType{Name: "general-purpose"})
+		if want := scratchpadPromptSection(rt.scratchpad); got != want {
+			t.Errorf("MemoryFor with no project memory = %q, want only the scratchpad section %q", got, want)
+		}
+		if rt.scratchpad == "" {
+			t.Error("the session has no scratchpad")
 		}
 	}
 }
