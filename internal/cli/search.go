@@ -5,8 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
-	"strings"
 
 	"github.com/umairge66/gocode/internal/fsfacade"
 	"github.com/umairge66/gocode/internal/settingsload"
@@ -28,24 +26,12 @@ import (
 //	  "includeHidden": bool      default true — search hidden files/dirs
 //	}
 //
-// Settings from earlier releases are still accepted: "useRipgrep": false is
-// read as "useUgrep": false when useUgrep is not set; "ripgrepPath" and
-// "preferSystemRipgrep" are ignored. Either way the session starts with a
-// one-line note naming the keys (legacySearchNote).
-//
 // With a usable ugrep, `grep` in the model's Bash commands (and in "!" shell
 // mode and command "!"-blocks) runs ugrep and the Grep tool is not offered;
 // see sessionUgrepShadow. Settings are read when the session starts; the
 // /search dialog applies engine changes to the running session's Grep and
 // Glob tools, while the Bash `grep` and the tool list follow from the next
 // session. Nothing here touches the network.
-
-// Search settings keys of earlier releases.
-const (
-	legacyUseRipgrep          = "useRipgrep"
-	legacyRipgrepPath         = "ripgrepPath"
-	legacyPreferSystemRipgrep = "preferSystemRipgrep"
-)
 
 // mergedEffectiveSettings merges the active settings sources (low→high
 // precedence, last wins). The "search" object is merged key by key so a
@@ -88,12 +74,6 @@ func searchSettingsFrom(settings map[string]any) filetools.SearchSettings {
 	s.RespectGitignore = optBool(settings, "respectGitignore")
 	if m, ok := settings["search"].(map[string]any); ok {
 		s.UseUgrep = optBool(m, "useUgrep")
-		if s.UseUgrep == nil {
-			// Turning the external engine off keeps its meaning.
-			if old := optBool(m, legacyUseRipgrep); old != nil && !*old {
-				s.UseUgrep = old
-			}
-		}
 		s.IncludeHidden = optBool(m, "includeHidden")
 		if p, ok := m["ugrepPath"].(string); ok {
 			s.UgrepPath = p
@@ -103,32 +83,6 @@ func searchSettingsFrom(settings map[string]any) filetools.SearchSettings {
 		}
 	}
 	return s
-}
-
-// legacySearchNote is the startup note for search settings of earlier
-// releases, or "" when none is set.
-func legacySearchNote(settings map[string]any) string {
-	m, ok := settings["search"].(map[string]any)
-	if !ok {
-		return ""
-	}
-	var keys []string
-	for _, k := range []string{legacyUseRipgrep, legacyRipgrepPath, legacyPreferSystemRipgrep} {
-		if _, set := m[k]; set {
-			keys = append(keys, "search."+k)
-		}
-	}
-	if len(keys) == 0 {
-		return ""
-	}
-	sort.Strings(keys)
-	note := "Search now runs on ugrep: " + strings.Join(keys, ", ") + " no longer apply"
-	if v, ok := m[legacyUseRipgrep].(bool); ok && !v {
-		if _, set := m["useUgrep"]; !set {
-			note += " (useRipgrep: false is read as search.useUgrep: false)"
-		}
-	}
-	return note + ". Use search.useUgrep, search.ugrepPath and search.preferSystemUgrep instead, or /search."
 }
 
 // newSessionSearchEngine builds the session's search engine from settings

@@ -32,6 +32,14 @@ it refuses to publish a version that has no section here.
   Listing a tree is about 3 to 4 times faster (88,000 files: about 0.85 s to
   0.2 s); results and their order are unchanged.
 
+### Removed
+
+- The old ripgrep search settings `search.useRipgrep`, `search.ripgrepPath`
+  and `search.preferSystemRipgrep`, which were only still accepted for
+  compatibility, are no longer read, and the settings check reports them as
+  unknown. Use `search.useUgrep`, `search.ugrepPath` and
+  `search.preferSystemUgrep`, or `/search`.
+
 ## [0.1.4] - 2026-11-02
 
 ### Added

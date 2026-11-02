@@ -507,9 +507,6 @@ func buildSession(ctx context.Context, env *Env, s *printSession, caller agent.M
 		toolrun.WithCompactTools(compactToolsEnabled(env)),
 	}, append(r.lsp.dispatcherOptions(), cfg.dispatcherOpts...)...)
 	r.notices = append(r.notices, addDirWarnings...)
-	if note := legacySearchNote(mergedEffectiveSettings(env)); note != "" {
-		r.notices = append(r.notices, note)
-	}
 	r.dispatcher = newSessionDispatcher(s.Mode, env, live, opts...)
 	r.wireChromeTabs(env, sessionID, cfg.interactive)
 	r.dispatcher.Hook = r.hooks.PreToolUseCall

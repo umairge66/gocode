@@ -501,9 +501,6 @@ func (c cmdInfo) doctorText() string {
 
 	search := searchEngineSummary(c.env)
 	fmt.Fprintf(&b, "  %s Search: %s (bundled: %s)\n", mark(true), search, bundledUgrepSummary())
-	if note := legacySearchNote(mergedEffectiveSettings(c.env)); note != "" {
-		fmt.Fprintf(&b, "    %s\n", note)
-	}
 
 	settings, userPath := c.effectiveSettings()
 	repo := settingString(settings, updater.RepoSettingsKey)

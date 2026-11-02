@@ -157,22 +157,6 @@ func TestDeepMergeTable(t *testing.T) {
 			want: map[string]any{"awsPairs": []any{map[string]any{"accessKeyIdVar": "Y"}}},
 		},
 		{
-			name:         "replaceOnlySpecialKeys key (ripgrep) under appendCustomizer (appendArrays=true) falls through to default union",
-			appendArrays: true,
-			dst:          map[string]any{"ripgrep": []any{"a", "b"}},
-			src:          map[string]any{"ripgrep": []any{"c"}},
-			// appendCustomizer: ripgrep not in alwaysSpecialKeys -> arrayUnionDefault union src+dst = ["c","a","b"]
-			want: map[string]any{"ripgrep": []any{"c", "a", "b"}},
-		},
-		{
-			name:         "replaceOnlySpecialKeys key (ripgrep) under replaceCustomizer takes special replace",
-			appendArrays: false,
-			dst:          map[string]any{"ripgrep": []any{"a", "b"}},
-			src:          map[string]any{"ripgrep": []any{"c"}},
-			// replaceCustomizer: ripgrep in replaceOnlySpecialKeys -> specialCombine replaces with src
-			want: map[string]any{"ripgrep": []any{"c"}},
-		},
-		{
 			name: "fallbackModel arrays replace (not unioned)",
 			dst:  map[string]any{"fallbackModel": []any{"old"}},
 			src:  map[string]any{"fallbackModel": []any{"new"}},

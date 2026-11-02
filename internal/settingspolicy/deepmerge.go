@@ -11,8 +11,8 @@ package settingspolicy
 //
 // The customizers decide, per key, whether the settings-specific combine
 // (specialCombine) applies or whether the default merge (arrayUnionDefault → baseDefault)
-// runs. Difference between the two: under appendCustomizer the replaceOnlySpecialKeys keys
-// ("awsPairs","ripgrep") are NOT given the specialCombine and instead fall through
+// runs. Difference between the two: under appendCustomizer the replaceOnlySpecialKeys key
+// ("awsPairs") is NOT given the specialCombine and instead falls through
 // to the default array-union in arrayUnionDefault.
 
 // alwaysSpecialKeys is the set of settings keys that always take the specialCombine
@@ -30,7 +30,6 @@ var alwaysSpecialKeys = []string{
 // default merge.
 var replaceOnlySpecialKeys = []string{
 	"awsPairs",
-	"ripgrep",
 }
 
 // awsCanonicalVars is the ordered list of canonical AWS credential env var

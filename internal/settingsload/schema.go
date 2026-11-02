@@ -308,16 +308,11 @@ func validateSettings(obj map[string]any) []string {
 var knownNestedKeys = map[string]map[string][]string{
 	// "search": search engine settings (internal/tools/filetools,
 	// internal/ugrep). The top-level "respectGitignore" also applies.
-	// useRipgrep, ripgrepPath and preferSystemRipgrep are earlier releases'
-	// keys: still accepted, and reported at startup (internal/cli/search.go).
 	"search": {
-		"useUgrep":            {"boolean"},
-		"ugrepPath":           {"string"},
-		"preferSystemUgrep":   {"boolean"},
-		"includeHidden":       {"boolean"},
-		"useRipgrep":          {"boolean"},
-		"ripgrepPath":         {"string"},
-		"preferSystemRipgrep": {"boolean"},
+		"useUgrep":          {"boolean"},
+		"ugrepPath":         {"string"},
+		"preferSystemUgrep": {"boolean"},
+		"includeHidden":     {"boolean"},
 	},
 	// "ui": the full-screen look (internal/ui): "style" is "modern" (the
 	// default), "cards" or "classic"; "icons" is "unicode", "nerd" or

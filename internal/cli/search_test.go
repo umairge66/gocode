@@ -32,9 +32,6 @@ func TestSearchSettingsFromSettingsFiles(t *testing.T) {
 	if got := searchEngineSummary(env); !strings.HasPrefix(got, "built-in") {
 		t.Errorf("useUgrep=false summary = %q", got)
 	}
-	if note := legacySearchNote(mergedEffectiveSettings(env)); note != "" {
-		t.Errorf("no legacy keys, but note %q", note)
-	}
 }
 
 func TestSearchSettingsDefaultsUnset(t *testing.T) {
@@ -45,45 +42,13 @@ func TestSearchSettingsDefaultsUnset(t *testing.T) {
 	}
 }
 
-// TestLegacySearchSettingsAccepted: settings files from earlier releases keep
-// working. useRipgrep: false still means "no external engine"; the other old
-// keys are ignored; a note names them.
-func TestLegacySearchSettingsAccepted(t *testing.T) {
+// TestRipgrepKeysNoLongerApply: the ripgrep keys of earlier builds do
+// nothing; useRipgrep: false does not turn ugrep off.
+func TestRipgrepKeysNoLongerApply(t *testing.T) {
 	env, home, _ := settingsTestEnv(t)
 	writeSettingsFile(t, userSettingsPath(home), `{"search": {"useRipgrep": false, "ripgrepPath": "/opt/rg", "preferSystemRipgrep": true}}`)
-	merged := mergedEffectiveSettings(env)
-	s := searchSettingsFrom(merged)
-	if s.UseUgrep == nil || *s.UseUgrep || s.UgrepPath != "" || s.PreferSystemUgrep {
-		t.Fatalf("legacy keys read as %+v", s)
-	}
-	note := legacySearchNote(merged)
-	for _, want := range []string{"search.useRipgrep", "search.ripgrepPath", "search.preferSystemRipgrep", "read as search.useUgrep: false", "search.useUgrep"} {
-		if !strings.Contains(note, want) {
-			t.Errorf("note %q lacks %q", note, want)
-		}
-	}
-	// The new key wins over the old one.
-	writeSettingsFile(t, userSettingsPath(home), `{"search": {"useRipgrep": false, "useUgrep": true}}`)
-	merged = mergedEffectiveSettings(env)
-	if s := searchSettingsFrom(merged); s.UseUgrep == nil || !*s.UseUgrep {
-		t.Fatalf("useUgrep must win: %+v", s)
-	}
-	if strings.Contains(legacySearchNote(merged), "read as") {
-		t.Fatal("no reinterpretation when useUgrep is set")
-	}
-	// useRipgrep: true changes nothing.
-	writeSettingsFile(t, userSettingsPath(home), `{"search": {"useRipgrep": true}}`)
-	if s := searchSettingsFrom(mergedEffectiveSettings(env)); s.UseUgrep != nil {
-		t.Fatalf("useRipgrep=true must leave the default: %+v", s)
-	}
-}
-
-// TestDoctorShowsLegacySearchNote: /doctor names old search keys.
-func TestDoctorShowsLegacySearchNote(t *testing.T) {
-	env, home, _ := settingsTestEnv(t)
-	writeSettingsFile(t, userSettingsPath(home), `{"search": {"ripgrepPath": "/opt/rg"}}`)
-	if out := (cmdInfo{env: env}).doctorText(); !strings.Contains(out, "search.ripgrepPath no longer apply") {
-		t.Fatalf("doctor output lacks the note:\n%s", out)
+	if s := searchSettingsFrom(mergedEffectiveSettings(env)); s.UseUgrep != nil || s.UgrepPath != "" || s.PreferSystemUgrep {
+		t.Fatalf("ripgrep keys read as %+v", s)
 	}
 }
 

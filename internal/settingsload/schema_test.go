@@ -164,10 +164,12 @@ func TestValidateSearchSettingsNoWarnings(t *testing.T) {
 	if len(r.Warnings) != 0 {
 		t.Fatalf("search settings must not warn, got %v", r.Warnings)
 	}
-	// Settings files of earlier releases still load without warnings.
+	// The ripgrep keys of earlier builds are unknown now, like any typo.
 	r = ParseContent("settings.json", `{"search": {"useRipgrep": false, "ripgrepPath": "/usr/bin/rg", "preferSystemRipgrep": true}}`)
-	if len(r.Warnings) != 0 {
-		t.Fatalf("earlier search keys must not warn, got %v", r.Warnings)
+	for _, k := range []string{"useRipgrep", "ripgrepPath", "preferSystemRipgrep"} {
+		if !hasWarningContaining(r.Warnings, "Unrecognized field: search."+k) {
+			t.Errorf("search.%s must warn as unknown, got %v", k, r.Warnings)
+		}
 	}
 	r = ParseContent("settings.json", `{"search": {"useUgrep": "yes"}}`)
 	if len(r.Warnings) != 1 {
@@ -176,11 +178,11 @@ func TestValidateSearchSettingsNoWarnings(t *testing.T) {
 }
 
 func TestValidateSearchSettingsNestedWarnings(t *testing.T) {
-	r := ParseContent("settings.json", `{"search": {"useRipgrep": "yes", "bogus": 1}}`)
+	r := ParseContent("settings.json", `{"search": {"includeHidden": "yes", "bogus": 1}}`)
 	if !hasWarningContaining(r.Warnings, "Unrecognized field: search.bogus") {
 		t.Errorf("expected nested unknown-key warning, got %v", r.Warnings)
 	}
-	if !hasWarningContaining(r.Warnings, "search.useRipgrep: Expected boolean, but received string") {
+	if !hasWarningContaining(r.Warnings, "search.includeHidden: Expected boolean, but received string") {
 		t.Errorf("expected nested type warning, got %v", r.Warnings)
 	}
 }
