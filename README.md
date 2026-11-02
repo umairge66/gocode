@@ -77,7 +77,9 @@ brew install umairge66/gocode/gocode
 irm https://raw.githubusercontent.com/umairge66/gocode/main/install.ps1 | iex
 ```
 
-The installer picks the build for your system, checks it against the release's `checksums.txt` and puts `gocode` in `~/.local/bin` (on Windows, `%LOCALAPPDATA%\Programs\gocode`, added to your PATH). Set `GOCODE_VERSION=0.1.1` for a specific release or `GOCODE_INSTALL_DIR` for another folder. After that, `gocode update` keeps it current; a Homebrew install updates with `brew upgrade gocode`.
+The installer picks the build for your system, checks it against the release's `checksums.txt` and puts `gocode` in `~/.local/bin` (on Windows, `%LOCALAPPDATA%\Programs\gocode`, added to your PATH). Set `GOCODE_VERSION` to a version number (such as `0.1.3`) for a specific release or `GOCODE_INSTALL_DIR` for another folder. After that, `gocode update` keeps it current; a Homebrew install updates with `brew upgrade gocode`.
+
+What changed in each release is in [CHANGELOG.md](CHANGELOG.md).
 
 **Or download the latest release** (these links always point at the newest version):
 

@@ -95,6 +95,15 @@ jobs:
       - name: Verify module checksums
         run: go mod verify
 
+      - name: Release notes
+        # Every released version keeps a CHANGELOG.md section the release
+        # build can read.
+        run: |
+          set -eu
+          for v in $(sed -n 's/^## \[\([0-9][^]]*\)\].*/\1/p' CHANGELOG.md); do
+            sh scripts/release-notes.sh "$v" > /dev/null
+          done
+
       - name: gofmt
         run: |
           unformatted=$(gofmt -l internal cmd extension)

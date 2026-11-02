@@ -8,19 +8,29 @@ uploaded anywhere except the repository's own GitHub Releases page.
 
 1. Make sure CI is green on the commit you want to release and that
    `THIRD_PARTY_NOTICES` is current (`python3 scripts/gen-notices.py`).
-2. Tag it with a semantic version and push the tag:
+2. Write the release notes in `CHANGELOG.md`: rename `## [Unreleased]` to
+   `## [1.2.3] - YYYY-MM-DD`, start a new empty `## [Unreleased]` above it,
+   and update the compare links at the bottom. Write for people who use
+   gocode: what they can now do, what behaves differently, what was fixed.
+   Check the result with `scripts/release-notes.sh 1.2.3`, and commit.
+   The release workflow refuses a tag whose version has no section, before
+   it builds anything.
+3. Tag that commit with a semantic version (signed) and push the tag:
 
    ```sh
-   git tag -a v1.2.3 -m "gocode 1.2.3"
+   git tag -s v1.2.3 -m "gocode 1.2.3"
    git push origin v1.2.3
    ```
 
    A suffix makes it a prerelease (`v1.3.0-rc.1`, `v1.3.0-beta.2`): the
    GitHub release is marked as a prerelease, and `gocode update` only offers
    it on the `latest` channel.
-3. Watch the **Release** workflow. When it finishes, the release exists with
-   generated notes (the changes since the previous tag) and every asset
+4. Watch the **Release** workflow. When it finishes, the release exists with
+   the `CHANGELOG.md` section as its notes, install and update instructions,
+   a link to the full list of changes since the previous tag, and every asset
    listed below.
+5. Update the Homebrew formula in `umairge66/homebrew-gocode` to the new
+   version and its checksums from `checksums.txt`.
 
 The tag name without the `v` becomes the version compiled into the binaries
 (`gocode --version` prints `1.2.3 (gocode)`) and is bound into the signature.

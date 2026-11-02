@@ -37,6 +37,13 @@ jobs:
       version: ${{ steps.v.outputs.version }}
       prerelease: ${{ steps.v.outputs.prerelease }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            CHANGELOG.md
+            scripts/release-notes.sh
+          sparse-checkout-cone-mode: false
       - id: v
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -61,6 +68,15 @@ jobs:
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "prerelease=$pre" >> "$GITHUB_OUTPUT"
           echo "Version $v (prerelease: $pre)"
+          # A release needs its CHANGELOG.md section; check it before the
+          # long build. A dry run only warns.
+          if ! sh scripts/release-notes.sh "$v" > /dev/null 2> notes.err; then
+            if [ "$EVENT_NAME" = push ]; then
+              echo "::error file=CHANGELOG.md::$(cat notes.err). Add the section, commit it, and tag that commit."
+              exit 1
+            fi
+            echo "::warning file=CHANGELOG.md::$(cat notes.err)"
+          fi
 
   build:
     name: build (${{ matrix.group }})
@@ -377,6 +393,14 @@ jobs:
           name: release-assets
           path: dist/assets
 
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            CHANGELOG.md
+            scripts/release-notes.sh
+          sparse-checkout-cone-mode: false
+
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -388,18 +412,33 @@ jobs:
           set -eu
           notes=$RUNNER_TEMP/notes.md
           title="gocode $VERSION"
+          raw="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/main"
+          {
+            sh scripts/release-notes.sh "$VERSION"
+            echo
+            echo "### Install or update"
+            echo
+            echo "- Already installed: \`gocode update\`"
+            echo "- macOS, Linux, BSD: \`curl -fsSL $raw/install.sh | sh\`"
+            echo "- Windows (PowerShell): \`irm $raw/install.ps1 | iex\`"
+            echo "- Homebrew: \`brew upgrade gocode\` (new install: \`brew install umairge66/gocode/gocode\`); the formula is updated shortly after each release"
+            echo "- Or download the archive for your platform below."
+            echo
+          } > "$notes"
           if [ "$SIGNED" = true ]; then
             {
               echo "Every asset is listed in \`checksums.txt\`, which is signed (\`checksums.txt.sig\`, minisign format). \`gocode update\` verifies both before installing."
               echo
-            } > "$notes"
+            } >> "$notes"
           else
             title="$title (unsigned)"
+            unsigned=$(cat "$notes")
             {
               echo "> [!WARNING]"
               echo "> This release is **not signed**: there is no \`checksums.txt.sig\`, so \`gocode update\` will refuse to install it."
               echo "> Download the archive for your platform by hand and check it against \`checksums.txt\`."
               echo
+              printf '%s\n' "$unsigned"
             } > "$notes"
           fi
           set -- --repo "$GITHUB_REPOSITORY" --verify-tag --title "$title" --notes-file "$notes" --generate-notes
