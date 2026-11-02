@@ -388,11 +388,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: release-assets
-          path: dist/assets
-
+      # The checkout comes first: it empties a workspace that is not yet a
+      # git checkout, which would delete the downloaded assets.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -400,6 +397,11 @@ jobs:
             CHANGELOG.md
             scripts/release-notes.sh
           sparse-checkout-cone-mode: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-assets
+          path: dist/assets
 
       - name: Create the release
         env:
