@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -545,13 +543,7 @@ func existingKeyDialog(prov, source, authPath string) *ui.Dialog {
 
 // manageExistingKey runs the existing-key dialog for prov and acts on it.
 func (d *interactiveDialogs) manageExistingKey(prov, source string) {
-	shown := d.authPath
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		if rel, err := filepath.Rel(home, d.authPath); err == nil && !strings.HasPrefix(rel, "..") {
-			shown = filepath.Join("~", rel)
-		}
-	}
-	r, ok := d.openAndWait(context.Background(), existingKeyDialog(prov, source, shown))
+	r, ok := d.openAndWait(context.Background(), existingKeyDialog(prov, source, displayHomePath(d.env, d.authPath)))
 	if !ok || r.cancelled {
 		return
 	}

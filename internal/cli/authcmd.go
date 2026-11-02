@@ -9,11 +9,17 @@ import (
 )
 
 // This file implements the `gocode auth` subcommand. Model access is via
-// provider API keys only (internal/auth), so `auth` has a single verb,
-// `status`, which reports — per provider — whether a key was found and its
-// source (the env var name, "settings" or "apiKeyHelper"). The key itself is
-// NEVER printed. There is no login/logout/setup-token: there is no gocode
-// account or OAuth.
+// provider API keys only (internal/auth):
+//
+//   - `status` reports, per provider, whether a key was found and its source
+//     (the env var name, "auth.json", "settings" or "apiKeyHelper");
+//   - `login [provider]` saves a provider key to auth.json, like /login;
+//   - `logout [provider]` removes a saved key from auth.json.
+//
+// A key is never printed and never taken from the command line (arguments
+// end up in shell history and process listings): login reads it from a
+// hidden prompt, or from stdin when stdin is not a terminal. There is no
+// gocode account or OAuth.
 
 // newKeyResolver builds the provider-key resolver shared by the print path,
 // the interactive path, the welcome banner and `auth status`, so all agree on
@@ -46,7 +52,7 @@ func authFilePath(env *Env) string {
 // runAuth dispatches `gocode auth [status]`. A bare `auth` behaves like
 // `auth status`; any other verb is rejected.
 func runAuth(env *Env, d *DispatchDefaults, rest []string) int {
-	verb := ""
+	var args []string
 	seenAuth := false
 	for _, x := range rest {
 		if strings.HasPrefix(x, "-") {
@@ -56,14 +62,21 @@ func runAuth(env *Env, d *DispatchDefaults, rest []string) int {
 			seenAuth = x == "auth"
 			continue
 		}
-		verb = x
-		break
+		args = append(args, x)
+	}
+	verb := ""
+	if len(args) > 0 {
+		verb, args = args[0], args[1:]
 	}
 	switch verb {
 	case "", "status":
 		return runAuthStatus(env, d)
+	case "login":
+		return runAuthLogin(env, d, args)
+	case "logout":
+		return runAuthLogout(env, d, args)
 	default:
-		fmt.Fprintf(env.Stderr, "gocode auth: unknown command %q. Available: status.\n", verb)
+		fmt.Fprintf(env.Stderr, "gocode auth: unknown command %q. Available: status, login, logout.\n", verb)
 		fmt.Fprintln(env.Stderr, "Model access uses provider API keys: set "+providerKeyVarsSummary()+", or an \"apiKeys\" map in settings.")
 		return 1
 	}

@@ -238,7 +238,7 @@ Headless runs (`-p`) print text, a JSON result or a JSON event stream, and save 
 | **Fast inference** | Groq, Cerebras, Avian, Synthetic, io.net |
 | **Cloud** | AWS Bedrock, Google Vertex AI, Azure OpenAI |
 
-Run `gocode auth status` to see which keys gocode found and the variable each provider reads (e.g. `ANTHROPIC_API_KEY`, `XAI_API_KEY`, `GROQ_API_KEY`). Switch provider with `/provider` and model with `/model`.
+Run `gocode auth status` to see which keys gocode found and the variable each provider reads (e.g. `ANTHROPIC_API_KEY`, `XAI_API_KEY`, `GROQ_API_KEY`). To save a key outside a session, run `gocode auth login [provider]`: it asks for the key with hidden input, or reads it from stdin (`pass show openrouter | gocode auth login openrouter`). `gocode auth logout [provider]` removes a saved key. Switch provider with `/provider` and model with `/model`.
 
 ## Commands
 

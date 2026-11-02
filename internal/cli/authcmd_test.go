@@ -49,9 +49,10 @@ func TestAuthStatus_BareAuthAndNoKey(t *testing.T) {
 	}
 }
 
-// TestAuth_OAuthVerbsRemoved asserts the gocode OAuth verbs are gone.
+// TestAuth_OAuthVerbsRemoved asserts the account-token verb is gone (login
+// and logout manage provider keys; see authlogin_test.go).
 func TestAuth_OAuthVerbsRemoved(t *testing.T) {
-	for _, verb := range []string{"login", "logout", "setup-token"} {
+	for _, verb := range []string{"setup-token", "token"} {
 		env := providerTestEnv(t, nil, "")
 		var out, errb strings.Builder
 		env.Stdout, env.Stderr = &out, &errb

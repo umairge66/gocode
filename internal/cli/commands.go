@@ -71,9 +71,11 @@ var RootProgram = Command{
 	Subcommands: []Command{
 		{
 			Name:        "auth",
-			Description: "Show provider API-key status",
+			Description: "Manage provider API keys",
 			Subcommands: []Command{
 				{Name: "status", Description: "Show which provider API keys were found and where"},
+				{Name: "login", Description: "Save a provider API key (read from a hidden prompt, or from stdin when piped)"},
+				{Name: "logout", Description: "Remove a provider API key saved by login or /login"},
 			},
 		},
 		{

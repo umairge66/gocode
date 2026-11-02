@@ -6,6 +6,19 @@ it refuses to publish a version that has no section here.
 
 ## [Unreleased]
 
+### Added
+
+- **`gocode auth login [provider]` and `gocode auth logout [provider]`.**
+  Save or remove a provider API key without starting a session, for
+  example on a new machine or in a setup script. Without a provider name
+  they use the active provider.
+  - `login` asks for the key with hidden input, or reads it from stdin when
+    piped (`pass show openrouter | gocode auth login openrouter`). The key is
+    never taken as a command-line argument, where it would end up in your
+    shell history.
+  - Both say when a provider environment variable is set, since it wins over
+    the saved key.
+
 ## [0.1.4] - 2026-11-02
 
 ### Added
