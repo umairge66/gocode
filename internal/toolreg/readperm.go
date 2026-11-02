@@ -32,6 +32,10 @@ func (d *Decider) readToolDecision(call Call, mode Mode, rules RuleSet, sp *spel
 	if d.Files != nil && d.Files.IsPlanFile(call.Path) {
 		return Decision{Behavior: BehaviorAllow, ReasonType: ReasonOther, Reason: pathguard.MsgPlanFileReadable}, true
 	}
+	// So is the session scratchpad.
+	if d.Files != nil && d.Files.IsScratchpad(call.Path) {
+		return Decision{Behavior: BehaviorAllow, ReasonType: ReasonOther, Reason: pathguard.MsgScratchpadReadable}, true
+	}
 	edit := Call{Tool: protocol.ToolEdit, Rule: string(protocol.ToolEdit), Path: call.Path, Op: pathguard.OpWrite, PathCanonical: call.PathCanonical}
 	if r := d.matchRule(rules, edit, &spellingCache{}, RuleAllow); r != nil {
 		return Decision{Behavior: BehaviorAllow, ReasonType: ReasonRule, Reason: string(call.Tool) + " is allowed by an Edit allow rule (edit implies read).", Rule: r}, true

@@ -148,6 +148,9 @@ type sessionRuntime struct {
 	// "" when none was found. It is appended to conv.System and handed to the
 	// subagent MemoryFor seam so subagents carry the same project memory.
 	projectMemory string
+	// scratchpad is the session's private temp directory ("" when none;
+	// scratchpad.go).
+	scratchpad string
 	// memory is the session's loaded memory (gocode.md block, managed-only
 	// block, nested-memory tracker).
 	memory sessionMemory
@@ -343,6 +346,7 @@ func buildSession(ctx context.Context, env *Env, s *printSession, caller agent.M
 	if sessionID == "" {
 		sessionID = ids.RandomUUID()
 	}
+	r.scratchpad = sessionScratchpad(envGet(env), sctx.Cwd, sessionID, sctx.Diskless)
 
 	// (1) Plugins, once.
 	pluginReg, enabled, noMCP := discoverPlugins(env, s, paths, ordered)
@@ -485,7 +489,8 @@ func buildSession(ctx context.Context, env *Env, s *printSession, caller agent.M
 		toolrun.WithSandbox(r.sandbox),
 		// --add-dir: additional working directories for the permission
 		// checks (the sandbox got them as writable roots above).
-		toolrun.WithSessionFiles(newSessionFileChecks(env, addDirs...)),
+		// The scratchpad takes writes without a prompt.
+		toolrun.WithSessionFiles(withScratchpad(newSessionFileChecks(env, addDirs...), r.scratchpad)),
 		// Oversized tool results are saved here and previewed inline.
 		toolrun.WithToolResultsDir(toolResultsDir(env, paths, sessionID)),
 		// Tools this session cannot use are not offered (sessiontools.go).
@@ -582,6 +587,9 @@ func buildSession(ctx context.Context, env *Env, s *printSession, caller agent.M
 	// The sandbox guidance (sent while the Bash tool is offered), when Bash
 	// commands run sandboxed.
 	if sec := r.sandbox.PromptSection(cfg.interactive); sec != "" {
+		baseSystem += "\n\n" + sec
+	}
+	if sec := scratchpadPromptSection(r.scratchpad); sec != "" {
 		baseSystem += "\n\n" + sec
 	}
 	conv.System = baseSystem

@@ -339,6 +339,7 @@ const (
 	MsgAdoptJSONDenied       = "adopt.json is the bg-fork handoff carrier and is managed by the harness; it cannot be written directly"
 	MsgPlanFileAllowed       = "Plan files for current session are allowed for writing"
 	MsgPlanFileReadable      = "Plan files for current session are allowed for reading"
+	MsgScratchpadReadable    = "Scratchpad files for current session are allowed for reading"
 	MsgWorkflowScriptAllowed = "Workflow script files for current session are allowed for writing"
 	MsgScratchpadAllowed     = "Scratchpad files for current session are allowed for writing"
 	MsgJobTmpAllowed         = "Job tmp/ subtree for current bg session is allowed for writing"
@@ -656,6 +657,26 @@ func (s *SessionFiles) isWorkflowScript(h string) bool {
 		d += sep
 	}
 	return strings.HasPrefix(h, d) && strings.HasSuffix(h, ".js")
+}
+
+// IsScratchpad reports whether path (absolute, or relative to the launch
+// directory) lies in the session scratchpad, which the session may always
+// read. Every spelling must: a link inside the scratchpad that leads out of
+// it does not count.
+func (s *SessionFiles) IsScratchpad(path string) bool {
+	if s == nil || path == "" || s.ScratchpadDir == "" {
+		return false
+	}
+	sp := s.spellingsOf(s.resolve(path))
+	if len(sp) == 0 {
+		return false
+	}
+	for _, h := range sp {
+		if !s.isScratchpad(s.resolve(h)) {
+			return false
+		}
+	}
+	return true
 }
 
 // isScratchpad reports the scratchpad dir itself or beneath it, case-folded,

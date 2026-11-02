@@ -163,7 +163,8 @@ func sessionEnv(t *testing.T, settings string) (*Env, *strings.Builder, *strings
 		}
 	}
 	var out, errb strings.Builder
-	vars := map[string]string{"GOCODE_CONFIG_DIR": cfgDir}
+	// The session scratchpad goes under a test temp dir, not the real one.
+	vars := map[string]string{"GOCODE_CONFIG_DIR": cfgDir, "GOCODE_CODE_TMPDIR": t.TempDir()}
 	env := &Env{
 		Getenv: func(k string) string { return vars[k] },
 		Setenv: func(string, string) {},
