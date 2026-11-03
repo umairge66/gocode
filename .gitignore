@@ -8,3 +8,5 @@ __pycache__/
 *.pyc
 # Generated from personal usage data.
 /ONBOARDING.md
+# Claude Code local state (agent worktrees, settings).
+.claude/
