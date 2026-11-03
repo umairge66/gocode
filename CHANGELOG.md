@@ -51,6 +51,11 @@ it refuses to publish a version that has no section here.
   destructive or read-only.
 - A `Skill(name)` deny rule also refuses the skill when you type `/name`.
 - `/memory` lists only the memory files of the selected setting sources.
+- **Less memory for large MCP results and long sessions.** A 50 MB MCP result
+  peaks at about 410 MB instead of 595 MB. Resuming an 85 MB transcript takes
+  317 MB and 2 s instead of 448 MB and 5 s, and `gocode sessions list` uses a
+  third less. MCP server stderr keeps the last 1 MiB instead of the first
+  64 MiB.
 - Session cost now includes subagents, compaction and side queries, and is
   restored on resume.
 - Large MCP output is saved to a file in full instead of being cut at about
@@ -68,6 +73,13 @@ it refuses to publish a version that has no section here.
   `/hooks` editor writes them, were ignored.
 - `--setting-sources` was accepted but ignored; it now selects which
   settings, memory files, skills, agents and commands load.
+- An MCP response over 64 MiB closed the server's connection for the rest
+  of the session. The call now gets an error saying the output was too
+  large, and the server keeps working.
+- A transcript line over 16 MiB silently dropped every later line when the
+  session was resumed.
+- With background connect, calling a tool of an MCP server that was still
+  connecting failed as an unknown tool; it now waits for the server.
 
 ## [0.1.5] - 2026-11-03
 
