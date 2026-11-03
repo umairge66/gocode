@@ -191,6 +191,8 @@ func (s *Session) runTurn(ctx context.Context, input []agent.ContentBlock) (Repo
 		// chatty model kept the task running (and listed as running) long
 		// after its work was delivered.
 		Done: func() bool { return hc.delivered },
+		// A host may follow the agent's messages (stream-json output).
+		OnMessage: func(ev agent.MessageEvent) { reg.observeMessage(turnCtx, taskID, ev) },
 	}
 
 	// The turn scope carries the subagent's own model caller to the tools it

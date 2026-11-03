@@ -42,9 +42,13 @@ Every record is one line of JSON with a `type`; every record except
 | `{"type":"system","subtype":"task_notification","task_id":"…","status":"completed"\|"failed"\|"stopped","output_file":"…","summary":"…"}` | That task ended. |
 | `{"type":"result","subtype":"success"\|"error_max_turns"\|"error_during_execution"\|"error_max_structured_output_retries",…}` | The end of each turn: `result` (or `errors`), `is_error`, `num_turns`, `duration_ms`, `usage`, `modelUsage`, `total_cost_usd`, `permission_denials`, `stop_reason`. |
 
-Subagents' own messages are not forwarded: their work shows as the Agent tool
-call and its result, plus the task events. `parent_tool_use_id` is therefore
-always null.
+A subagent's own messages (its `assistant` records and the `user` records of
+its tool results) are forwarded too, as they happen, with
+`parent_tool_use_id` set to the id of the Agent tool call that spawned it (a
+nested subagent's records name the nested Agent call). A subagent resumed by
+a SendMessage keeps the id of its original Agent call. The session's own
+records carry `parent_tool_use_id: null`. The subagent's prompt itself is
+not repeated as a record; it is the Agent call's input.
 
 ### Partial messages
 

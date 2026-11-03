@@ -502,3 +502,49 @@ func TestPartialStreamerBlocks(t *testing.T) {
 		t.Fatalf("events:\n%s\nwant:\n%s", strings.Join(got, " "), strings.Join(want, " "))
 	}
 }
+
+// A subagent's messages are forwarded with parent_tool_use_id set to the
+// Agent tool call that spawned it; the session's own stay null.
+func TestStreamSubagentMessagesCarryParentToolUseID(t *testing.T) {
+	p := newFakeProvider(t,
+		fakeTurn{toolName: "Agent", toolArgs: `{"description":"look","prompt":"say hi","subagent_type":"general-purpose"}`, in: 1, out: 1},
+		fakeTurn{toolName: "SubagentHandback", toolArgs: `{"message":"hi"}`, in: 1, out: 1},
+		fakeTurn{text: "done", in: 1, out: 1},
+	)
+	f := headlessFixture(t, p)
+	code, out, errOut := f.run(t, "-p", "delegate", "--output-format", "stream-json", "--verbose")
+	if code != 0 {
+		t.Fatalf("exit %d err %q", code, errOut)
+	}
+	var agentCall string
+	var childAssistant, childUser, mainAssistant int
+	for _, m := range decodeLines(t, out) {
+		if m["type"] != "assistant" && m["type"] != "user" {
+			continue
+		}
+		parent, _ := m["parent_tool_use_id"].(string)
+		if m["type"] == "assistant" && parent == "" {
+			mainAssistant++
+			for _, b := range m["message"].(map[string]any)["content"].([]any) {
+				if blk := b.(map[string]any); blk["type"] == "tool_use" && blk["name"] == "Agent" {
+					agentCall = blk["id"].(string)
+				}
+			}
+			continue
+		}
+		if parent == "" {
+			continue
+		}
+		if parent != agentCall {
+			t.Fatalf("parent_tool_use_id = %q, want the Agent call %q", parent, agentCall)
+		}
+		if m["type"] == "assistant" {
+			childAssistant++
+		} else {
+			childUser++
+		}
+	}
+	if agentCall == "" || childAssistant != 1 || childUser != 1 || mainAssistant != 2 {
+		t.Fatalf("agent call %q, child assistant %d user %d, main assistant %d:\n%s", agentCall, childAssistant, childUser, mainAssistant, out)
+	}
+}

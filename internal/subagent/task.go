@@ -223,6 +223,8 @@ type TaskRegistry struct {
 	// statusSubs receive every status change (OnStatusChange).
 	statusSubs map[int]func(t *Task)
 	nextSub    int
+	// onMessage observes the subagents' loop messages (OnMessage).
+	onMessage MessageObserver
 	// budget is the session-wide WebSearch budget, created lazily.
 	budget *WebSearchBudget
 	// refillWebSearchByDefault is the refillWebSearchBudgetByDefault setting.

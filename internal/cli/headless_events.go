@@ -9,11 +9,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/umairge66/gocode/internal/agent"
 	"github.com/umairge66/gocode/internal/bgtask"
 	"github.com/umairge66/gocode/internal/compaction"
 	"github.com/umairge66/gocode/internal/headless"
 	"github.com/umairge66/gocode/internal/provider"
 	"github.com/umairge66/gocode/internal/subagent"
+	"github.com/umairge66/gocode/internal/toolrun"
 )
 
 // errInterrupted is the error of a turn an interrupt control request ended.
@@ -84,6 +86,39 @@ func (h *headlessRun) wireEvents() {
 				h.emit(headless.NewTaskNotification(h.rt.currentSessionID(), t.ID, agentTaskStatus(t.Status), "", agentTaskSummary(t)))
 			}
 		})
+		h.rt.tasks.OnMessage(h.subagentMessage(&mu))
+	}
+}
+
+// subagentMessage is the observer that forwards a subagent's messages as
+// assistant / user records whose parent_tool_use_id is the Agent tool call
+// that spawned it. The call is the one on the context of the agent's first
+// turn; a later turn (a SendMessage resuming it) keeps that id.
+func (h *headlessRun) subagentMessage(mu *sync.Mutex) subagent.MessageObserver {
+	parents := map[string]string{}
+	return func(ctx context.Context, taskID string, ev agent.MessageEvent) {
+		mu.Lock()
+		parent, ok := parents[taskID]
+		if !ok {
+			parent = toolrun.ToolUseIDFrom(ctx)
+			parents[taskID] = parent
+		}
+		mu.Unlock()
+		if parent == "" {
+			return
+		}
+		switch ev.Message.Role {
+		case agent.RoleAssistant:
+			rec := headless.NewAssistantMessage(h.rt.currentSessionID(), h.modelName(), "", ev.Message, ev.StopReason, ev.Usage)
+			rec.ParentToolUseID = &parent
+			h.emit(rec)
+		case agent.RoleUser:
+			if headless.HasToolResult(ev.Message) {
+				rec := headless.NewUserMessage(h.rt.currentSessionID(), ev.Message)
+				rec.ParentToolUseID = &parent
+				h.emit(rec)
+			}
+		}
 	}
 }
 
