@@ -763,6 +763,7 @@ func (r *sessionRuntime) wireAgentTools(env *Env, s *printSession, caller agent.
 	// SubagentStart hooks run last, for a spawn no check refused.
 	if r.hooks != nil {
 		at.SpawnHooks = append(at.SpawnHooks, subagentStartHook(r.hooks))
+		at.StopHook = subagentStopHook(r.hooks)
 	}
 	wts := agenttool.NewGitWorktrees()
 	wts.Cwd = func() string { return paths.cwd }

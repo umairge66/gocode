@@ -33,9 +33,9 @@
 //   - The match query is tool_name for PreToolUse / PostToolUse /
 //     PostToolUseFailure / PermissionDenied, trigger for PreCompact, source
 //     for SessionStart, reason for SessionEnd, agent_type for SubagentStart
-//     and notification_type for Notification ("permission_prompt",
-//     "idle_prompt"); UserPromptSubmit / Stop / SubagentStop have no match
-//     query, so every group runs regardless of its matcher.
+//     and SubagentStop, and notification_type for Notification
+//     ("permission_prompt", "idle_prompt"); UserPromptSubmit / Stop have no
+//     match query, so every group runs regardless of its matcher.
 //   - A hook that gives no answer (timed out, could not start, was killed;
 //     an http request that could not be sent) blocks a PreToolUse,
 //     UserPromptSubmit or PreCompact action under its onFailure "block" (the

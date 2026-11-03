@@ -142,17 +142,21 @@ type StopInput struct {
 	// blocked the previous attempt to stop.
 	StopHookActive       bool
 	LastAssistantMessage string
-	// Subagent selects SubagentStop with AgentID / AgentType.
-	Subagent  bool
-	AgentID   string
-	AgentType string
+	// Subagent selects SubagentStop with AgentID / AgentType and, when the
+	// subagent has one, AgentTranscriptPath.
+	Subagent            bool
+	AgentID             string
+	AgentType           string
+	AgentTranscriptPath string
 }
 
 // Stop runs the Stop (or SubagentStop) hooks. When the result is Blocked the
 // turn must continue with Reason fed to the model, and the next Stop call
-// must set StopHookActive. The host counts consecutive blocks and, past the
-// block cap (default 8), overrides the block: the returned result then has
-// Behavior none and a SystemMessage explaining the override.
+// must set StopHookActive. The host counts consecutive blocks — per agent, so
+// concurrent subagents and the main agent do not reset each other's count —
+// and, past the block cap (default 8), overrides the block: the returned
+// result then has Behavior none and a SystemMessage explaining the override.
+// SubagentStop hooks match on agent_type, like SubagentStart's.
 func (h *Host) Stop(ctx context.Context, in StopInput) *Result {
 	ev := hooks.EventStop
 	if in.Subagent {
@@ -160,20 +164,28 @@ func (h *Host) Stop(ctx context.Context, in StopInput) *Result {
 	}
 	active := in.StopHookActive
 	p := hooks.Payload{HookEventName: ev, StopHookActive: &active, LastAssistantMessage: in.LastAssistantMessage}
+	var r *Result
+	key := ""
 	if in.Subagent {
-		p.AgentID, p.AgentType = in.AgentID, in.AgentType
+		p.AgentID, p.AgentType, p.AgentTranscriptPath = in.AgentID, in.AgentType, in.AgentTranscriptPath
+		key = "agent:" + in.AgentID
+		r = h.Run(ctx, p, in.AgentType, true)
+	} else {
+		r = h.Run(ctx, p, "", false)
 	}
-	r := h.Run(ctx, p, "", false)
 
 	h.stopMu.Lock()
 	defer h.stopMu.Unlock()
 	if !r.Blocked() || !r.Continue {
-		h.stopBlocks = 0
+		delete(h.stopBlocks, key)
 		return r
 	}
-	h.stopBlocks++
-	if h.stopBlockCap > 0 && h.stopBlocks > h.stopBlockCap {
-		h.stopBlocks = 0
+	if h.stopBlocks == nil {
+		h.stopBlocks = map[string]int{}
+	}
+	h.stopBlocks[key]++
+	if h.stopBlockCap > 0 && h.stopBlocks[key] > h.stopBlockCap {
+		delete(h.stopBlocks, key)
 		r.Behavior = hooks.BehaviorNone
 		msg := "A hook blocked the turn from ending too many consecutive times — overriding and ending turn. " +
 			"For Stop/SubagentStop hooks, check stop_hook_active in the input and return success while it's true."

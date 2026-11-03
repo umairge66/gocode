@@ -111,13 +111,35 @@ func TestSpawnRespectsBudget(t *testing.T) {
 		}
 		return nil
 	}
-	m := &countingModel{inner: &scriptedModel{responses: []agent.ModelResponse{handbackResp("t1", "r")}}, calls: &calls}
+	read := agent.ModelResponse{Message: agent.AssistantMessage(agent.ToolUseBlock("t0", "Read", []byte(`{}`))), StopReason: agent.StopToolUse}
+	m := &countingModel{inner: &scriptedModel{responses: []agent.ModelResponse{read, handbackResp("t1", "r")}}, calls: &calls}
 	_, task, err = sp.Spawn(context.Background(), SpawnRequest{SubagentType: "general-purpose", Prompt: "p"}, m, nopDispatcher{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if calls != 1 || task.Status == StatusCompleted {
 		t.Errorf("child calls = %d, status = %s; want one call and a stopped run", calls, task.Status)
+	}
+
+	// The response that crosses the cap is the hand-back: it still runs, so
+	// the report is delivered and the agent completes.
+	calls = 0
+	stopChecks := 0
+	sp.StopHook = func(context.Context, StopHookInput) StopHookDecision {
+		stopChecks++
+		return StopHookDecision{Block: true}
+	}
+	m = &countingModel{inner: &scriptedModel{responses: []agent.ModelResponse{handbackResp("t1", "the report")}}, calls: &calls}
+	report, task, err := sp.Spawn(context.Background(), SpawnRequest{SubagentType: "general-purpose", Prompt: "p"}, m, nopDispatcher{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || task.Status != StatusCompleted || !report.Delivered || report.Text != "the report" {
+		t.Errorf("child calls = %d, status = %s, report = %+v; want the hand-back delivered", calls, task.Status, report)
+	}
+	// Past the cap a blocking stop hook cannot start another request.
+	if stopChecks != 1 {
+		t.Errorf("stop hook ran %d times, want once", stopChecks)
 	}
 }
 

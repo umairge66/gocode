@@ -24,8 +24,8 @@ type hookEventInfo struct {
 	summary string
 }
 
-// hookViewEvents are the events gocode runs hooks for, in lifecycle order,
-// followed by the modelled events it does not fire (marked as such).
+// hookViewEvents are the events gocode runs hooks for, in lifecycle order.
+// Other configured events follow them in the view, marked as not fired.
 var hookViewEvents = []hookEventInfo{
 	{hooks.EventPreToolUse, "Before tool execution"},
 	{hooks.EventPermissionDenied, "When a tool call is denied permission"},
@@ -36,9 +36,9 @@ var hookViewEvents = []hookEventInfo{
 	{hooks.EventSessionStart, "When a new session is started"},
 	{hooks.EventStop, "Right before gocode concludes its response"},
 	{hooks.EventSubagentStart, "When a subagent (Agent tool call) is started"},
+	{hooks.EventSubagentStop, "Right before a subagent (Agent tool call) concludes its response"},
 	{hooks.EventPreCompact, "Before conversation compaction"},
 	{hooks.EventSessionEnd, "When a session is ending"},
-	{hooks.EventSubagentStop, unfiredEventSummary},
 }
 
 // unfiredEventSummary describes an event gocode does not fire.

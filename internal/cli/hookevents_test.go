@@ -14,6 +14,7 @@ import (
 	"github.com/umairge66/gocode/internal/hooks"
 	"github.com/umairge66/gocode/internal/protocol"
 	"github.com/umairge66/gocode/internal/settingspolicy"
+	"github.com/umairge66/gocode/internal/subagent"
 	"github.com/umairge66/gocode/internal/toolreg"
 	"github.com/umairge66/gocode/internal/toolrun"
 )
@@ -153,5 +154,37 @@ func TestEditHookWarnsForUnfiredEvent(t *testing.T) {
 	code, out, _ = editHook(t, f, `{"op":"add","source":"userSettings","event":"PostToolUseFailure","hook":{"type":"command","command":"echo hi"}}`)
 	if code != 0 || strings.TrimSpace(out) != `{"ok":true}` {
 		t.Fatalf("fired event: exit %d out %q", code, out)
+	}
+}
+
+// The SubagentStop hooks run when a subagent finishes: a block keeps it
+// going with the hook's reason; continue:false lets it end.
+func TestSubagentStopHookDecision(t *testing.T) {
+	var got []hooks.Payload
+	decide := hooks.Decision{Behavior: hooks.BehaviorDeny, Continue: true, Reason: "not done"}
+	h := hookhost.New(hookhost.Options{
+		Settings: []hookhost.SettingsLayer{{Source: settingspolicy.SourceProject, Settings: map[string]any{"hooks": map[string]any{
+			"SubagentStop": []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": "stop.sh"}}}},
+		}}}},
+		Runner: hookhost.CommandRunnerFunc(func(_ context.Context, req hookhost.RunRequest) (hooks.Decision, hooks.RunResult, error) {
+			got = append(got, req.Payload)
+			return decide, hooks.RunResult{}, nil
+		}),
+	})
+	hook := subagentStopHook(h)
+	d := hook(context.Background(), subagent.StopHookInput{AgentID: "a1", AgentType: "Explore", LastMessage: "report"})
+	if !d.Block || d.Reason != "not done" {
+		t.Fatalf("decision = %+v", d)
+	}
+	if len(got) != 1 || got[0].HookEventName != hooks.EventSubagentStop || got[0].AgentID != "a1" || got[0].AgentType != "Explore" || got[0].LastAssistantMessage != "report" {
+		t.Fatalf("payloads = %+v", got)
+	}
+	decide.Continue = false
+	if d := hook(context.Background(), subagent.StopHookInput{AgentID: "a1", StopHookActive: true}); d.Block {
+		t.Fatalf("continue:false kept the subagent going: %+v", d)
+	}
+	// /hooks describes it, and the hook editor takes it without a warning.
+	if hookEventSummary(hooks.EventSubagentStop) == unfiredEventSummary || hookEventWarning("SubagentStop") != "" {
+		t.Fatal("SubagentStop is still marked as not fired")
 	}
 }

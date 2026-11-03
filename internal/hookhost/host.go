@@ -237,8 +237,10 @@ type Host struct {
 	onceMu  sync.Mutex
 	onceRan map[string]bool
 
-	stopMu     sync.Mutex
-	stopBlocks int
+	stopMu sync.Mutex
+	// stopBlocks counts consecutive Stop / SubagentStop blocks per agent
+	// ("" for the main agent, "agent:<id>" for a subagent).
+	stopBlocks map[string]int
 
 	async sync.WaitGroup
 }

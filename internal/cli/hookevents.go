@@ -10,13 +10,15 @@ import (
 	"github.com/umairge66/gocode/internal/agenttool"
 	"github.com/umairge66/gocode/internal/hookhost"
 	"github.com/umairge66/gocode/internal/hooks"
+	"github.com/umairge66/gocode/internal/subagent"
 	"github.com/umairge66/gocode/internal/toolrun"
 )
 
 // The hook events fired from the session wiring rather than from the agent
 // loop: PermissionDenied and Notification (permission_prompt) from the tool
-// dispatcher, SubagentStart from the Agent tool's spawn seam, and
-// Notification (idle_prompt) from the interactive turn driver.
+// dispatcher, SubagentStart from the Agent tool's spawn seam, SubagentStop
+// from its stop seam, and Notification (idle_prompt) from the interactive
+// turn driver.
 
 // idlePromptDelay is how long an interactive session waits for input before
 // the idle_prompt Notification hooks run.
@@ -58,6 +60,27 @@ func subagentStartHook(h *hookhost.Host) agenttool.SpawnHook {
 		}
 		prompt := in.Prompt + "\n\n<system-reminder>\nSubagentStart hook additional context: " + extra + "\n</system-reminder>"
 		return agenttool.SpawnHookDecision{Rewrite: &agenttool.SpawnRewrite{Prompt: &prompt}}
+	}
+}
+
+// subagentStopHook is the Agent tool stop hook that runs the SubagentStop
+// hooks when a subagent finishes. A block keeps the subagent going with the
+// hook's reason as feedback; continue:false lets it end. The host caps
+// consecutive blocks per agent.
+func subagentStopHook(h *hookhost.Host) subagent.StopHook {
+	return func(ctx context.Context, in subagent.StopHookInput) subagent.StopHookDecision {
+		r := h.Stop(ctx, hookhost.StopInput{
+			Subagent:             true,
+			AgentID:              in.AgentID,
+			AgentType:            in.AgentType,
+			AgentTranscriptPath:  in.TranscriptPath,
+			StopHookActive:       in.StopHookActive,
+			LastAssistantMessage: in.LastMessage,
+		})
+		if !r.Blocked() || !r.Continue {
+			return subagent.StopHookDecision{}
+		}
+		return subagent.StopHookDecision{Block: true, Reason: r.Reason}
 	}
 }
 

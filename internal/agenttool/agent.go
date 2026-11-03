@@ -272,6 +272,11 @@ type AgentTool struct {
 	// refuse it. They can only restrict.
 	SpawnHooks []SpawnHook
 
+	// StopHook runs when a spawned subagent's turn finishes (the SubagentStop
+	// hooks); a block with a reason keeps the subagent going with the reason
+	// as its feedback. Optional.
+	StopHook subagent.StopHook
+
 	// NewDispatcherIn, when set, builds the dispatcher of a spawn that runs in
 	// its own directory (a worktree, or a cwd): its shell and default search
 	// directory are cwd. When nil such a spawn uses the regular factories and
@@ -902,6 +907,7 @@ func (t *AgentTool) prepare(in AgentInput) (*subagent.Spawner, subagent.SpawnReq
 		LoopGuard:     t.LoopGuard,
 		Budget:        t.Budget,
 		MaxConcurrent: t.maxConcurrent(),
+		StopHook:      t.StopHook,
 		// Register every spawn's live session in the shared manager so it is
 		// addressable by task id for the interactive Resume/Stop/Close controls.
 		Sessions: t.sessionManager(),

@@ -50,8 +50,10 @@ type Payload struct {
 	StopHookActive       *bool  `json:"stop_hook_active,omitempty"`
 	LastAssistantMessage string `json:"last_assistant_message,omitempty"`
 
-	// SubagentStart.
-	AgentType string `json:"agent_type,omitempty"`
+	// SubagentStart / SubagentStop; SubagentStop also carries the subagent's
+	// own transcript when it has one.
+	AgentType           string `json:"agent_type,omitempty"`
+	AgentTranscriptPath string `json:"agent_transcript_path,omitempty"`
 
 	// PreCompact ("manual"|"auto"); SessionEnd uses Reason.
 	Trigger            string `json:"trigger,omitempty"`

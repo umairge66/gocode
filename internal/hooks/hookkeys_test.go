@@ -43,12 +43,12 @@ func TestHookKeysAcceptBothSpellings(t *testing.T) {
 }
 
 func TestFiredEvents(t *testing.T) {
-	for _, ev := range []Event{EventPreToolUse, EventPostToolUseFailure, EventPermissionDenied, EventNotification, EventSubagentStart} {
+	for _, ev := range []Event{EventPreToolUse, EventPostToolUseFailure, EventPermissionDenied, EventNotification, EventSubagentStart, EventSubagentStop} {
 		if !IsFired(ev) {
 			t.Errorf("%s should be fired", ev)
 		}
 	}
-	for _, ev := range []Event{EventSubagentStop, "PostToolBatch", "Elicitation"} {
+	for _, ev := range []Event{"PostToolBatch", "Elicitation", "TeammateIdle"} {
 		if IsFired(ev) {
 			t.Errorf("%s is not fired", ev)
 		}
