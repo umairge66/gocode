@@ -9,9 +9,14 @@
 // so no port or shared secret is needed.
 //
 // Protocol: the host sends { id, method, params? } commands; we reply with
-// { id, result } or { id, error:{ code?, message } } echoing the id. On
-// connect we announce ourselves with a Hello event { method:"hello", name,
-// version }. Tab events are reserved for a later milestone.
+// { id, result } or { id, error:{ code?, message } } echoing the id, on the
+// connection the command arrived on (a reply for a connection that has gone
+// is dropped). On connect we announce ourselves with a Hello event
+// { method:"hello", name, version }. The host may also send
+// { method:"cancel", params:{ id } } (no id of its own, no reply) when the
+// caller of command <id> gave up: what is left of that command is aborted —
+// the remaining steps of a batch, a pending CDP call or wait — and the
+// debugger is detached.
 //
 // Milestone 3 adds the CDP-backed interaction verbs (computer / find /
 // form_input / browser_batch). chrome.debugger is attached to the target tab
@@ -19,8 +24,12 @@
 // finally), so Chrome's "started debugging this browser" banner appears only
 // during active control and never lingers — even when an action fails or is
 // aborted. A browser_batch shares one attach across its steps and detaches once
-// at the end. find and form_input use chrome.scripting (a DOM query / value set
-// with input+change events), so they need no debugger and raise no banner.
+// at the end. Only one gocode command at a time holds the debugger on a tab
+// (others wait their turn), every CDP call and page script has a timeout, and
+// a JavaScript dialog (alert/confirm/prompt/beforeunload) that opens while
+// gocode holds the debugger is dismissed and reported in the result instead of
+// wedging the tab. find and form_input use chrome.scripting (a DOM query / value
+// set with input+change events), so they need no debugger and raise no banner.
 //
 // The --gocode-in-chrome-mcp server adds javascript_tool (CDP Runtime.evaluate,
 // same attach/detach discipline) and resize_window (chrome.windows.update on a
@@ -36,9 +45,32 @@ const EXTENSION_VERSION = chrome.runtime.getManifest().version;
 // frame limit; truncation is flagged in the result.
 const MAX_PAGE_TEXT = 500000;
 
+// Chrome passes at most 64 MiB from the extension to the host, and the host
+// drops a bigger frame. A reply over this size is replaced by an error reply,
+// so the waiting command fails at once instead of timing out.
+const MAX_REPLY_BYTES = 48 * 1024 * 1024;
+
+// Total size of the images one browser_batch reply may carry; later images
+// are left out (the step says so).
+const MAX_BATCH_IMAGE_BYTES = 24 * 1024 * 1024;
+
+// Timeouts (ms). A CDP call or page script that does not answer in time fails
+// with an error naming what it was doing, rather than hanging the command.
+const CDP_TIMEOUT_MS = 15000;
+const SCREENSHOT_TIMEOUT_MS = 20000;
+const SCRIPT_TIMEOUT_MS = 15000;
+const JS_TIMEOUT_MS = 30000;
+const JS_GRACE_MS = 2000; // past JS_TIMEOUT_MS, for Chrome's own evaluation timeout to answer
+const DEBUGGER_WAIT_MS = 30000; // waiting for another gocode command on the tab
+const LOAD_TIMEOUT_MS = 20000;
+const MAX_WAIT_SECONDS = 30;
+
 let port = null;
 let reconnectDelay = 1000; // backoff floor (ms)
 const MAX_RECONNECT_DELAY = 30000;
+
+// Commands in flight: id -> { port, op }.
+const inflight = new Map();
 
 function log(...args) {
   // Diagnostics go to the extension's service-worker console only.
@@ -64,35 +96,80 @@ function setConnected(connected) {
 
 function connect() {
   if (port) return;
+  let p;
   try {
-    port = chrome.runtime.connectNative(HOST_NAME);
+    p = chrome.runtime.connectNative(HOST_NAME);
   } catch (e) {
     log("connectNative threw", e);
     setConnected(false);
     scheduleReconnect();
     return;
   }
-  port.onMessage.addListener(onCommand);
-  port.onDisconnect.addListener(onDisconnect);
+  port = p;
+  p.onMessage.addListener((msg) => onMessage(msg, p));
+  p.onDisconnect.addListener(() => onDisconnect(p));
   // Announce ourselves. Any command the host already queued arrives after.
-  post({ method: "hello", name: EXTENSION_NAME, version: EXTENSION_VERSION });
+  post(p, { method: "hello", name: EXTENSION_NAME, version: EXTENSION_VERSION });
   reconnectDelay = 1000; // reset backoff on a successful connect
   setConnected(true);
   log("connected to native host");
 }
 
-function post(msg) {
-  if (!port) return;
+// utf8Length returns the UTF-8 byte length of s.
+function utf8Length(s) {
+  if (s.length * 3 <= MAX_REPLY_BYTES) return s.length; // cannot be over the limit
+  if (typeof TextEncoder !== "undefined") return new TextEncoder().encode(s).length;
+  return s.length;
+}
+
+// post sends msg on connection p. A message for a connection that is no
+// longer the live one is dropped: its host is gone, and the new host never
+// sent that id. A reply that is too large, or that postMessage refuses, is
+// replaced by an error reply so the waiting command fails at once.
+function post(p, msg) {
+  if (!p || p !== port) return false;
+  if (msg.id != null) {
+    let size = 0;
+    try {
+      size = utf8Length(JSON.stringify(msg));
+    } catch (e) {
+      msg = { id: msg.id, error: { message: "the reply could not be encoded: " + String((e && e.message) || e) } };
+    }
+    if (size > MAX_REPLY_BYTES) {
+      msg = {
+        id: msg.id,
+        error: {
+          message: "the reply is too large to send (" + Math.round(size / 1048576) + " MiB, limit " +
+            Math.round(MAX_REPLY_BYTES / 1048576) + " MiB). Ask for less at once (fewer screenshots, a smaller scale).",
+        },
+      };
+    }
+  }
   try {
-    port.postMessage(msg);
+    p.postMessage(msg);
+    return true;
   } catch (e) {
     log("postMessage failed", e);
+    if (msg.id != null && !msg.error) {
+      try {
+        p.postMessage({ id: msg.id, error: { message: "the reply could not be sent: " + String((e && e.message) || e) } });
+      } catch (e2) {}
+    }
+    return false;
   }
 }
 
-function onDisconnect() {
+function onDisconnect(p) {
   const err = chrome.runtime.lastError;
   log("native port disconnected", err && err.message);
+  // The host that sent these commands is gone: stop them.
+  for (const [id, entry] of inflight) {
+    if (entry.port === p) {
+      abortOp(entry.op, new Error("the gocode native host disconnected"));
+      inflight.delete(id);
+    }
+  }
+  if (port !== p) return;
   port = null;
   setConnected(false);
   scheduleReconnect();
@@ -104,21 +181,111 @@ function scheduleReconnect() {
   setTimeout(connect, delay);
 }
 
-// onCommand dispatches one host command and always replies, echoing the id.
-async function onCommand(msg) {
+// onMessage handles one message from the host on connection p: a cancel
+// notice, or a command.
+function onMessage(msg, p) {
   if (!msg || typeof msg !== "object") return;
+  if (msg.method === "cancel") {
+    const id = msg.params && msg.params.id;
+    const entry = id != null ? inflight.get(String(id)) : undefined;
+    if (entry && entry.port === p) {
+      abortOp(entry.op, new Error("cancelled: gocode stopped waiting for this command (it was cancelled or timed out)"));
+    }
+    return;
+  }
+  onCommand(msg, p);
+}
+
+// onCommand dispatches one host command and always replies, echoing the id,
+// on the connection it arrived on.
+async function onCommand(msg, p) {
   const { id, method, params } = msg;
   // A message with a method but no id would be an event, not a command; ignore.
   if (id === undefined || id === null) return;
+  const key = String(id);
+  const op = newOp();
+  const entry = { port: p, op };
+  inflight.set(key, entry);
   try {
-    const result = await dispatch(method, params || {});
-    post({ id, result });
+    const result = await dispatch(method, params || {}, op);
+    post(p, { id, result });
   } catch (e) {
-    post({ id, error: { message: String((e && e.message) || e) } });
+    post(p, { id, error: { message: String((e && e.message) || e) } });
+  } finally {
+    if (inflight.get(key) === entry) inflight.delete(key);
   }
 }
 
-async function dispatch(method, params) {
+// --- cancellation and timeouts ------------------------------------------------
+//
+// An "op" is one command's cancellation state: abortOp marks it aborted and
+// rejects everything waiting on it through bounded().
+
+function newOp() {
+  return { aborted: null, onAbort: new Set() };
+}
+
+function abortOp(op, err) {
+  if (!op || op.aborted) return;
+  op.aborted = err;
+  for (const f of Array.from(op.onAbort)) f(err);
+}
+
+function checkOp(op) {
+  if (op && op.aborted) throw op.aborted;
+}
+
+// bounded resolves like promise, but rejects after ms (naming what timed
+// out) or as soon as op is aborted.
+function bounded(promise, ms, what, op) {
+  return new Promise((resolve, reject) => {
+    let done = false;
+    let timer = null;
+    const onAbort = (err) => finish(reject, err);
+    const finish = (f, v) => {
+      if (done) return;
+      done = true;
+      if (timer) clearTimeout(timer);
+      if (op) op.onAbort.delete(onAbort);
+      f(v);
+    };
+    if (op && op.aborted) return finish(reject, op.aborted);
+    if (op) op.onAbort.add(onAbort);
+    timer = setTimeout(() => {
+      const err = new Error(what + " timed out after " + Math.round(ms / 1000) + "s");
+      err.timedOut = true;
+      finish(reject, err);
+    }, ms);
+    Promise.resolve(promise).then((v) => finish(resolve, v), (e) => finish(reject, e));
+  });
+}
+
+// --- dispatch -------------------------------------------------------------------
+//
+// Every command runs with a ctx: { op, attached, releases, notes }. attached
+// holds the tabs it attached the debugger to (detached when the command ends,
+// whatever happens); notes collects what the user should hear about (a
+// dismissed dialog), returned with the result.
+
+function newCtx(op) {
+  return { op: op || newOp(), attached: new Set(), releases: new Map(), notes: [], onDrag: null };
+}
+
+async function dispatch(method, params, op) {
+  const ctx = newCtx(op);
+  try {
+    const result = await run(method, params || {}, ctx);
+    if (ctx.notes.length && result && typeof result === "object" && !Array.isArray(result)) {
+      result.notes = (result.notes || []).concat(ctx.notes);
+    }
+    return result;
+  } finally {
+    // One detach for the whole command, guaranteed even on error/abort.
+    await detachAll(ctx);
+  }
+}
+
+async function run(method, params, ctx) {
   // The site policy the host sent with this command (or the last one it sent);
   // it can only restrict what the command may do.
   const policy = await resolvePolicy(params);
@@ -126,31 +293,30 @@ async function dispatch(method, params) {
     case "ping":
       return { pong: true };
     case "navigate":
-      return await doNavigate(params, policy);
+      return await doNavigate(params, policy, ctx);
     case "read_page":
     case "get_page_text":
-      return await doReadPage(params, policy);
+      return await doReadPage(params, policy, ctx);
     case "tabs_context":
-      return await doTabsContext(params, policy);
+      return await doTabsContext(params, policy, ctx);
     case "tabs_create":
-      return await doTabsCreate(params, policy);
+      return await doTabsCreate(params, policy, ctx);
     case "tabs_close":
       return await doTabsClose(params);
     case "screenshot":
-      return await doScreenshot(params, undefined, policy);
+      return await doScreenshot(params, policy, ctx);
     case "computer":
-      // A single computer call gets its own debugger session, always detached.
-      return await withSession((ctx) => doComputer(params, ctx, policy));
+      return await doComputer(params, policy, ctx);
     case "find":
-      return await doFind(params, policy);
+      return await doFind(params, policy, ctx);
     case "form_input":
-      return await doFormInput(params, policy);
+      return await doFormInput(params, policy, ctx);
     case "javascript_tool":
-      return await withSession((ctx) => doJavascript(params, ctx, policy));
+      return await doJavascript(params, policy, ctx);
     case "resize_window":
       return await doResizeWindow(params);
     case "browser_batch":
-      return await doBatch(params, policy);
+      return await doBatch(params, policy, ctx);
     default:
       throw new Error("unknown method: " + method);
   }
@@ -168,7 +334,14 @@ async function dispatch(method, params) {
 //     javascript_tool) on a site that is not allowed is refused with a
 //     needs-approval error naming the site ("[chrome_site=<host>]"), which the
 //     session turns into a permission prompt and retries once approved;
-//   - pages that are not http(s) (about:blank, chrome://newtab) name no site.
+//   - a tab is checked at both the page it shows and the page it is loading
+//     (pendingUrl), so an action cannot slip onto a page that is committing;
+//   - about:blank / about:srcdoc pages and blob: URLs take the site of the
+//     page that created them (an about:blank popup opened from a site is that
+//     site); other pages that are not http(s) (chrome://, file:, data:) name
+//     no site: reading them is allowed, acting on them is refused;
+//   - back/forward is checked at the page it lands on, and undone when that
+//     page is refused.
 // With no policy at all nothing changes (the list can only restrict).
 
 const NON_WEB_URL_ERROR = "Can't interact with browser-internal or unparseable URLs. Navigate to a web page first.";
@@ -246,10 +419,46 @@ function checkSite(policy, url, kind) {
   }
 }
 
-async function checkTabSite(tabId, policy, kind) {
+function isBlankUrl(url) {
+  return /^about:(blank|srcdoc)\b/i.test(String(url || ""));
+}
+
+// effectiveUrl returns the URL whose site governs a tab's page: a blob: URL's
+// origin, the creator's origin for about:blank / about:srcdoc, else url.
+async function effectiveUrl(ctx, tab, url) {
+  url = String(url || "");
+  if (/^blob:/i.test(url)) return url.slice(5);
+  if (!isBlankUrl(url)) return url;
+  // An about:blank document inherits its creator's origin.
+  try {
+    const origin = await runInPage(ctx, tab.id, pageAgent, ["origin"], "reading the page origin", 3000);
+    if (origin && origin !== "null") return origin + "/";
+  } catch (e) {}
+  if (tab.openerTabId != null) {
+    const opener = await getTab(tab.openerTabId);
+    if (opener && opener.url) return opener.url;
+  }
+  return url;
+}
+
+// checkTabSite enforces the policy for a tab's page (and the page it is
+// loading, if any). kind is "act" or "read".
+async function checkTabSite(ctx, tabId, policy, kind) {
   if (!policy) return;
   const tab = await getTab(tabId);
-  checkSite(policy, (tab && (tab.pendingUrl || tab.url)) || "", kind);
+  if (!tab) throw new Error("tab " + tabId + " does not exist");
+  const urls = [tab.url || ""];
+  if (tab.pendingUrl && tab.pendingUrl !== tab.url) urls.push(tab.pendingUrl);
+  for (const raw of urls) {
+    const url = await effectiveUrl(ctx, tab, raw);
+    if (!siteOf(url)) {
+      // Acting on a page that names no site is refused, except a blank page
+      // with no creator (there is nothing on it to act on).
+      if (kind === "act" && !isBlankUrl(url)) throw new Error(NON_WEB_URL_ERROR);
+      continue;
+    }
+    checkSite(policy, url, kind);
+  }
 }
 
 // navTarget turns a navigate url into a full URL ("example.com" -> https://).
@@ -269,52 +478,172 @@ function checkNavigation(policy, url) {
 
 // --- chrome.debugger (CDP) session lifecycle --------------------------------
 //
-// A "session" is a set of tabs this worker has attached the debugger to for one
-// logical operation (one computer call, or one browser_batch). withSession runs
-// the body and ALWAYS detaches every tab it attached — success, thrown error,
-// or denied action — so the debugging banner cannot linger.
+// A command attaches the debugger to a tab through ensureAttached and dispatch
+// ALWAYS detaches every tab it attached when the command ends — success,
+// thrown error, denied action or cancel — so the debugging banner cannot
+// linger. Only one command at a time holds the debugger on a tab: Chrome
+// allows one attachment per tab per extension, so a second command (a parallel
+// screenshot) waits for the first one's detach instead of failing with
+// "Another debugger is already attached".
 
-function withSession(fn) {
-  const ctx = { attached: new Set() };
-  return Promise.resolve()
-    .then(() => fn(ctx))
-    .finally(() => detachAll(ctx));
+// tabLocks: tabId -> tail of the queue of commands waiting for that tab.
+const tabLocks = new Map();
+// sessions: tabId -> the ctx that has the debugger attached to it.
+const sessions = new Map();
+
+// lockTab waits for the tab's debugger turn and resolves with its release.
+function lockTab(tabId, op) {
+  const prev = tabLocks.get(tabId) || Promise.resolve();
+  let release;
+  const mine = new Promise((r) => (release = r));
+  const tail = prev.then(() => mine);
+  tabLocks.set(tabId, tail);
+  tail.then(() => {
+    if (tabLocks.get(tabId) === tail) tabLocks.delete(tabId);
+  });
+  return bounded(prev, DEBUGGER_WAIT_MS, "waiting for another gocode action on tab " + tabId, op).then(
+    () => release,
+    (e) => {
+      release();
+      throw e;
+    }
+  );
 }
 
 async function detachAll(ctx) {
   for (const tabId of Array.from(ctx.attached)) {
+    if (sessions.get(tabId) === ctx) sessions.delete(tabId);
     try {
       await chrome.debugger.detach({ tabId });
     } catch (e) {
       // Already gone (tab closed, user cancelled) — nothing to clean up.
     }
     ctx.attached.delete(tabId);
+    const release = ctx.releases.get(tabId);
+    ctx.releases.delete(tabId);
+    if (release) release();
   }
 }
 
 async function ensureAttached(ctx, tabId) {
   if (ctx.attached.has(tabId)) return;
-  await chrome.debugger.attach({ tabId }, "1.3");
+  const release = await lockTab(tabId, ctx.op);
+  try {
+    await bounded(chrome.debugger.attach({ tabId }, "1.3"), CDP_TIMEOUT_MS, "attaching the debugger to tab " + tabId, ctx.op);
+  } catch (e) {
+    release();
+    const msg = String((e && e.message) || e);
+    if (/already attached/i.test(msg)) {
+      throw new Error(
+        "Chrome DevTools (or another debugger) is attached to tab " + tabId +
+          ". Close DevTools on that tab and try again."
+      );
+    }
+    throw e;
+  }
   ctx.attached.add(tabId);
+  ctx.releases.set(tabId, release);
+  sessions.set(tabId, ctx);
+  // Page events report JavaScript dialogs (see handleDialog).
+  try {
+    await cdp(ctx, tabId, "Page.enable", {}, 5000);
+  } catch (e) {}
 }
 
-// cdp sends one CDP command and resolves with its result (or rejects).
-function cdp(tabId, method, params) {
-  return new Promise((resolve, reject) => {
+// cdp sends one CDP command and resolves with its result (or rejects). It
+// fails after timeoutMs, or as soon as the command is cancelled.
+function cdp(ctx, tabId, method, params, timeoutMs) {
+  checkOp(ctx.op);
+  const call = new Promise((resolve, reject) => {
     chrome.debugger.sendCommand({ tabId }, method, params || {}, (res) => {
       const err = chrome.runtime.lastError;
       if (err) reject(new Error(err.message));
       else resolve(res);
     });
   });
+  return bounded(call, timeoutMs || CDP_TIMEOUT_MS, "Chrome DevTools command " + method, ctx.op);
 }
 
-// If the user detaches via the banner's "Cancel", drop our bookkeeping so we do
-// not try to detach a dead session later.
-chrome.debugger.onDetach.addListener((source) => {
-  // Nothing persistent to clear (sessions are per-call), but logging helps.
-  log("debugger detached", source && source.tabId);
+// handleDialog dismisses a JavaScript dialog that opened on a tab gocode holds
+// the debugger for (a click that runs alert()/confirm() would otherwise block
+// every later input on the tab) and records it for the result. Dismissing is
+// the safe answer: confirm() gets Cancel, prompt() no answer, beforeunload
+// stays on the page.
+function handleDialog(ctx, tabId, p) {
+  const type = (p && p.type) || "alert";
+  const message = String((p && p.message) || "").replace(/\s+/g, " ").trim().slice(0, 300);
+  const answer = type === "confirm" ? " (answered Cancel)" : type === "prompt" ? " (gave no answer)" :
+    type === "beforeunload" ? " (stayed on the page)" : "";
+  ctx.notes.push(
+    "A JavaScript " + type + " dialog opened on tab " + tabId + (message ? ' saying "' + message + '"' : "") +
+      " and gocode dismissed it" + answer + "."
+  );
+  try {
+    chrome.debugger.sendCommand({ tabId }, "Page.handleJavaScriptDialog", { accept: false }, () => {
+      void chrome.runtime.lastError;
+    });
+  } catch (e) {}
+}
+
+if (chrome.debugger.onEvent) {
+  chrome.debugger.onEvent.addListener((source, method, params) => {
+    const ctx = source && sessions.get(source.tabId);
+    if (!ctx) return;
+    if (method === "Page.javascriptDialogOpening") handleDialog(ctx, source.tabId, params);
+    else if (method === "Input.dragIntercepted" && ctx.onDrag) ctx.onDrag((params && params.data) || null);
+  });
+}
+
+// If the user detaches via the banner's "Cancel", stop the command that held
+// the debugger and drop its bookkeeping, so we do not drive a dead session.
+chrome.debugger.onDetach.addListener((source, reason) => {
+  const tabId = source && source.tabId;
+  log("debugger detached", tabId, reason);
+  const ctx = sessions.get(tabId);
+  if (!ctx) return;
+  sessions.delete(tabId);
+  ctx.attached.delete(tabId);
+  const release = ctx.releases.get(tabId);
+  ctx.releases.delete(tabId);
+  if (release) release();
+  if (reason === "canceled_by_user") {
+    abortOp(ctx.op, new Error("the user stopped gocode's control of tab " + tabId + " (Cancel on the debugging banner)"));
+  }
 });
+
+// --- page scripts (chrome.scripting) ----------------------------------------
+
+// runInPage runs func(...args) in the tab's top frame and returns its result.
+// It fails after timeoutMs or when the command is cancelled. A page that does
+// not answer is most often blocked by a JavaScript dialog: one is dismissed
+// (through the debugger) and the error says so.
+async function runInPage(ctx, tabId, func, args, what, timeoutMs) {
+  checkOp(ctx.op);
+  const call = chrome.scripting.executeScript({ target: { tabId }, func, args: args || [] });
+  try {
+    const r = await bounded(call, timeoutMs || SCRIPT_TIMEOUT_MS, what, ctx.op);
+    return r && r[0] ? r[0].result : undefined;
+  } catch (e) {
+    if (e && e.timedOut && (await dismissStuckDialog(ctx, tabId))) {
+      throw new Error(what + ": the page was blocked by a JavaScript dialog, which gocode dismissed. Try again.");
+    }
+    throw e;
+  }
+}
+
+// dismissStuckDialog dismisses a JavaScript dialog open on the tab, and
+// reports whether there was one.
+async function dismissStuckDialog(ctx, tabId) {
+  if (ctx.op.aborted) return false;
+  try {
+    await ensureAttached(ctx, tabId);
+    await cdp(ctx, tabId, "Page.handleJavaScriptDialog", { accept: false }, 3000);
+    ctx.notes.push("A JavaScript dialog was open on tab " + tabId + " and gocode dismissed it.");
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
 
 // --- gocode tab group: the ONLY tabs gocode may see or touch -----------------
 //
@@ -335,7 +664,7 @@ chrome.debugger.onDetach.addListener((source) => {
 // restarts, cleared when the browser closes).
 //
 // Separately from ownership, openedTabs records the tabs gocode opened itself
-// (tabs_create, navigate without a tab, a link followed from a gocode tab) and
+// (tabs_create, navigate without a tab, a link followed by a gocode action) and
 // keptTabs the tabs marked keep_open. Neither grants access to a tab — only
 // the ownership rules above do — they only decide what an end-of-session
 // cleanup may close: tabs_close with cleanup:true refuses a tab gocode did not
@@ -348,6 +677,10 @@ chrome.debugger.onDetach.addListener((source) => {
 // cleanup can never reach another session's tabs. A group with no recorded
 // session belongs to commands that carry no sessionId. Ownership itself is not
 // per session: any gocode tab stays usable by an explicit tabId.
+//
+// Every read-modify-write of this state runs through updateState, one at a
+// time, so two commands (or a command and a tab event) cannot overwrite each
+// other's update and orphan a tab or group.
 
 const GROUP_TITLE = "gocode";
 const TAB_GROUP_NONE = -1;
@@ -366,14 +699,42 @@ async function sessionSet(obj) {
   } catch (e) {}
 }
 
+let stateTail = Promise.resolve();
+
+// updateState reads keys, lets fn compute the changes (an object of new
+// values, or nothing) and writes them, serialized with every other update.
+function updateState(keys, fn) {
+  const run = stateTail.then(async () => {
+    const cur = await sessionGet(keys);
+    const changes = await fn(cur);
+    if (changes && Object.keys(changes).length) await sessionSet(changes);
+    return changes;
+  });
+  stateTail = run.catch(() => {});
+  return run;
+}
+
+const listOf = (v) => (Array.isArray(v) ? v : []);
+const mapOf = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v : {});
+
+// addToList / removeFromList update one id list in the session state.
+function addToList(key, id) {
+  return updateState([key], (o) => {
+    const l = listOf(o[key]);
+    return l.includes(id) ? null : { [key]: l.concat([id]) };
+  });
+}
+
+function removeFromList(key, id) {
+  return updateState([key], (o) => {
+    const l = listOf(o[key]);
+    return l.includes(id) ? { [key]: l.filter((x) => x !== id) } : null;
+  });
+}
+
 async function ownership() {
   const { ownedGroups, ownedTabs } = await sessionGet(["ownedGroups", "ownedTabs"]);
   return { groups: ownedGroups || [], tabs: ownedTabs || [] };
-}
-
-async function rememberOwnedTab(tabId) {
-  const { tabs } = await ownership();
-  if (!tabs.includes(tabId)) await sessionSet({ ownedTabs: tabs.concat([tabId]) });
 }
 
 async function tabIdList(key) {
@@ -381,18 +742,10 @@ async function tabIdList(key) {
   return Array.isArray(o[key]) ? o[key] : [];
 }
 
-// rememberOpenedTab records that gocode opened tabId itself.
-async function rememberOpenedTab(tabId) {
-  const opened = await tabIdList("openedTabs");
-  if (!opened.includes(tabId)) await sessionSet({ openedTabs: opened.concat([tabId]) });
-}
-
 // setKeepOpen marks tabId to stay open after the session ends (keep true) or
 // clears that mark.
-async function setKeepOpen(tabId, keep) {
-  const kept = await tabIdList("keptTabs");
-  if (keep && !kept.includes(tabId)) await sessionSet({ keptTabs: kept.concat([tabId]) });
-  if (!keep && kept.includes(tabId)) await sessionSet({ keptTabs: kept.filter((id) => id !== tabId) });
+function setKeepOpen(tabId, keep) {
+  return keep ? addToList("keptTabs", tabId) : removeFromList("keptTabs", tabId);
 }
 
 // applyKeepOpen applies a command's keep_open parameter (when it carries one)
@@ -400,11 +753,6 @@ async function setKeepOpen(tabId, keep) {
 async function applyKeepOpen(params, tabId) {
   if (tabId == null || !params || typeof params.keep_open !== "boolean") return;
   await setKeepOpen(tabId, params.keep_open);
-}
-
-async function rememberOwnedGroup(groupId) {
-  const { groups } = await ownership();
-  if (!groups.includes(groupId)) await sessionSet({ ownedGroups: groups.concat([groupId]) });
 }
 
 // sessionOf returns the session id a command carries ("" when none).
@@ -415,7 +763,7 @@ function sessionOf(params) {
 
 async function groupSessionMap() {
   const { groupSessions } = await sessionGet("groupSessions");
-  return groupSessions && typeof groupSessions === "object" ? groupSessions : {};
+  return mapOf(groupSessions);
 }
 
 // groupSession returns the session that owns gocode group groupId ("" when the
@@ -425,11 +773,9 @@ async function groupSession(groupId) {
   return m[String(groupId)] || "";
 }
 
-async function rememberGroupSession(groupId, sid) {
-  if (!sid) return;
-  const m = await groupSessionMap();
-  m[String(groupId)] = sid;
-  await sessionSet({ groupSessions: m });
+function rememberGroupSession(groupId, sid) {
+  if (!sid) return Promise.resolve();
+  return updateState(["groupSessions"], (o) => ({ groupSessions: { ...mapOf(o.groupSessions), [String(groupId)]: sid } }));
 }
 
 // sessionGroupIds returns the ids of gocode's open groups that belong to sid.
@@ -449,16 +795,10 @@ async function sessionGroupIds(sid) {
   return out;
 }
 
-async function setCurrentTab(tabId, sid) {
-  if (tabId == null) return;
-  if (!sid) {
-    await sessionSet({ currentTabId: tabId });
-    return;
-  }
-  const { currentTabs } = await sessionGet("currentTabs");
-  const m = currentTabs && typeof currentTabs === "object" ? currentTabs : {};
-  m[sid] = tabId;
-  await sessionSet({ currentTabs: m });
+function setCurrentTab(tabId, sid) {
+  if (tabId == null) return Promise.resolve();
+  if (!sid) return sessionSet({ currentTabId: tabId });
+  return updateState(["currentTabs"], (o) => ({ currentTabs: { ...mapOf(o.currentTabs), [sid]: tabId } }));
 }
 
 async function currentTabFor(sid) {
@@ -467,7 +807,7 @@ async function currentTabFor(sid) {
     return currentTabId;
   }
   const { currentTabs } = await sessionGet("currentTabs");
-  return currentTabs && typeof currentTabs === "object" ? currentTabs[sid] : undefined;
+  return mapOf(currentTabs)[sid];
 }
 
 // isOwnedTab reports whether a chrome.tabs.Tab belongs to gocode.
@@ -502,14 +842,23 @@ async function assertOwned(tabId) {
   return tab;
 }
 
+// groupTail serializes addToGocodeGroup, so two tabs opened at once for the
+// same session end up in one group rather than two.
+let groupTail = Promise.resolve();
+
 // addToGocodeGroup records the tab as gocode's (and as opened by gocode — it
 // is only called for tabs gocode opened) and puts it in a gocode group:
 // preferGroupId when that is one of gocode's open groups, else session sid's
 // group in the tab's window, else a new group owned by sid.
-async function addToGocodeGroup(tabId, sid, preferGroupId) {
-  sid = sid || "";
-  await rememberOwnedTab(tabId);
-  await rememberOpenedTab(tabId);
+function addToGocodeGroup(tabId, sid, preferGroupId) {
+  const run = groupTail.then(() => groupTab(tabId, sid || "", preferGroupId));
+  groupTail = run.catch(() => {});
+  return run;
+}
+
+async function groupTab(tabId, sid, preferGroupId) {
+  await addToList("ownedTabs", tabId);
+  await addToList("openedTabs", tabId);
   try {
     const t = await getTab(tabId);
     const windowId = t ? t.windowId : undefined;
@@ -534,13 +883,12 @@ async function addToGocodeGroup(tabId, sid, preferGroupId) {
     } else {
       groupId = await chrome.tabs.group({ tabIds: [tabId] });
       await chrome.tabGroups.update(groupId, { title: GROUP_TITLE, color: "green" });
-      await rememberOwnedGroup(groupId);
+      await addToList("ownedGroups", groupId);
       await rememberGroupSession(groupId, sid);
     }
     // Grouped: from now on the group decides. If the user drags the tab out
     // of the gocode group, it is no longer gocode's.
-    const { tabs } = await ownership();
-    await sessionSet({ ownedTabs: tabs.filter((id) => id !== tabId) });
+    await removeFromList("ownedTabs", tabId);
     log("grouped tab", tabId, "-> gocode group", groupId);
     return groupId;
   } catch (e) {
@@ -574,11 +922,39 @@ async function resolveTabId(tabId, sid) {
   return own;
 }
 
-// A tab opened FROM a gocode tab (a link with target=_blank, window.open) joins
-// the gocode group, so following a link keeps working inside the group. Tabs
-// the user opens themselves are never touched.
+// --- tabs opened by gocode's actions ----------------------------------------
+//
+// A tab opened FROM a gocode tab while gocode is acting on it (a click on a
+// target=_blank link, window.open from a script gocode ran, ctrl+click by
+// gocode) joins the gocode group, so following a link keeps working inside
+// the group. A tab the user opens from a gocode tab themselves (a middle- or
+// ctrl-click of their own) is left alone: it is not adopted, so it is never
+// closed by gocode's cleanup. "While acting" includes a short grace period
+// after the action, since a popup can open a moment after the click.
+
+const OPEN_GRACE_MS = 3000;
+// actingTabs: tabId -> { count, until }.
+const actingTabs = new Map();
+
+async function acting(tabId, fn) {
+  const cur = actingTabs.get(tabId) || { count: 0, until: 0 };
+  cur.count++;
+  actingTabs.set(tabId, cur);
+  try {
+    return await fn();
+  } finally {
+    cur.count--;
+    cur.until = Date.now() + OPEN_GRACE_MS;
+  }
+}
+
+function openedByGocodeAction(openerId) {
+  const a = actingTabs.get(openerId);
+  return !!a && (a.count > 0 || Date.now() <= a.until);
+}
+
 chrome.tabs.onCreated.addListener(async (tab) => {
-  if (tab.openerTabId == null) return;
+  if (tab.openerTabId == null || !openedByGocodeAction(tab.openerTabId)) return;
   const opener = await getTab(tab.openerTabId);
   const own = await ownership();
   if (!isOwnedTab(opener, own)) return;
@@ -588,12 +964,17 @@ chrome.tabs.onCreated.addListener(async (tab) => {
 });
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
-  const { tabs } = await ownership();
-  if (tabs.includes(tabId)) await sessionSet({ ownedTabs: tabs.filter((id) => id !== tabId) });
-  const opened = await tabIdList("openedTabs");
-  if (opened.includes(tabId)) await sessionSet({ openedTabs: opened.filter((id) => id !== tabId) });
-  const kept = await tabIdList("keptTabs");
-  if (kept.includes(tabId)) await sessionSet({ keptTabs: kept.filter((id) => id !== tabId) });
+  actingTabs.delete(tabId);
+  await removeFromList("ownedTabs", tabId);
+  await removeFromList("openedTabs", tabId);
+  await removeFromList("keptTabs", tabId);
+  await updateState(["refCounters"], (o) => {
+    const m = mapOf(o.refCounters);
+    if (!(String(tabId) in m)) return null;
+    const next = { ...m };
+    delete next[String(tabId)];
+    return { refCounters: next };
+  });
 });
 
 function sleep(ms) {
@@ -609,9 +990,9 @@ function getTab(tabId) {
 
 // waitForTabLoad resolves when the tab reaches status "complete" (or the
 // timeout fires), so navigate/tabs_create return a settled, readable page
-// instead of a still-loading one.
-function waitForTabLoad(tabId, timeoutMs) {
-  return new Promise((resolve) => {
+// instead of a still-loading one. A cancel ends the wait with an error.
+function waitForTabLoad(ctx, tabId, timeoutMs) {
+  const wait = new Promise((resolve) => {
     let done = false;
     const finish = () => {
       if (done) return;
@@ -628,25 +1009,34 @@ function waitForTabLoad(tabId, timeoutMs) {
     });
     setTimeout(finish, timeoutMs || 15000);
   });
+  return bounded(wait, (timeoutMs || 15000) + 1000, "waiting for the page to load", ctx.op);
 }
 
-// viewportInfo returns the page's CSS viewport size and device-pixel-ratio.
-// CDP input coordinates are in CSS pixels, so this lets us keep the screenshot
-// coordinate space (which captureVisibleTab renders at dpr) aligned with it.
-async function viewportInfo(tabId) {
+// viewportInfo returns the page's CSS viewport size, device-pixel-ratio and
+// scroll offset. CDP input coordinates are in CSS pixels, so this lets us keep
+// the screenshot coordinate space (which captureVisibleTab renders at dpr)
+// aligned with it. Where page scripts are blocked it asks CDP instead
+// (Page.getLayoutMetrics), so a HiDPI page still gets its real ratio.
+async function viewportInfo(ctx, tabId) {
   try {
-    const r = await chrome.scripting.executeScript({
-      target: { tabId },
-      func: () => ({
-        dpr: window.devicePixelRatio || 1,
-        w: window.innerWidth,
-        h: window.innerHeight,
-      }),
-    });
-    return (r && r[0] && r[0].result) || { dpr: 1, w: 0, h: 0 };
-  } catch (e) {
-    return { dpr: 1, w: 0, h: 0 };
-  }
+    const r = await runInPage(ctx, tabId, pageAgent, ["info"], "reading the viewport size", 5000);
+    if (r && r.w) return r;
+  } catch (e) {}
+  try {
+    await ensureAttached(ctx, tabId);
+    const m = await cdp(ctx, tabId, "Page.getLayoutMetrics", {}, 5000);
+    const css = m && (m.cssLayoutViewport || m.cssVisualViewport);
+    const dev = m && m.layoutViewport; // device pixels
+    const vis = m && m.cssVisualViewport;
+    if (css && css.clientWidth) {
+      const dpr = dev && dev.clientWidth ? dev.clientWidth / css.clientWidth : 1;
+      return {
+        dpr, w: css.clientWidth, h: css.clientHeight,
+        sx: (vis && vis.pageX) || 0, sy: (vis && vis.pageY) || 0,
+      };
+    }
+  } catch (e) {}
+  return { dpr: 1, w: 0, h: 0, sx: 0, sy: 0 };
 }
 
 // showCursor injects (once) and moves a PERSISTENT, visible arrow cursor at CSS
@@ -655,47 +1045,43 @@ async function viewportInfo(tabId) {
 // does NOT mark/ripple the click location. Uses chrome.scripting so it works
 // with or without the debugger attached and is purely visual. It is re-created
 // automatically after a navigation (which wipes the page DOM).
-async function showCursor(tabId, x, y) {
+async function showCursor(ctx, tabId, x, y) {
   try {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      args: [x, y],
-      func: (x, y) => {
-        const ID = "__gocode_cursor__";
-        const root = document.documentElement || document.body;
-        if (!root) return;
-        let c = document.getElementById(ID);
-        if (!c) {
-          c = document.createElement("div");
-          c.id = ID;
-          c.style.cssText =
-            "position:fixed;left:0;top:0;z-index:2147483647;" +
-            "pointer-events:none;will-change:transform;" +
-            "transition:transform .08s linear;" +
-            "filter:drop-shadow(0 1px 1px rgba(0,0,0,.45));";
-          // A classic arrow pointer so it reads unmistakably as a cursor.
-          c.innerHTML =
-            '<svg width="22" height="22" viewBox="0 0 24 24" ' +
-            'xmlns="http://www.w3.org/2000/svg">' +
-            '<path d="M5 3 L5 20 L10 15 L13.5 22 L16.5 20.5 L13 14 L20 14 Z" ' +
-            'fill="#1a7f37" stroke="#ffffff" stroke-width="1.3" ' +
-            'stroke-linejoin="round"/></svg>';
-          root.appendChild(c);
-        }
-        // The arrow's hotspot is its top-left tip, so translate straight to
-        // [x,y] (no centering offset).
-        c.style.transform = "translate(" + x + "px," + y + "px)";
-      },
-    });
+    await runInPage(ctx, tabId, (x, y) => {
+      const ID = "__gocode_cursor__";
+      const root = document.documentElement || document.body;
+      if (!root) return;
+      let c = document.getElementById(ID);
+      if (!c) {
+        c = document.createElement("div");
+        c.id = ID;
+        c.style.cssText =
+          "position:fixed;left:0;top:0;z-index:2147483647;" +
+          "pointer-events:none;will-change:transform;" +
+          "transition:transform .08s linear;" +
+          "filter:drop-shadow(0 1px 1px rgba(0,0,0,.45));";
+        // A classic arrow pointer so it reads unmistakably as a cursor.
+        c.innerHTML =
+          '<svg width="22" height="22" viewBox="0 0 24 24" ' +
+          'xmlns="http://www.w3.org/2000/svg">' +
+          '<path d="M5 3 L5 20 L10 15 L13.5 22 L16.5 20.5 L13 14 L20 14 Z" ' +
+          'fill="#1a7f37" stroke="#ffffff" stroke-width="1.3" ' +
+          'stroke-linejoin="round"/></svg>';
+        root.appendChild(c);
+      }
+      // The arrow's hotspot is its top-left tip, so translate straight to
+      // [x,y] (no centering offset).
+      c.style.transform = "translate(" + x + "px," + y + "px)";
+    }, [x, y], "showing the cursor", 2000);
   } catch (e) {
     // Cursor overlay is cosmetic; never fail an action because of it.
   }
 }
 
-// dataUrlToCssPixels downscales a captureVisibleTab PNG (rendered at dpr) to the
-// CSS viewport size, so screenshot pixel coords equal CSS/CDP coords. Runs in
-// the service worker via OffscreenCanvas (no FileReader, which SWs lack).
-async function dataUrlToCssPixels(dataUrl, w, h) {
+// resizeImage scales a PNG data URL to w x h CSS pixels, so screenshot pixel
+// coords equal CSS/CDP coords (or a requested fraction of them). Runs in the
+// service worker via OffscreenCanvas (no FileReader, which SWs lack).
+async function resizeImage(dataUrl, w, h) {
   const blob = await (await fetch(dataUrl)).blob();
   const bmp = await createImageBitmap(blob);
   const canvas = new OffscreenCanvas(w, h);
@@ -731,6 +1117,8 @@ async function dataUrlToCssPixels(dataUrl, w, h) {
 //     (3 for the numeric keypad) and — only when it produces a character and no
 //     Ctrl/Alt/Meta is held — `text`, sent as "keyDown"; a key that produces no
 //     character is sent as "rawKeyDown";
+//   - an upper-case letter in a chord with Ctrl/Alt/Meta ("ctrl+C") is the
+//     letter's key, not Shift+letter: write "ctrl+shift+c" for that;
 //   - on macOS, cmd+a/c/x/v/z (and cmd+shift+z) also carry the editing command,
 //     since Chrome on macOS performs those through `commands`, not the key event.
 
@@ -982,6 +1370,9 @@ function planChord(token) {
     addMod(keyName);
     return { mods, base: null };
   }
+  // "ctrl+C" means the C key with Ctrl, as people write shortcuts — not
+  // ctrl+shift+c. Only Shift (held or written) makes it upper case.
+  if (/^[A-Z]$/.test(keyName) && (mask & (MOD_CTRL | MOD_ALT | MOD_META))) keyName = keyName.toLowerCase();
   const base = resolveBaseKey(keyName, mask);
   if (!base) throw new Error('Unknown key "' + keyName + '" in "' + token + '"');
   if (isZoomShortcut(mask, base)) throw new Error(ZOOM_SHORTCUT_ERROR);
@@ -998,18 +1389,18 @@ function keyParams(type, d, mask, text) {
   return p;
 }
 
-async function sendKeyEvent(tabId, params) {
-  await cdp(tabId, "Input.dispatchKeyEvent", params);
+async function sendKeyEvent(ctx, tabId, params) {
+  await cdp(ctx, tabId, "Input.dispatchKeyEvent", params);
 }
 
 // pressChord sends the CDP events for one planned chord.
-async function pressChord(tabId, plan) {
+async function pressChord(ctx, tabId, plan) {
   let mask = 0;
   const held = [];
   const down = async (m) => {
     mask |= m.bit;
     held.push(m);
-    await sendKeyEvent(tabId, keyParams("rawKeyDown", m, mask, null));
+    await sendKeyEvent(ctx, tabId, keyParams("rawKeyDown", m, mask, null));
   };
   for (const m of plan.mods) await down(m);
   const base = plan.base;
@@ -1021,12 +1412,12 @@ async function pressChord(tabId, plan) {
     if (IS_MAC && (mask & MOD_META) && !(mask & (MOD_CTRL | MOD_ALT)) && base.base && MAC_COMMANDS[base.base]) {
       p.commands = [base.base === "z" && (mask & MOD_SHIFT) ? "redo" : MAC_COMMANDS[base.base]];
     }
-    await sendKeyEvent(tabId, p);
-    await sendKeyEvent(tabId, keyParams("keyUp", base, mask, null));
+    await sendKeyEvent(ctx, tabId, p);
+    await sendKeyEvent(ctx, tabId, keyParams("keyUp", base, mask, null));
   }
   for (let i = held.length - 1; i >= 0; i--) {
     mask &= ~held[i].bit;
-    await sendKeyEvent(tabId, keyParams("keyUp", held[i], mask, null));
+    await sendKeyEvent(ctx, tabId, keyParams("keyUp", held[i], mask, null));
   }
 }
 
@@ -1034,7 +1425,7 @@ async function pressChord(tabId, plan) {
 // is parsed before any event is sent, so a bad token presses nothing. An
 // unknown multi-character name with no modifiers is inserted as text (be
 // forgiving; prefer the type action for text).
-async function pressKeys(tabId, text, repeat) {
+async function pressKeys(ctx, tabId, text, repeat) {
   const tokens = String(text).trim().split(/\s+/).filter(Boolean);
   if (tokens.length === 0) throw new Error("key action requires text (the key(s) to press)");
   const n = repeat === undefined || repeat === null ? 1 : Number(repeat);
@@ -1050,48 +1441,90 @@ async function pressKeys(tabId, text, repeat) {
   for (let r = 0; r < n; r++) {
     for (const plan of plans) {
       if (!plan) continue;
-      if (plan.literal !== undefined) await typeText(tabId, plan.literal);
-      else await pressChord(tabId, plan);
+      if (plan.literal !== undefined) await typeText(ctx, tabId, plan.literal);
+      else await pressChord(ctx, tabId, plan);
     }
   }
 }
 
-async function mouseEvent(tabId, type, x, y, extra) {
-  await cdp(tabId, "Input.dispatchMouseEvent", { type, x, y, ...(extra || {}) });
+async function mouseEvent(ctx, tabId, type, x, y, extra) {
+  await cdp(ctx, tabId, "Input.dispatchMouseEvent", { type, x, y, ...(extra || {}) });
 }
 
-async function mouseClick(tabId, coord, button, clickCount, modifiers) {
+async function mouseClick(ctx, tabId, coord, button, clickCount, modifiers) {
   if (!coord) throw new Error("click requires a coordinate or ref");
   const [x, y] = coord;
   const mods = modifierMask(modifiers);
   // CDP `buttons` is the bitmask of buttons CURRENTLY down: left=1, right=2,
   // middle=4. It is set on press and cleared (0) on release.
   const btMask = button === "right" ? 2 : button === "middle" ? 4 : 1;
-  await showCursor(tabId, x, y);
-  await mouseEvent(tabId, "mouseMoved", x, y, { modifiers: mods, buttons: 0 });
-  await mouseEvent(tabId, "mousePressed", x, y, { button, buttons: btMask, clickCount, modifiers: mods });
-  await mouseEvent(tabId, "mouseReleased", x, y, { button, buttons: 0, clickCount, modifiers: mods });
+  await showCursor(ctx, tabId, x, y);
+  await mouseEvent(ctx, tabId, "mouseMoved", x, y, { modifiers: mods, buttons: 0 });
+  await mouseEvent(ctx, tabId, "mousePressed", x, y, { button, buttons: btMask, clickCount, modifiers: mods });
+  await mouseEvent(ctx, tabId, "mouseReleased", x, y, { button, buttons: 0, clickCount, modifiers: mods });
 }
 
-async function mouseMove(tabId, coord) {
+async function mouseMove(ctx, tabId, coord) {
   if (!coord) throw new Error("mouse move requires a coordinate or ref");
-  await showCursor(tabId, coord[0], coord[1]);
-  await mouseEvent(tabId, "mouseMoved", coord[0], coord[1], { buttons: 0 });
+  await showCursor(ctx, tabId, coord[0], coord[1]);
+  await mouseEvent(ctx, tabId, "mouseMoved", coord[0], coord[1], { buttons: 0 });
 }
 
-async function mouseDrag(tabId, start, end) {
+// mouseDrag presses at start, moves to end in steps (pages that track
+// mousemove — sliders, sortable lists, canvases — see a real path) and
+// releases there. An HTML5 drag (draggable=true) is intercepted through CDP
+// (Input.setInterceptDrags) and completed with dragEnter/dragOver/drop at the
+// end point, so the drop target gets its drop event.
+async function mouseDrag(ctx, tabId, start, end) {
   if (!start || !end) throw new Error("left_click_drag requires start_coordinate and coordinate");
-  await showCursor(tabId, start[0], start[1]);
-  await mouseEvent(tabId, "mouseMoved", start[0], start[1], { buttons: 0 });
-  await mouseEvent(tabId, "mousePressed", start[0], start[1], { button: "left", buttons: 1, clickCount: 1 });
-  await showCursor(tabId, end[0], end[1]);
-  await mouseEvent(tabId, "mouseMoved", end[0], end[1], { button: "left", buttons: 1 });
-  await mouseEvent(tabId, "mouseReleased", end[0], end[1], { button: "left", buttons: 0, clickCount: 1 });
+  let dragData = null;
+  ctx.onDrag = (data) => {
+    dragData = data || { items: [], dragOperationsMask: 1 };
+  };
+  let intercepting = false;
+  try {
+    try {
+      await cdp(ctx, tabId, "Input.setInterceptDrags", { enabled: true }, 5000);
+      intercepting = true;
+    } catch (e) {
+      // An older Chrome: a plain mouse drag only.
+    }
+    await showCursor(ctx, tabId, start[0], start[1]);
+    await mouseEvent(ctx, tabId, "mouseMoved", start[0], start[1], { buttons: 0 });
+    await mouseEvent(ctx, tabId, "mousePressed", start[0], start[1], { button: "left", buttons: 1, clickCount: 1 });
+    const dist = Math.hypot(end[0] - start[0], end[1] - start[1]);
+    const steps = Math.max(5, Math.min(20, Math.round(dist / 20)));
+    for (let i = 1; i <= steps && !dragData; i++) {
+      const x = Math.round(start[0] + ((end[0] - start[0]) * i) / steps);
+      const y = Math.round(start[1] + ((end[1] - start[1]) * i) / steps);
+      await mouseEvent(ctx, tabId, "mouseMoved", x, y, { button: "left", buttons: 1 });
+    }
+    if (intercepting && !dragData) await sleep(50); // the drag event may trail the last move
+    await showCursor(ctx, tabId, end[0], end[1]);
+    if (dragData) {
+      for (const type of ["dragEnter", "dragOver", "drop"]) {
+        await cdp(ctx, tabId, "Input.dispatchDragEvent", { type, x: end[0], y: end[1], data: dragData, modifiers: 0 });
+      }
+    }
+    await mouseEvent(ctx, tabId, "mouseReleased", end[0], end[1], { button: "left", buttons: 0, clickCount: 1 });
+    return dragData ? "drag-and-drop" : "mouse drag";
+  } finally {
+    ctx.onDrag = null;
+    if (intercepting) {
+      try { await cdp(ctx, tabId, "Input.setInterceptDrags", { enabled: false }, 5000); } catch (e) {}
+    }
+  }
 }
 
-async function mouseScroll(tabId, coord, direction, amount) {
-  const [x, y] = coord || (await viewportCenter(tabId));
-  const ticks = (amount || 3) * 100;
+async function mouseScroll(ctx, tabId, coord, direction, amount) {
+  let x, y;
+  if (coord) [x, y] = coord;
+  else {
+    const info = await viewportInfo(ctx, tabId);
+    x = Math.floor((info.w || 0) / 2);
+    y = Math.floor((info.h || 0) / 2);
+  }
+  const ticks = (Math.round(Number(amount)) || 3) * 100;
   let deltaX = 0, deltaY = 0;
   switch (direction) {
     case "up": deltaY = -ticks; break;
@@ -1100,270 +1533,924 @@ async function mouseScroll(tabId, coord, direction, amount) {
     case "right": deltaX = ticks; break;
     default: deltaY = ticks;
   }
-  await mouseEvent(tabId, "mouseWheel", x, y, { deltaX, deltaY });
+  await mouseEvent(ctx, tabId, "mouseWheel", x, y, { deltaX, deltaY });
 }
 
-async function viewportCenter(tabId) {
-  const r = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: () => [Math.floor(window.innerWidth / 2), Math.floor(window.innerHeight / 2)],
+async function typeText(ctx, tabId, text) {
+  await cdp(ctx, tabId, "Input.insertText", { text: String(text) });
+}
+
+// --- the page agent (runs inside the page) -----------------------------------
+//
+// pageAgent is injected with chrome.scripting into the tab's top frame (in the
+// extension's isolated world, which the page cannot see) and does every DOM
+// job: find, resolving a ref to a point (or a scroll), form filling, reading
+// the viewport. It must be self-contained (chrome.scripting serializes it).
+//
+// Refs: find tags each element it returns with a ref "ref_<n>". The refs live
+// in a Map in the isolated world (not in DOM attributes), so a lookup is exact:
+// one ref is one element. n is unique per tab across documents — the extension
+// hands each find a fresh block of numbers (refBlock) — so a ref from a page
+// that has since navigated or reloaded is reported as stale instead of
+// silently hitting whatever element got the same number on the new page. The
+// same element keeps its ref across finds on one page.
+//
+// find matches by what models ask for: the element's accessible name (its
+// label — label[for], a wrapping label, aria-labelledby, aria-label —
+// placeholder, title, alt, text), its role or type in words ("input",
+// "text field", "button", "link", "checkbox", "dropdown", "form", …) and its
+// name/id attributes. A label is folded into its control: "Full name" returns
+// the input, not the <label>. Results are ranked (exact name matches first),
+// capped, and only visible elements are returned unless includeHidden is set.
+// Open shadow roots and same-origin iframes are searched too.
+
+function pageAgent(op, arg) {
+  arg = arg || {};
+  const S = (globalThis.__gocodeAgent = globalThis.__gocodeAgent || { next: 0, refs: new Map(), byEl: new WeakMap() });
+
+  const tagOf = (el) => String((el && el.tagName) || "").toLowerCase();
+  const words = (s) =>
+    String(s == null ? "" : s)
+      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, " ")
+      .trim();
+  const clip = (s, n) => {
+    s = String(s == null ? "" : s).replace(/\s+/g, " ").trim();
+    return s.length > n ? s.slice(0, n - 1) + "…" : s;
+  };
+  const rootOf = (el) => (el.getRootNode ? el.getRootNode() : document);
+  const attr = (el, n) => (el.getAttribute && el.getAttribute(n)) || "";
+  const LABELABLE = { input: 1, select: 1, textarea: 1, button: 1, meter: 1, progress: 1, output: 1 };
+
+  // walk visits every element in DOM order, including open shadow roots and
+  // same-origin iframes.
+  function walk(visit) {
+    const stack = [document.documentElement];
+    while (stack.length) {
+      const el = stack.pop();
+      if (!el || el.nodeType !== 1) continue;
+      const tag = tagOf(el);
+      if (tag === "script" || tag === "style" || tag === "noscript" || tag === "template" || tag === "head") continue;
+      visit(el);
+      const kids = [];
+      if (el.shadowRoot) kids.push(...Array.from(el.shadowRoot.children || []));
+      kids.push(...Array.from(el.children || []));
+      if (tag === "iframe" || tag === "frame") {
+        try {
+          const d = el.contentDocument;
+          if (d && d.documentElement) kids.push(d.documentElement);
+        } catch (e) {}
+      }
+      for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i]);
+    }
+  }
+
+  // textOf returns an element's text (up to ~400 chars), skipping the
+  // contents of controls and the alt text of images inside it.
+  function textOf(el) {
+    let out = "";
+    const visit = (n) => {
+      for (const c of Array.from(n.childNodes || [])) {
+        if (out.length > 400) return;
+        if (c.nodeType === 3) out += c.data != null ? c.data : c.textContent || "";
+        else if (c.nodeType === 1) {
+          const t = tagOf(c);
+          if (t === "script" || t === "style" || t === "select" || t === "textarea" || t === "input") continue;
+          if (t === "img") { out += " " + attr(c, "alt") + " "; continue; }
+          out += " ";
+          visit(c);
+          out += " ";
+        }
+      }
+    };
+    visit(el);
+    return out;
+  }
+
+  function labelControl(label) {
+    const f = attr(label, "for");
+    if (f) {
+      const root = rootOf(label);
+      const c = root.getElementById ? root.getElementById(f) : null;
+      if (c) return c;
+    }
+    let found = null;
+    const visit = (n) => {
+      for (const c of Array.from(n.children || [])) {
+        if (found) return;
+        if (LABELABLE[tagOf(c)] && attr(c, "type").toLowerCase() !== "hidden") { found = c; return; }
+        visit(c);
+      }
+    };
+    visit(label);
+    return found;
+  }
+
+  // buildIndex walks the page once: ids and labels per root, and the
+  // elements find considers.
+  function buildIndex(wantCandidates) {
+    const ix = { ids: new Map(), labelsOf: new Map(), all: [] };
+    walk((el) => {
+      const root = rootOf(el);
+      const id = attr(el, "id");
+      if (id) {
+        if (!ix.ids.has(root)) ix.ids.set(root, new Map());
+        if (!ix.ids.get(root).has(id)) ix.ids.get(root).set(id, el);
+      }
+      if (tagOf(el) === "label") {
+        const c = labelControl(el);
+        if (c) {
+          if (!ix.labelsOf.has(c)) ix.labelsOf.set(c, []);
+          ix.labelsOf.get(c).push(el);
+        }
+      }
+      if (wantCandidates) ix.all.push(el);
+    });
+    return ix;
+  }
+
+  function nameOf(el, ix) {
+    const by = attr(el, "aria-labelledby");
+    if (by) {
+      const m = ix.ids.get(rootOf(el));
+      const t = by.split(/\s+/).map((i) => m && m.get(i)).filter(Boolean).map(textOf).join(" ");
+      if (t.trim()) return clip(t, 200);
+    }
+    const al = attr(el, "aria-label");
+    if (al.trim()) return clip(al, 200);
+    const tag = tagOf(el);
+    const labels = () => clip((ix.labelsOf.get(el) || []).map(textOf).join(" "), 200);
+    if (tag === "input" || tag === "select" || tag === "textarea") {
+      const lt = labels();
+      if (lt) return lt;
+      const type = attr(el, "type").toLowerCase();
+      if (tag === "input" && (type === "button" || type === "submit" || type === "reset")) {
+        return clip(el.value || (type === "submit" ? "Submit" : type === "reset" ? "Reset" : ""), 200);
+      }
+      if (tag === "input" && type === "image") return clip(attr(el, "alt"), 200);
+      return clip(attr(el, "placeholder") || attr(el, "title"), 200);
+    }
+    if (tag === "img") return clip(attr(el, "alt") || attr(el, "title"), 200);
+    const t = clip(textOf(el), 200);
+    if (t) return t;
+    return labels() || clip(attr(el, "title") || attr(el, "placeholder"), 200);
+  }
+
+  function roleOf(el) {
+    const explicit = attr(el, "role").trim().split(/\s+/)[0].toLowerCase();
+    if (explicit) return explicit;
+    const tag = tagOf(el);
+    switch (tag) {
+      case "a": return el.hasAttribute("href") ? "link" : "generic";
+      case "button": case "summary": return "button";
+      case "input": {
+        const t = (attr(el, "type") || "text").toLowerCase();
+        if (t === "button" || t === "submit" || t === "reset" || t === "image") return "button";
+        if (t === "checkbox") return "checkbox";
+        if (t === "radio") return "radio";
+        if (t === "range") return "slider";
+        if (t === "search") return "searchbox";
+        if (t === "number") return "spinbutton";
+        if (t === "hidden") return "hidden";
+        if (t === "file") return "file";
+        if (el.hasAttribute("list")) return "combobox";
+        return "textbox";
+      }
+      case "textarea": return "textbox";
+      case "select": return el.multiple || Number(attr(el, "size")) > 1 ? "listbox" : "combobox";
+      case "form": return "form";
+      case "label": return "label";
+      case "img": return "img";
+      case "dialog": return "dialog";
+      case "h1": case "h2": case "h3": case "h4": case "h5": case "h6": return "heading";
+    }
+    if (el.isContentEditable) return "textbox";
+    return "generic";
+  }
+
+  function frameOffset(el) {
+    let x = 0, y = 0;
+    let doc = el.ownerDocument;
+    for (let i = 0; doc && doc !== document && i < 10; i++) {
+      const fe = doc.defaultView && doc.defaultView.frameElement;
+      if (!fe) break;
+      const r = fe.getBoundingClientRect();
+      x += r.left + (fe.clientLeft || 0);
+      y += r.top + (fe.clientTop || 0);
+      doc = fe.ownerDocument;
+    }
+    return { x, y };
+  }
+
+  function rectOf(el) {
+    const r = el.getBoundingClientRect();
+    const o = frameOffset(el);
+    return { left: r.left + o.x, top: r.top + o.y, width: r.width, height: r.height };
+  }
+
+  function isVisible(el, r) {
+    if (!(r.width > 0 && r.height > 0)) return false;
+    try {
+      const view = (el.ownerDocument && el.ownerDocument.defaultView) || window;
+      const cs = view.getComputedStyle(el);
+      if (cs && (cs.visibility === "hidden" || cs.visibility === "collapse" || cs.display === "none")) return false;
+    } catch (e) {}
+    return true;
+  }
+
+  const STALE = (ref) =>
+    ref + " is not on this page: refs from an earlier page (before a navigation or reload) do not carry over. Run find again on the current page.";
+
+  function lookup(ref) {
+    ref = String(ref == null ? "" : ref).trim();
+    if (/^ref_\d+$/.test(ref)) {
+      const el = S.refs.get(ref);
+      if (!el) return { error: STALE(ref) };
+      if (!el.isConnected) {
+        S.refs.delete(ref);
+        return { error: ref + " is no longer on the page (it was removed or re-rendered). Run find again to get a fresh ref." };
+      }
+      return { el };
+    }
+    let el = null;
+    try { el = document.querySelector(ref); } catch (e) {}
+    return el ? { el } : { error: "ref not found: " + ref + " — use a ref returned by find (e.g. ref_3)" };
+  }
+
+  function refFor(el) {
+    let ref = S.byEl.get(el);
+    if (ref && S.refs.get(ref) === el) return ref;
+    ref = "ref_" + ++S.next;
+    S.refs.set(ref, el);
+    S.byEl.set(el, ref);
+    return ref;
+  }
+
+  function describe(el) {
+    if (!el) return "nothing";
+    let s = "<" + tagOf(el);
+    const id = attr(el, "id");
+    if (id) s += "#" + id;
+    const cls = attr(el, "class").trim().split(/\s+/).filter(Boolean).slice(0, 2);
+    if (cls.length) s += "." + cls.join(".");
+    s += ">";
+    const t = clip(textOf(el), 60);
+    return t ? s + ' "' + t + '"' : s;
+  }
+
+  // ---- find ----
+
+  // Phrases that name a kind of element, rewritten to a role token "@kind".
+  const KIND_PHRASES = [
+    [/\b(text ?areas?|multi ?line( text)?( fields?| boxe?s?| inputs?)?)\b/g, " @textarea "],
+    [/\bsearch ?(boxe?s?|fields?|bars?|inputs?)\b/g, " search @text "],
+    [/\b(text|edit|entry) ?(fields?|boxe?s?|inputs?)\b/g, " @text "],
+    [/\binput ?(fields?|boxe?s?|elements?)\b/g, " @input "],
+    [/\btext ?boxe?s?\b/g, " @text "],
+    [/\b(check ?boxe?s?|tick ?boxe?s?)\b/g, " @checkbox "],
+    [/\bradio( buttons?| boxe?s?)?s?\b/g, " @radio "],
+    [/\b(drop ?downs?|combo ?boxe?s?|select ?boxe?s?|selects?|pick ?lists?|pickers?|list ?boxe?s?)\b/g, " @select "],
+    [/\b(buttons?|btns?)\b/g, " @button "],
+    [/\b(links?|hyperlinks?|anchors?)\b/g, " @link "],
+    [/\bforms?\b/g, " @form "],
+    [/\b(headings?|headers?)\b/g, " @heading "],
+    [/\b(images?|imgs?|pictures?)\b/g, " @img "],
+    [/\b(toggles?|switch(es)?)\b/g, " @switch "],
+    [/\bsliders?\b/g, " @slider "],
+    [/\btabs?\b/g, " @tab "],
+    [/\b(dialogs?|modals?|popups?)\b/g, " @dialog "],
+    [/\blabels?\b/g, " @label "],
+    [/\bmenu ?items?\b/g, " @menuitem "],
+    [/\b(inputs?|fields?|controls?)\b/g, " @input "],
+  ];
+  const KINDS = {
+    text: (r, el) => r === "textbox" || r === "searchbox" || (r === "combobox" && tagOf(el) === "input"),
+    textarea: (r, el) => tagOf(el) === "textarea" || (r === "textbox" && (el.isContentEditable || attr(el, "aria-multiline") === "true")),
+    input: (r) => ["textbox", "searchbox", "combobox", "spinbutton", "listbox", "checkbox", "radio", "slider", "switch", "file"].includes(r),
+    checkbox: (r) => r === "checkbox" || r === "switch",
+    radio: (r) => r === "radio",
+    select: (r) => r === "combobox" || r === "listbox",
+    button: (r) => r === "button",
+    link: (r) => r === "link",
+    form: (r) => r === "form",
+    heading: (r) => r === "heading",
+    img: (r) => r === "img",
+    switch: (r) => r === "switch" || r === "checkbox",
+    slider: (r) => r === "slider",
+    tab: (r) => r === "tab",
+    dialog: (r) => r === "dialog" || r === "alertdialog",
+    label: (r) => r === "label",
+    menuitem: (r) => r.startsWith("menuitem"),
+  };
+  const STOP = new Set(["the", "a", "an", "for", "of", "to", "in", "on", "at", "with", "my", "your", "our", "this", "that",
+    "its", "which", "where", "element", "elements", "item", "items", "please", "box", "area", "thing", "called", "named", "labeled", "labelled"]);
+  const INTERACTIVE = new Set(["button", "link", "textbox", "searchbox", "combobox", "spinbutton", "listbox", "checkbox",
+    "radio", "slider", "switch", "file", "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "option"]);
+
+  function isCandidate(el) {
+    const tag = tagOf(el);
+    if (tag === "input" && attr(el, "type").toLowerCase() === "hidden") return false;
+    if ({ a: 1, button: 1, input: 1, textarea: 1, select: 1, label: 1, summary: 1, form: 1, img: 1, dialog: 1,
+      h1: 1, h2: 1, h3: 1, h4: 1, h5: 1, h6: 1 }[tag]) return true;
+    return el.hasAttribute("role") || el.hasAttribute("onclick") || el.hasAttribute("tabindex") ||
+      el.hasAttribute("aria-label") || !!el.isContentEditable;
+  }
+
+  const hasWords = (hay, phrase) => (" " + hay + " ").includes(" " + phrase + " ");
+  const hasPrefix = (hay, phrase) => (" " + hay).includes(" " + phrase);
+
+  function score(name, sec, tokens, phrase) {
+    if (!tokens.length) return 50;
+    if (name === phrase) return 100;
+    if (hasWords(name, phrase) && name.length <= phrase.length + 12) return 90;
+    if (name.startsWith(phrase + " ")) return 85;
+    if (hasWords(name, phrase)) return 75;
+    if (tokens.every((t) => hasWords(name, t))) return 65;
+    if (hasPrefix(name, phrase)) return 60;
+    if (hasWords(sec, phrase) || tokens.every((t) => hasWords(sec, t))) return 55;
+    const both = name + " " + sec;
+    if (tokens.every((t) => hasWords(both, t) || hasPrefix(both, t))) return 45;
+    return 0;
+  }
+
+  function currentValue(el, role) {
+    const tag = tagOf(el);
+    const type = attr(el, "type").toLowerCase();
+    if (role === "checkbox" || role === "radio" || role === "switch") {
+      if (tag === "input") return el.checked ? "checked" : "unchecked";
+      const c = attr(el, "aria-checked");
+      return c ? (c === "true" ? "checked" : c === "false" ? "unchecked" : c) : undefined;
+    }
+    if (tag === "select") {
+      const sel = Array.from(el.options || []).filter((o) => o.selected).map((o) => clip(o.text, 40));
+      return sel.join(", ");
+    }
+    if (tag === "input" || tag === "textarea") {
+      if (type === "password") return el.value ? "(hidden)" : "";
+      if (type === "button" || type === "submit" || type === "reset" || type === "image") return undefined;
+      return clip(el.value, 80);
+    }
+    return undefined;
+  }
+
+  function find() {
+    let q = " " + words(arg.query) + " ";
+    for (const [re, rep] of KIND_PHRASES) q = q.replace(re, rep);
+    const kinds = [];
+    const tokens = [];
+    for (const w of q.split(/\s+/).filter(Boolean)) {
+      if (w.startsWith("@")) { if (!kinds.includes(w.slice(1))) kinds.push(w.slice(1)); }
+      else if (!STOP.has(w)) tokens.push(w);
+    }
+    if (!kinds.length && !tokens.length) return { error: "find: the query names nothing to look for" };
+    const phrase = tokens.join(" ");
+    const limit = Math.max(1, Math.min(100, Number(arg.limit) || 20));
+    S.next = Math.max(S.next, Number(arg.base) || 0);
+    const vw = window.innerWidth, vh = window.innerHeight;
+
+    const ix = buildIndex(true);
+    const hits = [];
+    let order = 0;
+    for (const el of ix.all) {
+      order++;
+      if (!isCandidate(el)) continue;
+      const role = roleOf(el);
+      if (kinds.length && !kinds.some((k) => KINDS[k] && KINDS[k](role, el))) continue;
+      const r = rectOf(el);
+      const visible = isVisible(el, r);
+      if (!visible && !arg.includeHidden) continue;
+      const name = nameOf(el, ix);
+      const sec = words([attr(el, "placeholder"), attr(el, "title"), attr(el, "name"), attr(el, "id"), attr(el, "alt"),
+        attr(el, "data-testid"), attr(el, "type"), role === "button" ? el.value : ""].join(" "));
+      let s = score(words(name), sec, tokens, phrase);
+      if (!s) continue;
+      if (INTERACTIVE.has(role)) s += 6;
+      if (role === "label") s -= 10;
+      if (role === "generic") s -= 8;
+      if (el.disabled || attr(el, "aria-disabled") === "true") s -= 15;
+      hits.push({ el, role, name, r, s, order, visible });
+    }
+
+    // No element matched by name/role: look for the text itself.
+    if (!hits.length && tokens.length && !kinds.length) {
+      order = 0;
+      for (const el of ix.all) {
+        order++;
+        let own = "";
+        for (const c of Array.from(el.childNodes || [])) if (c.nodeType === 3) own += c.data != null ? c.data : c.textContent;
+        if (!hasWords(words(own), phrase) && !tokens.every((t) => hasWords(words(own), t))) continue;
+        const r = rectOf(el);
+        const visible = isVisible(el, r);
+        if (!visible && !arg.includeHidden) continue;
+        hits.push({ el, role: "text", name: clip(own, 200), r, s: 20, order, visible });
+      }
+    }
+
+    // A label is folded into its control: drop it when the control matched.
+    const matched = new Set(hits.map((h) => h.el));
+    const kept = hits.filter((h) => {
+      if (tagOf(h.el) !== "label") return true;
+      const c = labelControl(h.el);
+      return !(c && matched.has(c));
+    });
+    kept.sort((a, b) => b.s - a.s || a.order - b.order);
+
+    const matches = kept.slice(0, limit).map((h) => {
+      const x = Math.round(h.r.left + h.r.width / 2);
+      const y = Math.round(h.r.top + h.r.height / 2);
+      const m = { ref: refFor(h.el), role: h.role, text: clip(h.name, 120), x, y, tag: tagOf(h.el) };
+      const type = attr(h.el, "type").toLowerCase();
+      if (type && (m.tag === "input" || m.tag === "button")) m.type = type;
+      const nm = attr(h.el, "name");
+      if (nm) m.name = clip(nm, 60);
+      const v = currentValue(h.el, h.role);
+      if (v !== undefined) m.value = v;
+      if (h.el.disabled || attr(h.el, "aria-disabled") === "true") m.disabled = true;
+      if (!h.visible) m.hidden = true;
+      else if (x < 0 || y < 0 || x >= vw || y >= vh) m.offscreen = true;
+      return m;
+    });
+    return { matches, total: kept.length, next: S.next };
+  }
+
+  // ---- point (a ref -> a clickable viewport point) ----
+
+  function deepHit(x, y) {
+    let doc = document, lx = x, ly = y;
+    let hit = doc.elementFromPoint(lx, ly);
+    for (let i = 0; hit && i < 20; i++) {
+      if (hit.shadowRoot && hit.shadowRoot.elementFromPoint) {
+        const inner = hit.shadowRoot.elementFromPoint(lx, ly);
+        if (inner && inner !== hit) { hit = inner; continue; }
+      }
+      const t = tagOf(hit);
+      if (t === "iframe" || t === "frame") {
+        let d = null;
+        try { d = hit.contentDocument; } catch (e) {}
+        if (d && d.elementFromPoint) {
+          const r = hit.getBoundingClientRect();
+          lx -= r.left + (hit.clientLeft || 0);
+          ly -= r.top + (hit.clientTop || 0);
+          doc = d;
+          const inner = d.elementFromPoint(lx, ly);
+          if (inner) { hit = inner; continue; }
+        }
+      }
+      break;
+    }
+    return hit;
+  }
+
+  function within(el, n) {
+    for (let i = 0; n && i < 1000; i++) {
+      if (n === el) return true;
+      n = n.parentNode || n.host || null;
+    }
+    return false;
+  }
+
+  function reaches(el, hit) {
+    if (!hit) return false;
+    if (within(el, hit)) return true;
+    // A click on an element's label reaches the element, and the other way round.
+    for (let n = hit, i = 0; n && i < 50; n = n.parentNode || n.host || null, i++) {
+      if (tagOf(n) === "label" && labelControl(n) === el) return true;
+    }
+    return tagOf(el) === "label" && labelControl(el) === hit;
+  }
+
+  function point() {
+    const found = lookup(arg.ref);
+    if (found.error) return found;
+    const el = found.el;
+    const vw = window.innerWidth, vh = window.innerHeight;
+    let r = rectOf(el);
+    const inView = (rr) => rr.top >= 0 && rr.left >= 0 && rr.top + rr.height <= vh && rr.left + rr.width <= vw;
+    if (!inView(r) && el.scrollIntoView) {
+      el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+      r = rectOf(el);
+    }
+    if (!(r.width > 0 && r.height > 0)) {
+      return { error: arg.ref + " is not visible (it has no size — hidden or collapsed). Run find again or pick another element." };
+    }
+    const pts = [[0.5, 0.5], [0.25, 0.5], [0.75, 0.5], [0.5, 0.25], [0.5, 0.75], [0.15, 0.15], [0.85, 0.85]];
+    let onScreen = false;
+    let cover = null, coverAt = null;
+    for (const [fx, fy] of pts) {
+      const x = Math.round(r.left + r.width * fx);
+      const y = Math.round(r.top + r.height * fy);
+      if (x < 0 || y < 0 || x >= vw || y >= vh) continue;
+      onScreen = true;
+      if (arg.noCheck) return { x, y };
+      const hit = deepHit(x, y);
+      if (reaches(el, hit)) return { x, y };
+      if (!cover) { cover = hit; coverAt = [x, y]; }
+    }
+    if (!onScreen) {
+      return { error: arg.ref + " is off-screen even after scrolling it into view (at " + Math.round(r.left) + "," + Math.round(r.top) + "). Scroll the page or resize the window." };
+    }
+    return {
+      error: arg.ref + " is covered by " + describe(cover) + " at (" + coverAt[0] + ", " + coverAt[1] +
+        "), so a click would hit that instead. Close or dismiss it (or click it, if that is what you meant) and try again.",
+    };
+  }
+
+  // ---- fill (form_input) ----
+
+  function boolOf(v) {
+    if (typeof v === "boolean") return v;
+    if (typeof v === "number") return v !== 0;
+    const s = String(v == null ? "" : v).trim().toLowerCase();
+    if (["true", "on", "yes", "y", "1", "checked", "check", "selected"].includes(s)) return true;
+    if (["false", "off", "no", "n", "0", "", "unchecked", "uncheck", "none", "null"].includes(s)) return false;
+    return undefined;
+  }
+
+  function fire(el, type, extra) {
+    const view = (el.ownerDocument && el.ownerDocument.defaultView) || window;
+    let ev;
+    try {
+      ev = type === "input" && view.InputEvent
+        ? new view.InputEvent("input", { bubbles: true, composed: true, ...(extra || {}) })
+        : new view.Event(type, { bubbles: true, composed: true });
+    } catch (e) {
+      ev = new view.Event(type, { bubbles: true });
+    }
+    el.dispatchEvent(ev);
+  }
+
+  // setNative sets a property through the element's prototype setter, so a
+  // framework that wraps the instance's own value property (React's value
+  // tracker) sees a real change in the input event.
+  function setNative(el, prop, v) {
+    let proto = Object.getPrototypeOf(el);
+    let desc;
+    while (proto && !(desc = Object.getOwnPropertyDescriptor(proto, prop))) proto = Object.getPrototypeOf(proto);
+    if (desc && desc.set) desc.set.call(el, v);
+    else el[prop] = v;
+  }
+
+  const settle = () => new Promise((r) => setTimeout(r, 30));
+  const FORMATS = { date: "YYYY-MM-DD", time: "HH:MM", "datetime-local": "YYYY-MM-DDTHH:MM", month: "YYYY-MM", week: "YYYY-Www", color: "#rrggbb" };
+
+  async function setChecked(el, want) {
+    if (el.checked !== want) el.click();
+    await settle();
+    if (el.checked !== want) {
+      setNative(el, "checked", want);
+      fire(el, "input");
+      fire(el, "change");
+      await settle();
+    }
+    return el.checked === want;
+  }
+
+  async function fill() {
+    const found = lookup(arg.ref);
+    if (found.error) return found;
+    const ref = arg.ref;
+    let el = found.el;
+    const value = arg.value;
+    if (tagOf(el) === "label") el = labelControl(el) || el;
+    const tag = tagOf(el);
+    const type = tag === "input" ? (attr(el, "type") || "text").toLowerCase() : "";
+    const fail = (msg) => ({ error: ref + " " + msg });
+    if (el.disabled) return fail("is disabled, so it can't be changed.");
+
+    if (type === "checkbox") {
+      const want = boolOf(value);
+      if (want === undefined) return fail("is a checkbox: give true or false, not " + JSON.stringify(value) + ".");
+      if (!(await setChecked(el, want))) return fail("did not stay " + (want ? "checked" : "unchecked") + " (the page reverted it).");
+      return { ok: true, ref, tag, type, value: want ? "checked" : "unchecked" };
+    }
+    if (type === "radio") {
+      let target = el;
+      const b = boolOf(value);
+      if (b === false) return fail("is a radio button and can't be unchecked: choose another option of its group instead.");
+      if (b === undefined) {
+        // A value picks the option of the group whose value or label matches.
+        const want = words(value);
+        const ix = buildIndex(true);
+        const group = ix.all.filter((r) => tagOf(r) === "input" && attr(r, "type").toLowerCase() === "radio" &&
+          attr(r, "name") === attr(el, "name") && rootOf(r) === rootOf(el) && r.form === el.form);
+        target = group.find((r) => words(r.value) === want) || group.find((r) => words(nameOf(r, ix)) === want) || null;
+        if (!target) {
+          return fail("is a radio group without the option " + JSON.stringify(value) + ". Options: " +
+            group.map((r) => JSON.stringify(clip(nameOf(r, ix) || r.value, 40))).join(", ") + ".");
+        }
+      }
+      if (target.disabled) return fail("option " + JSON.stringify(value) + " is disabled.");
+      if (!(await setChecked(target, true))) return fail("did not stay selected (the page reverted it).");
+      return { ok: true, ref, tag, type, value: clip(target.value, 80) };
+    }
+    if (tag === "select") {
+      const opts = Array.from(el.options || []);
+      const pick = (v) => {
+        const s = String(v).trim();
+        const w = words(s);
+        return opts.find((o) => o.value === s) || opts.find((o) => String(o.text).trim() === s) ||
+          opts.find((o) => words(o.text) === w) || opts.find((o) => words(o.value) === w) || null;
+      };
+      const listing = () => "Options: " + opts.slice(0, 30).map((o) => JSON.stringify(clip(o.text, 40))).join(", ") +
+        (opts.length > 30 ? ", …" : "") + ".";
+      if (el.multiple) {
+        const wants = Array.isArray(value) ? value : String(value == null ? "" : value).split(",").map((s) => s.trim()).filter(Boolean);
+        const chosen = [];
+        for (const w of wants) {
+          const o = pick(w);
+          if (!o) return fail("has no option " + JSON.stringify(w) + ". " + listing());
+          chosen.push(o);
+        }
+        for (const o of opts) o.selected = chosen.includes(o);
+        fire(el, "input");
+        fire(el, "change");
+        await settle();
+        if (!opts.every((o) => o.selected === chosen.includes(o))) return fail("did not keep the selection (the page reverted it).");
+        return { ok: true, ref, tag, value: chosen.map((o) => clip(o.text, 40)).join(", ") };
+      }
+      const o = pick(Array.isArray(value) ? value[0] : value);
+      if (!o) return fail("has no option " + JSON.stringify(value) + ". " + listing());
+      if (o.disabled) return fail("option " + JSON.stringify(clip(o.text, 40)) + " is disabled.");
+      setNative(el, "value", o.value);
+      if (!o.selected) o.selected = true;
+      fire(el, "input");
+      fire(el, "change");
+      await settle();
+      if (el.value !== o.value) return fail("did not keep the option " + JSON.stringify(clip(o.text, 40)) + " (the page reverted it).");
+      return { ok: true, ref, tag, value: clip(o.text, 80) };
+    }
+    const str = value == null ? "" : typeof value === "object" ? JSON.stringify(value) : String(value);
+    if (tag === "input" || tag === "textarea") {
+      if (type === "file") return fail("is a file input; form_input can't choose files.");
+      if (["button", "submit", "reset", "image"].includes(type)) return fail("is a button; click it instead.");
+      if (el.readOnly) return fail("is read-only, so it can't be changed.");
+      if (el.focus) el.focus();
+      setNative(el, "value", str);
+      fire(el, "input", { inputType: "insertReplacementText", data: str });
+      fire(el, "change");
+      await settle();
+      const got = String(el.value);
+      const same = got === str || ((type === "number" || type === "range") && got !== "" && Number(got) === Number(str)) ||
+        ((type === "email" || type === "url") && got === str.trim());
+      if (!same) {
+        if (FORMATS[type] && got === "") return fail("is a " + type + " input and needs a value like " + FORMATS[type] + ".");
+        const shown = type === "password" ? "a different value" : JSON.stringify(clip(got, 80));
+        return fail("did not take the value: it holds " + shown + " now (the page rejected, limited or reformatted it).");
+      }
+      return { ok: true, ref, tag, type: type || undefined, value: type === "password" ? "(hidden)" : clip(got, 80) };
+    }
+    if (el.isContentEditable) {
+      if (el.focus) el.focus();
+      el.textContent = str;
+      fire(el, "input", { inputType: "insertText", data: str });
+      await settle();
+      if (String(el.textContent).trim() !== str.trim()) return fail("did not keep the text (the editor reverted it). Click it and use type instead.");
+      return { ok: true, ref, tag, value: clip(str, 80) };
+    }
+    return fail("is a <" + tag + ">, which is not a form field. Click it, or find the input it belongs to.");
+  }
+
+  switch (op) {
+    case "find":
+      return find();
+    case "point":
+      return point();
+    case "scroll": {
+      const found = lookup(arg.ref);
+      if (found.error) return found;
+      if (found.el.scrollIntoView) found.el.scrollIntoView({ block: "center", inline: "center" });
+      return { ok: true };
+    }
+    case "fill":
+      return fill();
+    case "info":
+      return {
+        dpr: window.devicePixelRatio || 1, w: window.innerWidth, h: window.innerHeight,
+        sx: window.scrollX || 0, sy: window.scrollY || 0,
+      };
+    case "origin":
+      return String(self.origin);
+  }
+  return { error: "unknown page operation " + op };
+}
+
+// refBlock reserves a block of `size` ref numbers for one find on tabId and
+// returns its start. Blocks never overlap — not between parallel finds, and
+// not across the tab's documents — so a ref names one element on one page.
+async function refBlock(tabId, size) {
+  let base = 0;
+  await updateState(["refCounters"], (o) => {
+    const m = mapOf(o.refCounters);
+    base = Number(m[String(tabId)]) || 0;
+    return { refCounters: { ...m, [String(tabId)]: base + size } };
   });
-  return (r && r[0] && r[0].result) || [0, 0];
+  return base;
 }
 
-async function typeText(tabId, text) {
-  await cdp(tabId, "Input.insertText", { text: String(text) });
+// pageCall runs one pageAgent operation and throws its error.
+async function pageCall(ctx, tabId, opName, arg, what) {
+  const r = await runInPage(ctx, tabId, pageAgent, [opName, arg], what);
+  if (r == null) throw new Error(what + ": the page returned nothing (it may be navigating). Try again.");
+  if (r.error) throw new Error(r.error);
+  return r;
 }
 
-// refCenter resolves an element ref (a data-gocode-ref value set by find, or a
-// CSS selector fallback) to its viewport-center [x, y].
-async function refCenter(tabId, ref) {
-  const r = await chrome.scripting.executeScript({
-    target: { tabId },
-    args: [ref],
-    func: (ref) => {
-      let el = document.querySelector('[data-gocode-ref="' + ref + '"]');
-      if (!el) { try { el = document.querySelector(ref); } catch (e) {} }
-      if (!el) return null;
-      const b = el.getBoundingClientRect();
-      return [Math.round(b.left + b.width / 2), Math.round(b.top + b.height / 2)];
-    },
-  });
-  const c = r && r[0] && r[0].result;
-  if (!c) throw new Error("ref not found: " + ref);
-  return c;
+// refPoint resolves a ref to a viewport point to click: the element is
+// scrolled into view first, and a point where the element itself (not an
+// overlay) is hit is chosen; otherwise the error says what covers it.
+async function refPoint(ctx, tabId, ref, noCheck) {
+  const r = await pageCall(ctx, tabId, "point", { ref, noCheck: !!noCheck }, "locating " + ref);
+  return [r.x, r.y];
 }
 
-async function resolveCoord(tabId, params) {
-  if (Array.isArray(params.coordinate)) return params.coordinate;
-  if (params.ref) return await refCenter(tabId, params.ref);
+// coordOf reads a [x, y] coordinate (numbers, rounded to whole pixels).
+function coordOf(v, what) {
+  if (!Array.isArray(v)) return null;
+  const x = Number(v[0]), y = Number(v[1]);
+  if (v.length !== 2 || !Number.isFinite(x) || !Number.isFinite(y)) throw new Error(what + " must be [x, y] numbers");
+  return [Math.round(x), Math.round(y)];
+}
+
+async function resolveCoord(ctx, tabId, params, noCheck) {
+  const c = coordOf(params.coordinate, "coordinate");
+  if (c) return c;
+  if (params.ref) return await refPoint(ctx, tabId, params.ref, noCheck);
   return null;
-}
-
-async function scrollToRef(tabId, ref) {
-  if (!ref) throw new Error("scroll_to requires a ref");
-  const r = await chrome.scripting.executeScript({
-    target: { tabId },
-    args: [ref],
-    func: (ref) => {
-      let el = document.querySelector('[data-gocode-ref="' + ref + '"]');
-      if (!el) { try { el = document.querySelector(ref); } catch (e) {} }
-      if (!el) return false;
-      el.scrollIntoView({ block: "center", inline: "center" });
-      return true;
-    },
-  });
-  if (!(r && r[0] && r[0].result)) throw new Error("ref not found: " + ref);
 }
 
 // Computer actions that only observe the page (site check "read").
 const OBSERVE_ACTIONS = new Set(["screenshot", "zoom", "wait"]);
 
-async function doComputer(params, ctx, policy) {
+async function doComputer(params, policy, ctx) {
   const action = params.action;
   if (!action) throw new Error("computer requires an action");
   const tabId = await resolveTabId(params.tabId, sessionOf(params));
-  await checkTabSite(tabId, policy, OBSERVE_ACTIONS.has(action) ? "read" : "act");
+  await checkTabSite(ctx, tabId, policy, OBSERVE_ACTIONS.has(action) ? "read" : "act");
 
   // Screenshot/zoom capture via CDP on the (possibly background) gocode tab,
-  // reusing this call's debugger session. zoom's region crop is approximated by
-  // a full viewport capture.
+  // reusing this command's debugger session.
   if (action === "screenshot" || action === "zoom") {
-    return await captureTab(tabId, ctx);
+    if (action === "zoom" && !Array.isArray(params.region)) throw new Error("zoom requires region [x0, y0, x1, y1]");
+    return await captureTab(ctx, tabId, { region: action === "zoom" ? params.region : null, scale: params.scale });
   }
   if (action === "wait") {
-    await sleep(Math.max(0, (params.duration || 1) * 1000));
-    return { action, ok: true };
+    const secs = Number(params.duration === undefined ? 1 : params.duration);
+    if (!Number.isFinite(secs) || secs < 0) throw new Error("wait requires a duration in seconds");
+    const capped = Math.min(secs, MAX_WAIT_SECONDS);
+    await bounded(sleep(capped * 1000), capped * 1000 + 1000, "wait", ctx.op);
+    const out = { action, ok: true };
+    if (secs > MAX_WAIT_SECONDS) out.notes = ["wait is capped at " + MAX_WAIT_SECONDS + "s; waited " + MAX_WAIT_SECONDS + "s."];
+    return out;
   }
   if (action === "scroll_to") {
-    await scrollToRef(tabId, params.ref);
+    if (!params.ref) throw new Error("scroll_to requires a ref");
+    await pageCall(ctx, tabId, "scroll", { ref: params.ref }, "scrolling to " + params.ref);
     return { action, ok: true };
   }
 
-  // Input actions require CDP; attach via the shared session.
-  await ensureAttached(ctx, tabId);
-  const coord = await resolveCoord(tabId, params);
-  switch (action) {
-    case "left_click":
-    case "click":
-      await mouseClick(tabId, coord, "left", 1, params.modifiers);
-      break;
-    case "right_click":
-      await mouseClick(tabId, coord, "right", 1, params.modifiers);
-      break;
-    case "double_click":
-      await mouseClick(tabId, coord, "left", 2, params.modifiers);
-      break;
-    case "triple_click":
-      await mouseClick(tabId, coord, "left", 3, params.modifiers);
-      break;
-    case "hover":
-    case "mouse_move":
-      await mouseMove(tabId, coord);
-      break;
-    case "left_click_drag":
-      await mouseDrag(tabId, params.start_coordinate, coord);
-      break;
-    case "scroll":
-      await mouseScroll(tabId, coord, params.scroll_direction, params.scroll_amount);
-      break;
-    case "type":
-      await typeText(tabId, params.text || "");
-      break;
-    case "key":
-    case "keypress":
-      await pressKeys(tabId, params.text || "", params.repeat);
-      break;
-    default:
-      throw new Error("unsupported computer action: " + action);
-  }
-  return { action, tabId, ok: true };
+  return await acting(tabId, async () => {
+    // Input actions require CDP; attach via the shared session.
+    await ensureAttached(ctx, tabId);
+    const pointer = !["type", "key", "keypress"].includes(action);
+    const coord = pointer ? await resolveCoord(ctx, tabId, params, action === "scroll") : null;
+    const out = { action, tabId, ok: true };
+    switch (action) {
+      case "left_click":
+      case "click":
+        await mouseClick(ctx, tabId, coord, "left", 1, params.modifiers);
+        break;
+      case "right_click":
+        await mouseClick(ctx, tabId, coord, "right", 1, params.modifiers);
+        break;
+      case "double_click":
+        await mouseClick(ctx, tabId, coord, "left", 2, params.modifiers);
+        break;
+      case "triple_click":
+        await mouseClick(ctx, tabId, coord, "left", 3, params.modifiers);
+        break;
+      case "hover":
+      case "mouse_move":
+        await mouseMove(ctx, tabId, coord);
+        break;
+      case "left_click_drag":
+        out.drag = await mouseDrag(ctx, tabId, coordOf(params.start_coordinate, "start_coordinate"), coord);
+        break;
+      case "scroll":
+        await mouseScroll(ctx, tabId, coord, params.scroll_direction, params.scroll_amount);
+        break;
+      case "type":
+        await typeText(ctx, tabId, params.text || "");
+        break;
+      case "key":
+      case "keypress":
+        await pressKeys(ctx, tabId, params.text || "", params.repeat);
+        break;
+      default:
+        throw new Error("unsupported computer action: " + action);
+    }
+    return out;
+  });
 }
 
 // --- find (DOM query, read-only, no debugger) -------------------------------
 
-async function doFind(params, policy) {
+async function doFind(params, policy, ctx) {
   const query = params.query;
   if (!query) throw new Error("find requires a query");
   const tabId = await resolveTabId(params.tabId, sessionOf(params));
-  await checkTabSite(tabId, policy, "read");
-  const r = await chrome.scripting.executeScript({
-    target: { tabId },
-    args: [query, 20],
-    func: (query, limit) => {
-      const q = String(query).toLowerCase();
-      const out = [];
-      const seen = new Set();
-      const candidates = document.querySelectorAll(
-        "a,button,input,textarea,select,[role],[aria-label],label,h1,h2,h3,summary,[onclick]"
-      );
-      let n = 0;
-      for (const el of candidates) {
-        if (out.length >= limit) break;
-        const rect = el.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0) continue;
-        const hay = [
-          el.innerText || el.textContent || "",
-          el.getAttribute("aria-label") || "",
-          el.getAttribute("placeholder") || "",
-          el.getAttribute("title") || "",
-          el.getAttribute("name") || "",
-          el.value || "",
-          el.getAttribute("role") || "",
-        ].join(" ").toLowerCase();
-        if (!hay.includes(q)) continue;
-        if (seen.has(el)) continue;
-        seen.add(el);
-        const ref = "ref_" + ++n;
-        el.setAttribute("data-gocode-ref", ref);
-        const text = (el.innerText || el.textContent || el.value || el.getAttribute("aria-label") || "").trim().slice(0, 120);
-        out.push({
-          ref,
-          text,
-          role: el.getAttribute("role") || el.tagName.toLowerCase(),
-          x: Math.round(rect.left + rect.width / 2),
-          y: Math.round(rect.top + rect.height / 2),
-        });
-      }
-      return out;
-    },
-  });
-  const matches = (r && r[0] && r[0].result) || [];
-  return { tabId, matches, truncated: matches.length >= 20 };
+  await checkTabSite(ctx, tabId, policy, "read");
+  const limit = Math.max(1, Math.min(100, Math.round(Number(params.limit)) || 20));
+  const base = await refBlock(tabId, limit);
+  const r = await pageCall(ctx, tabId, "find", { query: String(query), limit, base, includeHidden: params.includeHidden === true }, "find");
+  const matches = Array.isArray(r.matches) ? r.matches : [];
+  return { tabId, matches, total: r.total, truncated: (r.total || 0) > matches.length };
 }
 
 // --- form_input (value set + events, no debugger) ---------------------------
 
-async function doFormInput(params, policy) {
+async function doFormInput(params, policy, ctx) {
   const ref = params.ref;
   if (!ref) throw new Error("form_input requires a ref");
   const tabId = await resolveTabId(params.tabId, sessionOf(params));
-  await checkTabSite(tabId, policy, "act");
-  const r = await chrome.scripting.executeScript({
-    target: { tabId },
-    args: [ref, params.value],
-    func: (ref, value) => {
-      let el = document.querySelector('[data-gocode-ref="' + ref + '"]');
-      if (!el) { try { el = document.querySelector(ref); } catch (e) {} }
-      if (!el) return { ok: false, error: "ref not found: " + ref };
-      const tag = el.tagName.toLowerCase();
-      if (el.type === "checkbox" || el.type === "radio") {
-        el.checked = !!value;
-      } else if (tag === "select") {
-        const want = String(value);
-        let matched = false;
-        for (const opt of el.options) {
-          if (opt.value === want || opt.text === want) {
-            el.value = opt.value;
-            matched = true;
-            break;
-          }
-        }
-        if (!matched) el.value = want;
-      } else {
-        el.value = value == null ? "" : String(value);
-      }
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      el.dispatchEvent(new Event("change", { bubbles: true }));
-      return { ok: true, ref };
-    },
-  });
-  const res = r && r[0] && r[0].result;
-  if (!res || !res.ok) throw new Error((res && res.error) || "form_input failed");
-  return { ref, ok: true };
+  await checkTabSite(ctx, tabId, policy, "act");
+  const r = await acting(tabId, () => pageCall(ctx, tabId, "fill", { ref, value: params.value }, "form_input " + ref));
+  return { ref, ok: true, value: r.value };
 }
 
 // --- browser_batch (sequence, one shared debugger session) ------------------
 
-async function callSub(name, input, ctx, policy) {
+async function callSub(name, input, policy, ctx) {
   switch (name) {
-    case "computer": return await doComputer(input, ctx, policy);
-    case "navigate": return await doNavigate(input, policy);
+    case "computer": return await doComputer(input, policy, ctx);
+    case "navigate": return await doNavigate(input, policy, ctx);
     case "read_page":
-    case "get_page_text": return await doReadPage(input, policy);
+    case "get_page_text": return await doReadPage(input, policy, ctx);
     case "tabs_context":
-    case "tabs_context_mcp": return await doTabsContext(input, policy);
+    case "tabs_context_mcp": return await doTabsContext(input, policy, ctx);
     case "tabs_create":
-    case "tabs_create_mcp": return await doTabsCreate(input, policy);
+    case "tabs_create_mcp": return await doTabsCreate(input, policy, ctx);
     case "tabs_close":
     case "tabs_close_mcp": return await doTabsClose(input);
-    case "screenshot": return await doScreenshot(input, ctx, policy);
-    case "find": return await doFind(input, policy);
-    case "form_input": return await doFormInput(input, policy);
-    case "javascript_tool": return await doJavascript(input, ctx, policy);
+    case "screenshot": return await doScreenshot(input, policy, ctx);
+    case "find": return await doFind(input, policy, ctx);
+    case "form_input": return await doFormInput(input, policy, ctx);
+    case "javascript_tool": return await doJavascript(input, policy, ctx);
     case "resize_window": return await doResizeWindow(input);
     case "browser_batch": throw new Error("browser_batch cannot be nested");
     default: throw new Error("unknown batch tool: " + name);
   }
 }
 
-async function doBatch(params, policy) {
+// doBatch runs the steps in order on one debugger session and stops at the
+// first error, or when the command is cancelled. Each step's result comes
+// back (find's refs, read_page's text, a javascript value, a new tab's id);
+// images are returned as dataUrl, up to MAX_BATCH_IMAGE_BYTES in all.
+async function doBatch(params, policy, ctx) {
   const actions = Array.isArray(params.actions) ? params.actions : [];
   if (actions.length === 0) throw new Error("browser_batch requires at least one action");
-  const ctx = { attached: new Set() };
   const results = [];
-  try {
-    for (const act of actions) {
-      const name = act && act.name;
-      const input = { ...((act && act.input) || {}), sessionId: sessionOf(params) };
-      try {
-        const r = await callSub(name, input, ctx, policy);
-        const entry = { name, ok: true };
-        if (r && r.dataUrl) entry.dataUrl = r.dataUrl;
-        results.push(entry);
-      } catch (e) {
-        results.push({ name, error: String((e && e.message) || e) });
-        break; // stop on the first error
-      }
+  let imageBytes = 0;
+  for (const act of actions) {
+    const name = act && act.name;
+    if (ctx.op.aborted) {
+      results.push({ name, error: String(ctx.op.aborted.message || ctx.op.aborted) });
+      break;
     }
-  } finally {
-    // One detach for the whole batch, guaranteed even on error/abort.
-    await detachAll(ctx);
+    const input = { ...((act && act.input) || {}), sessionId: sessionOf(params) };
+    const notesBefore = ctx.notes.length;
+    try {
+      const r = await callSub(name, input, policy, ctx);
+      const entry = { name, ok: true };
+      if (r && typeof r === "object") {
+        const { dataUrl, ...rest } = r;
+        if (dataUrl) {
+          if (imageBytes + dataUrl.length <= MAX_BATCH_IMAGE_BYTES) {
+            entry.dataUrl = dataUrl;
+            imageBytes += dataUrl.length;
+          } else {
+            entry.imageOmitted = "the image was left out: the batch's images reached the reply size limit";
+          }
+        }
+        entry.result = rest;
+      }
+      const notes = ctx.notes.slice(notesBefore);
+      if (notes.length) entry.notes = notes;
+      results.push(entry);
+    } catch (e) {
+      const entry = { name, error: String((e && e.message) || e) };
+      const notes = ctx.notes.slice(notesBefore);
+      if (notes.length) entry.notes = notes;
+      results.push(entry);
+      break; // stop on the first error
+    }
   }
+  // The steps carry their own notes.
+  ctx.notes.length = 0;
   return { results };
 }
 
-async function doNavigate(params, policy) {
+async function doNavigate(params, policy, ctx) {
   if (!params.url) throw new Error("navigate requires params.url");
   // Default target: gocode's own current/group tab — never the user's
   // foreground tab. If gocode has no tab yet, open a new one.
@@ -1377,10 +2464,21 @@ async function doNavigate(params, policy) {
   const hist = String(params.url).trim().toLowerCase();
   if (hist === "back" || hist === "forward") {
     if (params.tabId === undefined || params.tabId === null) throw new Error('navigate url:"' + hist + '" requires a tabId');
+    // The destination is only known once there: check it like a navigation
+    // target, and go the other way again when it is refused.
     if (hist === "back") await chrome.tabs.goBack(tabId);
     else await chrome.tabs.goForward(tabId);
-    await waitForTabLoad(tabId, 20000);
-    await checkTabSite(tabId, policy, "read");
+    await waitForTabLoad(ctx, tabId, LOAD_TIMEOUT_MS);
+    try {
+      await checkTabSite(ctx, tabId, policy, "act");
+    } catch (e) {
+      try {
+        if (hist === "back") await chrome.tabs.goForward(tabId);
+        else await chrome.tabs.goBack(tabId);
+        await waitForTabLoad(ctx, tabId, LOAD_TIMEOUT_MS);
+      } catch (e2) {}
+      throw e;
+    }
     await setCurrentTab(tabId, sid);
     await applyKeepOpen(params, tabId);
     const t = await getTab(tabId);
@@ -1397,7 +2495,7 @@ async function doNavigate(params, policy) {
   }
   // Wait for the navigation to finish so a following read_page/screenshot sees
   // the loaded page, and return the settled url/title.
-  await waitForTabLoad(tab.id, 20000);
+  await waitForTabLoad(ctx, tab.id, LOAD_TIMEOUT_MS);
   await setCurrentTab(tab.id, sid);
   await applyKeepOpen(params, tab.id);
   const settled = await getTab(tab.id);
@@ -1408,14 +2506,10 @@ async function doNavigate(params, policy) {
   };
 }
 
-async function doReadPage(params, policy) {
+async function doReadPage(params, policy, ctx) {
   const tabId = await resolveTabId(params.tabId, sessionOf(params));
-  await checkTabSite(tabId, policy, "read");
-  const results = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: () => document.body ? document.body.innerText : "",
-  });
-  let text = (results && results[0] && results[0].result) || "";
+  await checkTabSite(ctx, tabId, policy, "read");
+  let text = (await runInPage(ctx, tabId, () => (document.body ? document.body.innerText : ""), [], "read_page")) || "";
   let truncated = false;
   if (text.length > MAX_PAGE_TEXT) {
     text = text.slice(0, MAX_PAGE_TEXT);
@@ -1432,10 +2526,10 @@ async function doReadPage(params, policy) {
 // createIfEmpty opens a tab first when there is none; without it nothing is
 // created. Each tab says whether gocode opened it (openedByGocode) and
 // whether it is marked keep_open (keepOpen).
-async function doTabsContext(params, policy) {
+async function doTabsContext(params, policy, ctx) {
   const sid = sessionOf(params);
   if (params && params.createIfEmpty === true && (await ownedTabList(sid)).length === 0) {
-    await doTabsCreate({ sessionId: sid }, policy);
+    await doTabsCreate({ sessionId: sid }, policy, ctx);
   }
   const own = await ownership();
   const tabs = await ownedTabList(sid);
@@ -1464,7 +2558,7 @@ async function doTabsContext(params, policy) {
   };
 }
 
-async function doTabsCreate(params, policy) {
+async function doTabsCreate(params, policy, ctx) {
   // Open in the BACKGROUND by default (don't steal the user's focus), add it to
   // the shared "gocode" tab group, wait for load, and track it as gocode's
   // current tab so later tool calls target it.
@@ -1476,7 +2570,7 @@ async function doTabsCreate(params, policy) {
   });
   const sid = sessionOf(params);
   await addToGocodeGroup(tab.id, sid);
-  if (params.url) await waitForTabLoad(tab.id, 20000);
+  if (params.url) await waitForTabLoad(ctx, tab.id, LOAD_TIMEOUT_MS);
   await setCurrentTab(tab.id, sid);
   await applyKeepOpen(params, tab.id);
   const settled = await getTab(tab.id);
@@ -1551,56 +2645,116 @@ async function doTabsClose(params) {
   }
 }
 
+// scaleOf reads a screenshot/zoom scale: a fraction in [0.1, 1] (default 1).
+function scaleOf(v) {
+  if (v === undefined || v === null || v === "") return 1;
+  const s = Number(v);
+  if (!Number.isFinite(s) || s <= 0) throw new Error("scale must be a number in [0.1, 1]");
+  return Math.min(1, Math.max(0.1, s));
+}
+
 // captureTab screenshots a specific tab via CDP Page.captureScreenshot, so it
 // works on a BACKGROUND/grouped gocode tab and never captures the user's
 // foreground tab. The image is downscaled to CSS pixels so coordinates read off
-// it match CDP mouse input. If ctx is given the attach is reused (e.g. inside a
-// computer call/batch); otherwise a short-lived debugger session is used.
-async function captureTab(tabId, ctx) {
-  const run = async (c) => {
-    await ensureAttached(c, tabId);
-    const info = await viewportInfo(tabId);
-    const shot = await cdp(tabId, "Page.captureScreenshot", {
+// it match CDP mouse input.
+//
+// opts.region [x0, y0, x1, y1] (viewport CSS pixels) captures only that
+// rectangle, magnified to about the viewport's size (at most 4x) for a closer
+// look (zoom). opts.scale in [0.1, 1] shrinks the returned image. Either way
+// the result reports the full viewport size: coordinates for clicks are always
+// in that frame, never in the returned image's own pixels.
+async function captureTab(ctx, tabId, opts) {
+  opts = opts || {};
+  const scale = scaleOf(opts.scale);
+  await ensureAttached(ctx, tabId);
+  const info = await viewportInfo(ctx, tabId);
+  const out = { width: info.w || undefined, height: info.h || undefined, devicePixelRatio: info.dpr };
+  if (opts.region) {
+    const reg = opts.region.map(Number);
+    if (reg.length !== 4 || !reg.every(Number.isFinite)) throw new Error("zoom region must be [x0, y0, x1, y1] numbers");
+    let [x0, y0, x1, y1] = reg;
+    if (info.w) { x0 = Math.max(0, x0); x1 = Math.min(info.w, x1); }
+    if (info.h) { y0 = Math.max(0, y0); y1 = Math.min(info.h, y1); }
+    const rw = x1 - x0, rh = y1 - y0;
+    if (!(rw >= 1 && rh >= 1)) throw new Error("zoom region must have x1 > x0 and y1 > y0 inside the viewport");
+    const fit = Math.min((info.w || rw) / rw, (info.h || rh) / rh);
+    const zoom = Math.min(4, Math.max(1, fit));
+    // The clip is in document coordinates: add the scroll offset.
+    const shot = await cdp(ctx, tabId, "Page.captureScreenshot", {
       format: "png",
       captureBeyondViewport: false,
-    });
-    let dataUrl = "data:image/png;base64," + shot.data;
-    if (info.dpr && info.dpr !== 1 && info.w && info.h) {
-      dataUrl = await dataUrlToCssPixels(dataUrl, info.w, info.h);
+      clip: { x: x0 + (info.sx || 0), y: y0 + (info.sy || 0), width: rw, height: rh, scale: zoom },
+    }, SCREENSHOT_TIMEOUT_MS);
+    const iw = Math.max(1, Math.round(rw * zoom * scale));
+    const ih = Math.max(1, Math.round(rh * zoom * scale));
+    out.dataUrl = await resizeImage("data:image/png;base64," + shot.data, iw, ih);
+    out.region = [x0, y0, x1, y1];
+    out.zoom = Math.round(zoom * scale * 100) / 100;
+    out.imageWidth = iw;
+    out.imageHeight = ih;
+    return out;
+  }
+  const shot = await cdp(ctx, tabId, "Page.captureScreenshot", {
+    format: "png",
+    captureBeyondViewport: false,
+  }, SCREENSHOT_TIMEOUT_MS);
+  out.dataUrl = "data:image/png;base64," + shot.data;
+  if (info.w && info.h && ((info.dpr && info.dpr !== 1) || scale !== 1)) {
+    const iw = Math.max(1, Math.round(info.w * scale));
+    const ih = Math.max(1, Math.round(info.h * scale));
+    out.dataUrl = await resizeImage(out.dataUrl, iw, ih);
+    if (scale !== 1) {
+      out.scale = scale;
+      out.imageWidth = iw;
+      out.imageHeight = ih;
     }
-    return { dataUrl, width: info.w || undefined, height: info.h || undefined, devicePixelRatio: info.dpr };
-  };
-  if (ctx) return await run(ctx);
-  return await withSession((c) => run(c));
+  }
+  return out;
 }
 
-async function doScreenshot(params, ctx, policy) {
+async function doScreenshot(params, policy, ctx) {
   params = params || {};
   const tabId = await resolveTabId(params.tabId, sessionOf(params)); // only gocode's tabs
-  await checkTabSite(tabId, policy, "read");
-  return await captureTab(tabId, ctx);
+  await checkTabSite(ctx, tabId, policy, "read");
+  return await captureTab(ctx, tabId, { scale: params.scale });
 }
 
 // javascript_tool: evaluate code in a gocode tab with REPL semantics (the last
 // expression's value is returned, top-level await works) via CDP
-// Runtime.evaluate. It acts on the page, so the site must be allowed.
+// Runtime.evaluate. It acts on the page, so the site must be allowed. The
+// evaluation is bounded (JS_TIMEOUT_MS): a script that loops, or a promise that
+// never settles, fails the call instead of holding the tab.
 const MAX_JS_RESULT = 100000;
 
-async function doJavascript(params, ctx, policy) {
+async function doJavascript(params, policy, ctx) {
   if (params.action !== undefined && params.action !== "javascript_exec") {
     throw new Error("javascript_tool: action must be 'javascript_exec'");
   }
   const code = params.text;
   if (typeof code !== "string" || !code.trim()) throw new Error("javascript_tool requires text (the code to run)");
   const tabId = await resolveTabId(params.tabId, sessionOf(params));
-  await checkTabSite(tabId, policy, "act");
-  await ensureAttached(ctx, tabId);
-  const r = await cdp(tabId, "Runtime.evaluate", {
-    expression: code,
-    awaitPromise: true,
-    returnByValue: true,
-    replMode: true,
-    userGesture: true,
+  await checkTabSite(ctx, tabId, policy, "act");
+  let r;
+  await acting(tabId, async () => {
+    await ensureAttached(ctx, tabId);
+    try {
+      r = await cdp(ctx, tabId, "Runtime.evaluate", {
+        expression: code,
+        awaitPromise: true,
+        returnByValue: true,
+        replMode: true,
+        userGesture: true,
+        timeout: JS_TIMEOUT_MS,
+      }, JS_TIMEOUT_MS + JS_GRACE_MS);
+    } catch (e) {
+      if (e && e.timedOut) {
+        throw new Error(
+          "javascript_tool: the script did not finish within " + JS_TIMEOUT_MS / 1000 +
+            "s (a loop, or a promise that never settles) and was abandoned."
+        );
+      }
+      throw e;
+    }
   });
   const tab = await getTab(tabId);
   const out = { tabId, url: (tab && tab.url) || "" };

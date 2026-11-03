@@ -41,9 +41,8 @@ async function refused(name, m, p, re) {
   const nav = await call("navigate", { url: "https://a.example/next", sessionId: "A" });
   if (nav.tabId !== a2.tabId) fails.push("A's navigate used tab " + nav.tabId);
 
-  // A link opened from A's tab joins A's group.
-  const child = await chrome.tabs.create({ url: "https://a.example/link", openerTabId: a1.tabId });
-  await new Promise((r) => setTimeout(r, 10));
+  // A link opened from A's tab by a gocode click joins A's group.
+  const child = await linkFrom(a1.tabId, "https://a.example/link");
   if (tabs.get(child.id).groupId !== gA) fails.push("link from A's tab not in A's group");
 
   // Group-pinned closes.
@@ -83,9 +82,8 @@ const byId = (r) => Object.fromEntries(r.tabs.map((t) => [t.id, t]));
   const kept = await call("tabs_create", { url: "https://report.example/", sessionId: "A", keep_open: true });
   const nav = await call("navigate", { url: "https://n.example/", tabId: a.tabId, sessionId: "A" });
   const g = tabs.get(a.tabId).groupId;
-  // A link followed from a gocode tab counts as opened by gocode.
-  const link = await chrome.tabs.create({ url: "https://a.example/link", openerTabId: a.tabId });
-  await new Promise((r) => setTimeout(r, 10));
+  // A link followed from a gocode tab (by a gocode click) counts as opened by gocode.
+  const link = await linkFrom(a.tabId, "https://a.example/link");
   // The user drags their own tab into the group.
   tabs.get(1).groupId = g;
   const b = await call("tabs_create", { url: "https://b.example/", sessionId: "B" });

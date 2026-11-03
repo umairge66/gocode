@@ -107,13 +107,21 @@ const ids = (r) => r.tabs.map((t) => t.id).sort().join(",");
   if (!batch.results[0].error) fails.push("browser_batch reached a user tab");
   if (!tabs.has(1) || tabs.get(1).url !== "https://bank.example/") fails.push("user tab was changed");
 
-  // A link opened from gocode's tab joins gocode's group; a tab the user opens does not.
+  // A link opened from gocode's tab by a gocode click joins gocode's group; a
+  // tab the user opens does not — not even one they open from a gocode tab
+  // (a middle-click of their own) while gocode is not acting on it.
+  const quiet = await call("tabs_create", { url: "https://example.com/quiet" });
+  await call("computer", { tabId: created.tabId, action: "left_click", coordinate: [5, 5] });
   const child = await chrome.tabs.create({ url: "https://example.com/next", openerTabId: created.tabId });
   await new Promise((r) => setTimeout(r, 10));
   if (tabs.get(child.id).groupId !== mine.groupId) fails.push("tab opened from gocode's tab not grouped");
   const userTab = await chrome.tabs.create({ url: "https://user.example/" });
   await new Promise((r) => setTimeout(r, 10));
   await refused("user's new tab", "read_page", { tabId: userTab.id });
+  const userLink = await chrome.tabs.create({ url: "https://example.com/mine", openerTabId: quiet.tabId });
+  await new Promise((r) => setTimeout(r, 10));
+  if (tabs.get(userLink.id).groupId !== -1) fails.push("a tab the user opened from a gocode tab was adopted");
+  await refused("user's link from a gocode tab", "read_page", { tabId: userLink.id });
 
   // Dragging gocode's tab out of its group takes it away from gocode.
   tabs.get(created.tabId).groupId = -1;
