@@ -152,10 +152,12 @@ func BuiltInAgentTypes() []AgentType {
 
 // ToolAllowed reports whether this agent type may call the named tool. A Tools
 // list of ["*"] admits every tool; any explicit allow-list restricts to its
-// members; a DisallowedTools entry always wins.
+// members; a DisallowedTools entry always wins. Entries may name MCP tools by
+// pattern (ToolPatternMatches): "mcp__server" or "mcp__server__*" for every
+// tool of one server, "mcp__*" for every MCP tool.
 func (a AgentType) ToolAllowed(tool string) bool {
 	for _, d := range a.DisallowedTools {
-		if d == tool {
+		if ToolPatternMatches(d, tool) {
 			return false
 		}
 	}
@@ -163,9 +165,34 @@ func (a AgentType) ToolAllowed(tool string) bool {
 		return false
 	}
 	for _, t := range a.Tools {
-		if t == "*" || t == tool {
+		if t == "*" || ToolPatternMatches(t, tool) {
 			return true
 		}
+	}
+	return false
+}
+
+// mcpToolPrefix is the namespace of MCP tool names (mcp__<server>__<tool>).
+const mcpToolPrefix = "mcp__"
+
+// ToolPatternMatches reports whether an agent definition's tools /
+// disallowedTools entry names tool: an exact name, or an MCP pattern —
+// "mcp__<server>" and "mcp__<server>__*" match every tool of that server,
+// "mcp__*" every MCP tool.
+func ToolPatternMatches(pattern, tool string) bool {
+	if pattern == tool {
+		return true
+	}
+	if !strings.HasPrefix(pattern, mcpToolPrefix) || !strings.HasPrefix(tool, mcpToolPrefix) {
+		return false
+	}
+	if prefix, ok := strings.CutSuffix(pattern, "*"); ok {
+		// "mcp__*" or "mcp__server__*".
+		return prefix == mcpToolPrefix || (strings.HasSuffix(prefix, "__") && strings.HasPrefix(tool, prefix))
+	}
+	// A bare server name: "mcp__server" (no tool part).
+	if !strings.Contains(pattern[len(mcpToolPrefix):], "__") {
+		return strings.HasPrefix(tool, pattern+"__")
 	}
 	return false
 }

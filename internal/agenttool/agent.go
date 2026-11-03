@@ -987,15 +987,18 @@ func (t *AgentTool) allowedTools(a subagent.AgentType, childDepth int) []string 
 		}
 		return out
 	}
-	deny := map[string]bool{}
-	for _, d := range a.DisallowedTools {
-		deny[d] = true
-	}
-	if !canNest {
-		deny[AgentToolName] = true
-	}
 	for _, n := range a.Tools {
-		if !deny[n] {
+		if n == AgentToolName && !canNest {
+			continue
+		}
+		denied := false
+		for _, d := range a.DisallowedTools {
+			if subagent.ToolPatternMatches(d, n) {
+				denied = true
+				break
+			}
+		}
+		if !denied {
 			out = append(out, n)
 		}
 	}
