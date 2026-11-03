@@ -35,7 +35,9 @@ it refuses to publish a version that has no section here.
   approval can change the call's input (it is re-checked), and `initialize`
   reports the available models and where the API key comes from.
 - The daemon's `permission-response` op answers a background session's open
-  permission prompt.
+  permission prompt, AskUserQuestion dialog or plan approval;
+  `gocode agents pending` lists the sessions waiting and
+  `gocode agents respond <job> allow|deny|--answer <label>` answers them.
 - The status line's `session_name` shows the `/rename` title.
 - A PreToolUse hook can return `permissionDecision: "defer"`: the turn ends
   without running the call, print mode reports `stop_reason: "tool_deferred"`

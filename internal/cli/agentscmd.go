@@ -129,6 +129,16 @@ func parseSettingSources(v string, set bool) (map[string]bool, error) {
 
 // runAgentsCmd is the command action.
 func runAgentsCmd(env *Env, t []string) int {
+	// `agents pending` / `agents respond`: the prompts background sessions
+	// wait on (bgrespond.go).
+	if rest := argsAfter(t, "agents"); len(rest) > 0 {
+		switch rest[0] {
+		case "pending":
+			return runAgentsPending(env, rest[1:])
+		case "respond":
+			return runAgentsRespond(env, rest[1:])
+		}
+	}
 	o, err := scanOpts(argsAfter(t, "agents"),
 		map[string]string{"--json": "json", "--all": "all", "--definitions": "definitions", "--strict-mcp-config": "-", "--restricted": "-", "--dangerously-skip-permissions": "-", "--allow-dangerously-skip-permissions": "-"},
 		map[string]string{"--setting-sources": "settingSources", "--cwd": "cwd", "--add-dir": "-", "--plugin-dir": "-", "--plugin-dir-no-mcp": "-", "--settings": "-", "--managed-settings": "-", "--mcp-config": "-", "--permission-mode": "-", "--inherit-permission-mode": "-", "--model": "-", "--effort": "-", "--agent": "-"})
