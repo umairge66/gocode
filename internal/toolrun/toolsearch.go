@@ -112,7 +112,7 @@ func (d *Dispatcher) toolSearchAdapter() adapter {
 			}
 			return "", "", "", nil
 		},
-		runLoads: func(_ context.Context, input json.RawMessage) (string, []string, error) {
+		runLoads: func(ctx context.Context, input json.RawMessage) (string, []string, error) {
 			var in toolsearch.Input
 			if err := unmarshal(input, &in); err != nil {
 				return "", nil, err
@@ -121,14 +121,23 @@ func (d *Dispatcher) toolSearchAdapter() adapter {
 			if in.MaxResults != nil && *in.MaxResults >= 1 && !math.IsInf(*in.MaxResults, 0) {
 				max = int(math.Min(*in.MaxResults, 1000))
 			}
-			var tools []toolsearch.Tool
-			for _, s := range d.Schemas() {
-				if s.Name == toolsearch.Name {
-					continue
+			search := func() []string {
+				var tools []toolsearch.Tool
+				for _, s := range d.Schemas() {
+					if s.Name == toolsearch.Name {
+						continue
+					}
+					tools = append(tools, toolsearch.Tool{Name: s.Name, Description: s.Description, Deferred: s.Deferred})
 				}
-				tools = append(tools, toolsearch.Tool{Name: s.Name, Description: s.Description, Deferred: s.Deferred})
+				return toolsearch.Search(in.Query, tools, max)
 			}
-			names := toolsearch.Search(in.Query, tools, max)
+			names := search()
+			// MCP servers still connecting in the background may hold the
+			// tool asked for: wait for them (bounded by the connect timeout)
+			// before reporting a miss, so even a one-turn -p run finds it.
+			if cw, ok := d.External.(ConnectingExternalTools); ok && toolsearch.Incomplete(in.Query, names) && cw.WaitConnecting(ctx) {
+				names = search()
+			}
 			return toolsearch.ResultText(names), names, nil
 		},
 		description: toolsearch.Description,

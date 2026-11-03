@@ -681,6 +681,9 @@ func runInteractiveSession(env *Env, s *interactiveSession, initialPrompt string
 		}
 		// The sidebar's MCP section and the welcome screen's recent sessions.
 		prog.Send(mcpServersMsg(rt.mcp))
+		// Servers connecting in the background: a failure is shown as a
+		// system line, and the sidebar follows every outcome.
+		rt.reportBackgroundMCP(true, func(n string) { prog.Send(ui.AppendSystemMsg{Text: n}) }, func() { prog.Send(mcpServersMsg(rt.mcp)) })
 		prog.Send(recentSessionsMsg(rt.store, rt.storeCwd, rt.sessionID))
 		// Launch-time --continue / --resume: resume the latest session, resume a
 		// named one, or open the picker at startup — before any initial prompt, so

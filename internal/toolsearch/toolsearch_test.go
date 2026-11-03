@@ -216,3 +216,21 @@ func TestIsDeferredHeadless(t *testing.T) {
 		}
 	}
 }
+
+func TestIncomplete(t *testing.T) {
+	for _, c := range []struct {
+		q     string
+		names []string
+		want  bool
+	}{
+		{"notebook", nil, true},
+		{"notebook", []string{"NotebookEdit"}, false},
+		{"select:A,B", []string{"A"}, true},
+		{"select:A, B,", []string{"A", "B"}, false},
+		{"SELECT:A", []string{"mcp__x__A", "mcp__y__A"}, false},
+	} {
+		if got := Incomplete(c.q, c.names); got != c.want {
+			t.Errorf("Incomplete(%q, %v) = %v, want %v", c.q, c.names, got, c.want)
+		}
+	}
+}

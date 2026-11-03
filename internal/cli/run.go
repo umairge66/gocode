@@ -891,6 +891,8 @@ func withPrintSession(env *Env, s *printSession, safeStdout bool, body func(ctx 
 	for _, n := range rt.start(ctx) {
 		fmt.Fprintln(env.Stderr, "gocode -p: "+n)
 	}
+	// A background MCP server that fails is reported with the turn's notices.
+	rt.reportBackgroundMCP(false, rt.conv.Notify, nil)
 	// Resume/continue: load the requested session's history into the conversation
 	// so the prompt runs in its context (and appends to it).
 	if n := rt.applyPrintResume(s.resume); n != "" {

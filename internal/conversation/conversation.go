@@ -185,6 +185,10 @@ type Conversation struct {
 	System string
 	// ToolSchemas advertises the available tools to the model each turn.
 	ToolSchemas []agent.ToolSchema
+	// RefreshTools, when set, updates ToolSchemas before each model request
+	// (agent.Loop.RefreshTools): it returns the list to use, the argument
+	// itself when nothing changed.
+	RefreshTools func([]agent.ToolSchema) []agent.ToolSchema
 	// MaxTokens caps each model response (0 → caller/model default).
 	MaxTokens int
 	// MaxTurns bounds the model rounds per Submit (0 → unbounded).
@@ -769,6 +773,7 @@ func (c *Conversation) runModelTurnBlocks(ctx context.Context, content []agent.C
 	c.History = append(c.History, agent.UserMessage(blocks...))
 	// The deferred tools' names ride in the user turn (see
 	// agent.AnnounceDeferredTools), persisted with it.
+	c.refreshToolSchemas()
 	c.History = agent.AnnounceDeferredTools(c.History, c.ToolSchemas)
 	// Persist the user turn before the model is called: append-as-you-go means a
 	// kill mid-turn still leaves the prompt on disk and the session resumable.
@@ -782,6 +787,7 @@ func (c *Conversation) runModelTurnBlocks(ctx context.Context, content []agent.C
 		System:        system,
 		SystemContext: systemContext,
 		ToolSchemas:   c.ToolSchemas,
+		RefreshTools:  c.loopRefreshTools(),
 		MaxTokens:     c.MaxTokens,
 		MaxTurns:      c.MaxTurns,
 		LoopGuard:     c.LoopGuard,
@@ -938,6 +944,7 @@ func (c *Conversation) ResumeWithQueuedContext(ctx context.Context) (res Result,
 		blocks = append(blocks, agent.TextBlock(extra))
 	}
 	c.History = append(c.History, agent.UserMessage(blocks...))
+	c.refreshToolSchemas()
 	c.History = agent.AnnounceDeferredTools(c.History, c.ToolSchemas)
 	c.persistHistory()
 	turnStart := len(c.History)
@@ -949,6 +956,7 @@ func (c *Conversation) ResumeWithQueuedContext(ctx context.Context) (res Result,
 		System:        system,
 		SystemContext: systemContext,
 		ToolSchemas:   c.ToolSchemas,
+		RefreshTools:  c.loopRefreshTools(),
 		MaxTokens:     c.MaxTokens,
 		MaxTurns:      c.MaxTurns,
 		LoopGuard:     c.LoopGuard,

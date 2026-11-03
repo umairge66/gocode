@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/umairge66/gocode/internal/agent"
@@ -112,5 +113,61 @@ func TestToolSearchSubsetOnlySearchesOwnTools(t *testing.T) {
 	res, _ := d.Dispatch(context.Background(), agent.ToolUse{ID: "t", Name: toolsearch.Name, Input: in})
 	if strings.Join(res.LoadedTools, ",") != "WebFetch" {
 		t.Fatalf("subset search = %+v", res)
+	}
+}
+
+// connectingExternal is an MCP provider whose server is still connecting: its
+// tool appears once WaitConnecting is called.
+type connectingExternal struct {
+	mu        sync.Mutex
+	connected bool
+	waits     int
+}
+
+func (c *connectingExternal) Tools() []agent.ToolSchema {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.connected {
+		return nil
+	}
+	return []agent.ToolSchema{{Name: "mcp__slow__lookup", Description: "look up a record", InputSchema: json.RawMessage(`{"type":"object"}`)}}
+}
+func (c *connectingExternal) Has(n string) bool {
+	return n == "mcp__slow__lookup" && len(c.Tools()) > 0
+}
+func (c *connectingExternal) Call(context.Context, string, json.RawMessage) (string, bool, error) {
+	return "", false, nil
+}
+func (c *connectingExternal) WaitConnecting(context.Context) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.waits++
+	was := !c.connected
+	c.connected = true
+	return was
+}
+
+func TestToolSearchWaitsForConnectingServers(t *testing.T) {
+	ext := &connectingExternal{}
+	d := New(toolreg.ModeDefault, nil, WithToolSearch(toolsearch.ModeOn, 0), WithExternalTools(ext))
+	search := func(q string) agent.ToolResult {
+		in, _ := json.Marshal(map[string]any{"query": q})
+		res, err := d.Dispatch(context.Background(), agent.ToolUse{ID: "t", Name: toolsearch.Name, Input: in})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	// A complete hit does not wait.
+	if res := search("select:WebFetch"); strings.Join(res.LoadedTools, ",") != "WebFetch" || ext.waits != 0 {
+		t.Fatalf("hit = %+v, waits = %d", res, ext.waits)
+	}
+	// A partial miss waits for the connecting server, then searches again.
+	if res := search("select:WebFetch,mcp__slow__lookup"); strings.Join(res.LoadedTools, ",") != "WebFetch,mcp__slow__lookup" || ext.waits != 1 {
+		t.Fatalf("after wait = %+v, waits = %d", res, ext.waits)
+	}
+	// Nothing connecting any more: a miss is reported as one.
+	if res := search("select:Nothing"); len(res.LoadedTools) != 0 || res.Content != toolsearch.NoMatches || ext.waits != 2 {
+		t.Fatalf("miss = %+v, waits = %d", res, ext.waits)
 	}
 }

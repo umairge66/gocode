@@ -194,6 +194,33 @@ func (c *Conversation) notify(text string) {
 	c.ctxMu.Unlock()
 }
 
+// Notify delivers a notice from outside the turn loop (a background MCP
+// server that failed to connect) the way mid-turn notices are: live through
+// OnNotice, else with the next turn's Result.Notices. Safe to call from any
+// goroutine once OnNotice is set up.
+func (c *Conversation) Notify(text string) { c.notify(text) }
+
+// refreshToolSchemas applies RefreshTools to ToolSchemas at the start of a
+// turn.
+func (c *Conversation) refreshToolSchemas() {
+	if c.RefreshTools != nil {
+		c.ToolSchemas = c.RefreshTools(c.ToolSchemas)
+	}
+}
+
+// loopRefreshTools is the turn loop's RefreshTools. It keeps ToolSchemas in
+// step, so the next turn starts from the list this one ended with.
+func (c *Conversation) loopRefreshTools() func([]agent.ToolSchema) []agent.ToolSchema {
+	if c.RefreshTools == nil {
+		return nil
+	}
+	return func(cur []agent.ToolSchema) []agent.ToolSchema {
+		out := c.RefreshTools(cur)
+		c.ToolSchemas = out
+		return out
+	}
+}
+
 // takeTurnNotices returns and clears the notices collected during a turn.
 func (c *Conversation) takeTurnNotices() []string {
 	c.ctxMu.Lock()

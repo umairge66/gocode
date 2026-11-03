@@ -71,6 +71,16 @@ type AlwaysLoadExternalTools interface {
 	AlwaysLoad(name string) bool
 }
 
+// ConnectingExternalTools is optionally implemented by an ExternalTools
+// provider whose tools can arrive after startup (MCP servers connecting in the
+// background). ToolSearch waits for them before reporting a miss.
+type ConnectingExternalTools interface {
+	// WaitConnecting blocks until nothing is connecting any more, ctx ends
+	// or a provider-defined bound passes, and reports whether anything was
+	// connecting.
+	WaitConnecting(ctx context.Context) bool
+}
+
 // WithExternalTools routes calls for the provider's tools to it and advertises
 // them in Schemas.
 func WithExternalTools(p ExternalTools) Option {
