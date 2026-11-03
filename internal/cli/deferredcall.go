@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"fmt"
+
 	"github.com/umairge66/gocode/internal/agent"
 	"github.com/umairge66/gocode/internal/conversation"
 	"github.com/umairge66/gocode/internal/headless"
@@ -18,7 +20,8 @@ const noPromptToResume = "gocode -p: no prompt provided, and the resumed session
 
 // deferredResult fills a print result for a turn that ended on a deferred
 // tool call: a success whose stop_reason is tool_deferred, carrying the
-// pending call in deferred_tool_use; or, when the resumed call's tool is
+// (first) pending call in deferred_tool_use and, when the round has several,
+// all of them in deferred_tool_uses; or, when the resumed call's tool is
 // gone, an is_error success with stop_reason tool_deferred_unavailable.
 func deferredResult(r *headless.Result, res conversation.Result) {
 	stop := string(res.Reason)
@@ -34,16 +37,24 @@ func deferredResult(r *headless.Result, res conversation.Result) {
 	if res.Deferred != nil {
 		r.DeferredToolUse = headless.NewDeferredToolUse(*res.Deferred)
 	}
+	if len(res.DeferredCalls) > 1 {
+		for _, c := range res.DeferredCalls {
+			r.DeferredToolUses = append(r.DeferredToolUses, headless.NewDeferredToolUse(c))
+		}
+	}
 }
 
 // deferredResumeNotice is the notice an interactive resume shows when the
 // session holds a deferred tool call ("" when it holds none).
 func deferredResumeNotice(conv *conversation.Conversation) string {
-	call, ok := conv.DeferredToolUse()
+	round, ok := conv.DeferredRound()
 	if !ok {
 		return ""
 	}
-	return "A PreToolUse hook deferred this session's last " + call.Name + " call. It runs with your next message, once the hooks and permissions allow it."
+	if len(round.Calls) > 1 {
+		return fmt.Sprintf("A PreToolUse hook deferred %d calls of this session's last turn. They run with your next message, once the hooks and permissions allow them.", len(round.Calls))
+	}
+	return "A PreToolUse hook deferred this session's last " + round.First().Name + " call. It runs with your next message, once the hooks and permissions allow it."
 }
 
 // turnDeferred reports whether a turn ended with a tool call still pending.

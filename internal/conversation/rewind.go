@@ -71,6 +71,9 @@ func (c *Conversation) RewindTo(index int) (string, error) {
 	}
 	kept := append([]agent.Message(nil), c.History[:index]...)
 	c.History = kept
+	// A deferred round, if any, was in the dropped part (a prompt never
+	// follows an unanswered round).
+	c.dropDeferred()
 	c.pendingBoundary = nil
 	c.resetUsage()
 

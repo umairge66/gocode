@@ -10,8 +10,9 @@ import (
 )
 
 // deferNotHere is the reason of the ask a hook's defer becomes where the call
-// cannot be deferred.
-const deferNotHere = "A PreToolUse hook deferred this tool call, which cannot be deferred here (only a lone tool call of the main conversation can be)."
+// cannot be deferred. A subagent's calls are never deferred: its run cannot end its parent's turn,
+// and it has no resumable session of its own to settle them in.
+const deferNotHere = "A PreToolUse hook deferred this tool call, which cannot be deferred here (only a tool call of the main conversation can be, not a subagent's)."
 
 // HasTool implements agent.ToolAvailability: name is a registered tool this
 // dispatcher may run, or an external tool its provider currently serves.

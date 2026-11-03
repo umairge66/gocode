@@ -14,12 +14,12 @@ import (
 )
 
 // dispatchDeferrable dispatches call through d as an agent loop with
-// AllowDefer dispatches a lone call, and returns d's own result.
+// AllowDefer settles a deferred round, and returns d's own result.
 func dispatchDeferrable(t *testing.T, d *Dispatcher, call agent.ToolUse) agent.ToolResult {
 	t.Helper()
 	rec := &recordResult{inner: d}
 	l := &agent.Loop{Tools: rec, AllowDefer: true}
-	l.RunDeferred(context.Background(), nil, call)
+	l.RunDeferredRound(context.Background(), nil, agent.DeferredRound{Calls: []agent.ToolUse{call}})
 	if !rec.could {
 		t.Fatal("the call was not deferrable")
 	}

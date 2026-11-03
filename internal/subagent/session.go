@@ -195,6 +195,10 @@ func (s *Session) runTurn(ctx context.Context, input []agent.ContentBlock) (Repo
 	}
 	hc := &handbackCapture{inner: observed}
 	canSend := hasTool(schemas, inbox.SendMessageToolName)
+	// No AllowDefer: a PreToolUse hook's defer of a subagent's call becomes
+	// an ask (toolrun applyDefer). The subagent's run cannot end its parent's
+	// turn with the call pending, and the subagent has no resumable session
+	// of its own in which the call could be settled later.
 	loop := &agent.Loop{
 		Model:        mc,
 		Tools:        hc,
