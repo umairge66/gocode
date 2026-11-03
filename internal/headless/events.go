@@ -73,7 +73,10 @@ type SystemInit struct {
 	Agents         []string          `json:"agents"`
 	Skills         []string          `json:"skills"`
 	Plugins        []PluginInfo      `json:"plugins"`
-	UUID           string            `json:"uuid"`
+	// Capabilities lists the control request subtypes the session accepts
+	// on stream-json input (empty without it), so a host can feature-detect.
+	Capabilities []string `json:"capabilities"`
+	UUID         string   `json:"uuid"`
 }
 
 // NewSystemInit returns a system/init record with every list non-nil (the
@@ -84,7 +87,7 @@ func NewSystemInit(sessionID, cwd, model, permissionMode string) SystemInit {
 		Tools: []string{}, MCPServers: []MCPServerStatus{}, Model: model,
 		PermissionMode: permissionMode, SlashCommands: []string{}, APIKeySource: "none",
 		OutputStyle: "default", Agents: []string{}, Skills: []string{}, Plugins: []PluginInfo{},
-		UUID: newUUID(),
+		Capabilities: []string{}, UUID: newUUID(),
 	}
 }
 
@@ -183,6 +186,12 @@ type StreamEvent struct {
 }
 
 // NewStreamEvent wraps one streaming event.
+//
+// Partial events follow the Messages API stream of one model response:
+// message_start, then per content block content_block_start, its
+// content_block_delta events (text_delta, thinking_delta, input_json_delta)
+// and content_block_stop, then message_delta and message_stop. Block
+// indices count the blocks of that response from 0.
 func NewStreamEvent(sessionID string, event any) StreamEvent {
 	return StreamEvent{Type: "stream_event", Event: event, SessionID: sessionID, UUID: newUUID()}
 }
