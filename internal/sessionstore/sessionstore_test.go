@@ -288,3 +288,21 @@ func TestCleanup(t *testing.T) {
 		t.Errorf("zero-cutoff cleanup removed %d, want 0", n)
 	}
 }
+
+// Sessions whose last lines carry the same timestamp (a coarse clock) are
+// ordered by file mtime, then id — never by directory listing order.
+func TestListTieBreaksEqualTimestamps(t *testing.T) {
+	a := Meta{ID: "a", Modified: time.Unix(100, 0), fileMod: time.Unix(5, 0)}
+	b := Meta{ID: "b", Modified: time.Unix(100, 0), fileMod: time.Unix(9, 0)}
+	c := Meta{ID: "c", Modified: time.Unix(100, 0), fileMod: time.Unix(9, 0)}
+	d := Meta{ID: "d", Modified: time.Unix(200, 0)}
+	if !newerFirst(d, a) || newerFirst(a, d) {
+		t.Fatal("later timestamp must come first")
+	}
+	if !newerFirst(b, a) || newerFirst(a, b) {
+		t.Fatal("equal timestamps: later file mtime must come first")
+	}
+	if !newerFirst(c, b) || newerFirst(b, c) {
+		t.Fatal("equal timestamps and mtimes: order by id")
+	}
+}

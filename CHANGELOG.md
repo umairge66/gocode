@@ -124,6 +124,9 @@ browser control" in `chrome://extensions`.
   large, and the server keeps working.
 - A transcript line over 16 MiB silently dropped every later line when the
   session was resumed.
+- Sessions saved within the same clock tick (common on Windows) could be
+  listed, and picked by `--continue`, in the wrong order. Ties are now broken
+  by file time, then id.
 - With background connect, calling a tool of an MCP server that was still
   connecting failed as an unknown tool; it now waits for the server.
 - Chrome (extension 0.4.0):

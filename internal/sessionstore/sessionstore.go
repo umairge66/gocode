@@ -663,6 +663,23 @@ type Meta struct {
 	FirstPrompt string
 	// Tags is the session's current tag set (latest tag line), sorted.
 	Tags []string
+
+	// fileMod is the transcript file's mtime: the tie-break when two sessions
+	// carry the same last timestamp (a coarse clock, e.g. on Windows, can give
+	// lines written milliseconds apart the same time).
+	fileMod time.Time
+}
+
+// newerFirst orders sessions most recent first: by last timestamp, then file
+// mtime, then id, so the order never depends on directory listing order.
+func newerFirst(a, b Meta) bool {
+	if !a.Modified.Equal(b.Modified) {
+		return a.Modified.After(b.Modified)
+	}
+	if !a.fileMod.Equal(b.fileMod) {
+		return a.fileMod.After(b.fileMod)
+	}
+	return a.ID > b.ID
 }
 
 // List returns every stored session for cwd, most-recently-modified first, each
@@ -675,9 +692,7 @@ func (s *Store) List(cwd string) ([]Meta, error) {
 	}
 	// A missing or unreadable project dir lists as "no sessions".
 	out := s.listDir(s.ProjectDir(cwd), cwd)
-	sort.SliceStable(out, func(i, j int) bool {
-		return out[i].Modified.After(out[j].Modified)
-	})
+	sort.SliceStable(out, func(i, j int) bool { return newerFirst(out[i], out[j]) })
 	return out, nil
 }
 
@@ -751,13 +766,14 @@ func (s *Store) readMeta(cwd, id, path string) (Meta, bool) {
 	if m.MessageCount == 0 && summary == "" {
 		return Meta{}, false // empty transcript — nothing to resume
 	}
+	if fi, err := s.fs.Stat(path); err == nil {
+		m.fileMod = fi.ModTime()
+	}
 	// Fill timestamps from the file mtime when the transcript carried none.
-	if m.Modified.IsZero() {
-		if fi, err := s.fs.Stat(path); err == nil {
-			m.Modified = fi.ModTime()
-			if m.Created.IsZero() {
-				m.Created = fi.ModTime()
-			}
+	if m.Modified.IsZero() && !m.fileMod.IsZero() {
+		m.Modified = m.fileMod
+		if m.Created.IsZero() {
+			m.Created = m.fileMod
 		}
 	}
 	m.Summary, m.FirstPrompt = summary, firstUser

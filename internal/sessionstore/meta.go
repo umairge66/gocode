@@ -370,7 +370,7 @@ func (s *Store) ListAll() ([]Meta, error) {
 		dir := join(s.projectsDir(), d.Name())
 		out = append(out, s.listDir(dir, "")...)
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Modified.After(out[j].Modified) })
+	sort.SliceStable(out, func(i, j int) bool { return newerFirst(out[i], out[j]) })
 	return out, nil
 }
 
