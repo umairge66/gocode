@@ -148,6 +148,9 @@ type server struct {
 	starting bool
 	// provider is the server's OAuth client (lazily built).
 	provider *mcp.OAuthProvider
+	// listGen numbers tools/list refreshes after list_changed, so a slower,
+	// older listing never overwrites a newer one.
+	listGen uint64
 }
 
 // Host owns the connections to a set of MCP servers and exposes their tools.
@@ -465,6 +468,11 @@ func (h *Host) connectOne(ctx context.Context, name string, cfg mcp.ServerConfig
 		sr.SetStateListener(h.stateListener(name, tr))
 	}
 	client := mcp.NewClient(tr, h.opts.ClientInfo, mcp.ClientCapabilities{})
+	client.OnNotification(func(method string, _ json.RawMessage) {
+		if method == mcp.MethodToolsListChangedNotif {
+			h.refreshTools(name, client)
+		}
+	})
 
 	cctx, cancel := context.WithTimeout(ctx, h.connectTO)
 	defer cancel()
@@ -493,22 +501,7 @@ func (h *Host) connectOne(ctx context.Context, name string, cfg mcp.ServerConfig
 		if r.init.Capabilities.Tools == nil {
 			return // server offers no tools
 		}
-		cursor := ""
-		for range maxToolPages {
-			var p *mcp.ListToolsParams
-			if cursor != "" {
-				p = &mcp.ListToolsParams{Cursor: cursor}
-			}
-			var page *mcp.ListToolsResult
-			if page, r.err = client.ListTools(cctx, p); r.err != nil {
-				return
-			}
-			r.cat.tools = append(r.cat.tools, page.Tools...)
-			if page.NextCursor == "" || page.NextCursor == cursor {
-				break
-			}
-			cursor = page.NextCursor
-		}
+		r.cat.tools, r.err = listTools(cctx, client)
 	}()
 
 	select {
@@ -529,6 +522,61 @@ func (h *Host) connectOne(ctx context.Context, name string, cfg mcp.ServerConfig
 		}
 		return nil, nil, nil, catalog{}, cctx.Err()
 	}
+}
+
+// listTools fetches a server's whole tool catalog, following tools/list
+// pagination (at most maxToolPages pages).
+func listTools(ctx context.Context, client *mcp.Client) ([]mcp.Tool, error) {
+	var tools []mcp.Tool
+	cursor := ""
+	for range maxToolPages {
+		var p *mcp.ListToolsParams
+		if cursor != "" {
+			p = &mcp.ListToolsParams{Cursor: cursor}
+		}
+		page, err := client.ListTools(ctx, p)
+		if err != nil {
+			return nil, err
+		}
+		tools = append(tools, page.Tools...)
+		if page.NextCursor == "" || page.NextCursor == cursor {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	return tools, nil
+}
+
+// refreshTools re-lists a connected server's tools after it sent
+// notifications/tools/list_changed and rebuilds the tool table. A failed
+// listing keeps the catalog the server had; a client that is no longer the
+// server's live one is ignored.
+func (h *Host) refreshTools(name string, client *mcp.Client) {
+	h.mu.Lock()
+	s := h.servers[name]
+	if h.closed || s == nil || s.client != client {
+		h.mu.Unlock()
+		return
+	}
+	s.listGen++
+	gen := s.listGen
+	h.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(h.lifeCtx, h.connectTO)
+	defer cancel()
+	tools, err := listTools(ctx, client)
+	if err != nil {
+		return
+	}
+	h.mu.Lock()
+	if h.closed || s.client != client || s.listGen != gen {
+		h.mu.Unlock()
+		return
+	}
+	s.tools = tools
+	s.status.Tools = len(tools)
+	h.mu.Unlock()
+	h.rebuildTools()
 }
 
 func (h *Host) connectTimeoutErr(name string) error {
@@ -606,6 +654,73 @@ func (h *Host) Has(modelToolName string) bool {
 // isError=true and a nil err; err is reserved for routing, transport, protocol
 // and timeout failures.
 func (h *Host) Call(ctx context.Context, modelToolName string, input json.RawMessage) (text string, isError bool, err error) {
+	res, err := h.callTool(ctx, modelToolName, input)
+	if err != nil {
+		return "", false, err
+	}
+	text, _ = TruncateOutput(FlattenContent(res), h.maxTokens)
+	return text, res.IsError, nil
+}
+
+// CallContent is Call for the tool dispatcher: image content (image blocks
+// and embedded image resources) is returned as images rather than
+// placeholders, and the text is NOT cut to the output budget — the
+// dispatcher saves text over MaxResultChars to a file and shows a preview, and
+// truncates only when it cannot be saved. Images are the server's raw base64;
+// the caller fits them to its transport budget.
+func (h *Host) CallContent(ctx context.Context, modelToolName string, input json.RawMessage) (agent.ToolResult, error) {
+	res, err := h.callTool(ctx, modelToolName, input)
+	if err != nil {
+		return agent.ToolResult{}, err
+	}
+	text, images := renderContent(res, true)
+	return agent.ToolResult{Content: text, IsError: res.IsError, Images: images}, nil
+}
+
+// MaxResultChars is the inline budget of a tool result's text in characters:
+// the output budget in tokens (MAX_MCP_OUTPUT_TOKENS) at ~4 characters each.
+func (h *Host) MaxResultChars() int {
+	return h.maxTokens * charsPerToken
+}
+
+// ReadOnly reports whether a tool declares itself read-only
+// (annotations.readOnlyHint) and not destructive, so calls to it may run
+// alongside other read-only calls.
+func (h *Host) ReadOnly(modelToolName string) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	rt, ok := h.tools[modelToolName]
+	if !ok || rt.tool.Annotations == nil {
+		return false
+	}
+	a := rt.tool.Annotations
+	return a.ReadOnlyHint != nil && *a.ReadOnlyHint && (a.DestructiveHint == nil || !*a.DestructiveHint)
+}
+
+// Destructive reports whether a tool declares annotations.destructiveHint.
+func (h *Host) Destructive(modelToolName string) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	rt, ok := h.tools[modelToolName]
+	return ok && rt.tool.Annotations != nil && rt.tool.Annotations.DestructiveHint != nil && *rt.tool.Annotations.DestructiveHint
+}
+
+// AlwaysLoad reports whether a tool's server sets "alwaysLoad", so its
+// definition is never deferred behind tool search.
+func (h *Host) AlwaysLoad(modelToolName string) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	rt, ok := h.tools[modelToolName]
+	if !ok {
+		return false
+	}
+	s := h.servers[rt.server]
+	return s != nil && s.cfg.AlwaysLoad
+}
+
+// callTool routes one call to the owning server with the per-call timeout and
+// returns the server's raw result.
+func (h *Host) callTool(ctx context.Context, modelToolName string, input json.RawMessage) (*mcp.CallToolResult, error) {
 	h.mu.RLock()
 	rt, ok := h.tools[modelToolName]
 	var s *server
@@ -625,15 +740,15 @@ func (h *Host) Call(ctx context.Context, modelToolName string, input json.RawMes
 
 	switch {
 	case closed:
-		return "", false, errors.New("mcp host is closed")
+		return nil, errors.New("mcp host is closed")
 	case !ok:
-		return "", false, fmt.Errorf("unknown MCP tool %q", modelToolName)
+		return nil, fmt.Errorf("unknown MCP tool %q", modelToolName)
 	case client == nil && state == StateNeedsAuth:
-		return "", false, needsAuthCallErr(rt.server)
+		return nil, needsAuthCallErr(rt.server)
 	case client == nil && state == StateReconnecting:
-		return "", false, fmt.Errorf("MCP server %q is reconnecting; try again shortly", rt.server)
+		return nil, fmt.Errorf("MCP server %q is reconnecting; try again shortly", rt.server)
 	case client == nil:
-		return "", false, fmt.Errorf("MCP server %q is not connected", rt.server)
+		return nil, fmt.Errorf("MCP server %q is not connected", rt.server)
 	}
 
 	if len(input) == 0 || string(input) == "null" {
@@ -646,15 +761,14 @@ func (h *Host) Call(ctx context.Context, modelToolName string, input json.RawMes
 	if err != nil {
 		if errors.Is(err, mcp.ErrNeedsAuth) {
 			h.markNeedsAuth(rt.server, client)
-			return "", false, needsAuthCallErr(rt.server)
+			return nil, needsAuthCallErr(rt.server)
 		}
 		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
-			return "", false, fmt.Errorf("MCP server %q tool %q timed out after %ds", rt.server, rt.tool.Name, int(timeout/time.Second))
+			return nil, fmt.Errorf("MCP server %q tool %q timed out after %ds", rt.server, rt.tool.Name, int(timeout/time.Second))
 		}
-		return "", false, err
+		return nil, err
 	}
-	text, _ = TruncateOutput(FlattenContent(res), h.maxTokens)
-	return text, res.IsError, nil
+	return res, nil
 }
 
 // needsAuthCallErr is the model-facing error for a call to a server that

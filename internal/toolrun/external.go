@@ -2,6 +2,7 @@ package toolrun
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -12,6 +13,7 @@ import (
 	pathguard "github.com/umairge66/gocode/internal/pathguard"
 	"github.com/umairge66/gocode/internal/protocol"
 	"github.com/umairge66/gocode/internal/toolreg"
+	"github.com/umairge66/gocode/internal/tools/fileedit"
 )
 
 // ExternalTools is the generic seam for tools the dispatcher does not
@@ -32,6 +34,40 @@ type ExternalTools interface {
 	// tool itself; err is a routing/transport failure. Both become is_error
 	// tool results.
 	Call(ctx context.Context, name string, input json.RawMessage) (text string, isError bool, err error)
+}
+
+// ContentExternalTools is optionally implemented by an ExternalTools provider
+// whose results carry more than text (mcphost.Host does). The dispatcher then
+// calls CallContent instead of Call:
+//
+//   - the result's images are fitted to the same transport budget as a Read
+//     image and sent to the model as image content (one that cannot be
+//     fitted is replaced by a text note);
+//   - the text is uncut: text over MaxResultChars (or the global inline
+//     limit, whichever is smaller) is saved to a file with a preview inline,
+//     and truncated only when it cannot be saved (resultsize.go).
+type ContentExternalTools interface {
+	// CallContent runs one call; err is a routing/transport failure, and
+	// IsError on the result a tool-level failure.
+	CallContent(ctx context.Context, name string, input json.RawMessage) (agent.ToolResult, error)
+	// MaxResultChars is the provider's inline text budget per result
+	// (0 = the global limit).
+	MaxResultChars() int
+}
+
+// ReadOnlyExternalTools is optionally implemented by an ExternalTools provider
+// that knows which of its tools only read (for MCP, readOnlyHint without
+// destructiveHint). Those calls are concurrency-safe: the loop may run them
+// alongside other read-only calls.
+type ReadOnlyExternalTools interface {
+	ReadOnly(name string) bool
+}
+
+// AlwaysLoadExternalTools is optionally implemented by an ExternalTools
+// provider whose tools can opt out of deferred loading (an MCP server's
+// "alwaysLoad"): their definitions are always sent in full.
+type AlwaysLoadExternalTools interface {
+	AlwaysLoad(name string) bool
 }
 
 // WithExternalTools routes calls for the provider's tools to it and advertises
@@ -225,7 +261,15 @@ func (d *Dispatcher) dispatchExternal(ctx context.Context, call agent.ToolUse) (
 	if len(input) == 0 {
 		input = json.RawMessage(`{}`)
 	}
-	text, isErr, err := d.External.Call(ctx, call.Name, input)
+	var (
+		res agent.ToolResult
+		err error
+	)
+	if cp, ok := d.External.(ContentExternalTools); ok {
+		res, err = cp.CallContent(ctx, call.Name, input)
+	} else {
+		res.Content, res.IsError, err = d.External.Call(ctx, call.Name, input)
+	}
 	if err != nil {
 		msg := err.Error()
 		if !strings.HasPrefix(msg, "Error: ") {
@@ -233,10 +277,69 @@ func (d *Dispatcher) dispatchExternal(ctx context.Context, call agent.ToolUse) (
 		}
 		return errResult(msg), nil
 	}
-	if isErr {
-		return errResult(text), nil
+	if res.IsError {
+		return errResult(res.Content), nil
 	}
-	return okResult(text), nil
+	if len(res.Images) == 0 {
+		return okResult(res.Content), nil
+	}
+	text, images := fitExternalImages(res.Content, res.Images)
+	return okResultImages(text, images), nil
+}
+
+// fitExternalImages fits a provider's images to the Read tool's transport
+// budget (fileedit.TransportImage). An image that cannot be decoded or fitted
+// is dropped and noted in the text, so the model knows it was there.
+func fitExternalImages(text string, in []agent.ToolResultImage) (string, []agent.ToolResultImage) {
+	var out []agent.ToolResultImage
+	var notes []string
+	for _, im := range in {
+		data, err := base64.StdEncoding.DecodeString(im.Base64)
+		var ri fileedit.ReadImage
+		if err == nil {
+			ri, err = fileedit.TransportImage(data, im.MediaType)
+		}
+		if err != nil {
+			notes = append(notes, fmt.Sprintf("[Image: %s - not shown: %v]", im.MediaType, err))
+			continue
+		}
+		out = append(out, agent.ToolResultImage{Base64: ri.Base64, MediaType: ri.MediaType})
+	}
+	if len(notes) > 0 {
+		if text != "" {
+			text += "\n"
+		}
+		text += strings.Join(notes, "\n")
+	}
+	return text, out
+}
+
+// externalResultLimit reports whether name is routed to the external provider
+// and, if so, the provider's inline budget for its results (0 = none).
+func (d *Dispatcher) externalResultLimit(name string) (bool, int) {
+	if d.External == nil {
+		return false, 0
+	}
+	if _, builtin := d.adapters[protocol.Tool(name)]; builtin || !d.External.Has(name) {
+		return false, 0
+	}
+	if cp, ok := d.External.(ContentExternalTools); ok {
+		return true, max(cp.MaxResultChars(), 0)
+	}
+	return true, 0
+}
+
+// externalReadOnly reports whether name is an external tool its provider
+// declares read-only.
+func (d *Dispatcher) externalReadOnly(name string) bool {
+	if d.External == nil || !d.permitted(name) {
+		return false
+	}
+	if _, builtin := d.adapters[protocol.Tool(name)]; builtin || !d.External.Has(name) {
+		return false
+	}
+	ro, ok := d.External.(ReadOnlyExternalTools)
+	return ok && ro.ReadOnly(name)
 }
 
 // externalSchemas returns the external provider's schemas that pass the

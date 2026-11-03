@@ -352,6 +352,9 @@ type Dispatcher struct {
 	// threshold in characters (see WithToolSearch).
 	toolSearch     toolsearch.Mode
 	toolSearchAuto int
+	// toolSearchTripped latches once auto mode has deferred tools, so later
+	// requests keep deferring instead of re-measuring each time.
+	toolSearchTripped deferLatch
 
 	// headless selects the compact tool texts and the headless deferred set
 	// (see WithCompactTools).
@@ -855,8 +858,12 @@ func (d *Dispatcher) dispatch(ctx context.Context, call agent.ToolUse) (agent.To
 
 // IsConcurrencySafe satisfies agent.ConcurrencyClassifier: it reports the
 // descriptor's ConcurrencySafe flag so the loop can batch read-only tools. An
-// unregistered tool is treated as not safe.
+// unregistered tool is treated as not safe, except an external tool its
+// provider declares read-only (an MCP readOnlyHint, see external.go).
 func (d *Dispatcher) IsConcurrencySafe(call agent.ToolUse) bool {
+	if d.externalReadOnly(call.Name) {
+		return true
+	}
 	if d.Registry == nil {
 		return false
 	}

@@ -30,7 +30,10 @@ import (
 //
 // Limits: Bash 30000, Grep 20000, Read unlimited (it bounds itself by lines,
 // bytes and tokens), every other tool 50000 — the global ceiling no per-tool
-// limit may exceed. Results that carry images are never rewritten.
+// limit may exceed. An external (MCP) tool's limit is also bounded by its
+// provider's budget (MAX_MCP_OUTPUT_TOKENS × 4 characters), and its text is
+// capped even when the result carries images; other results that carry images
+// are never rewritten.
 
 const (
 	// MaxResultSizeChars is the ceiling on any tool's inline result size.
@@ -93,7 +96,17 @@ func (d *Dispatcher) capResult(call agent.ToolUse, res agent.ToolResult) agent.T
 		res.Content, _ = capShellText(d.ToolResultsDir, call.ID, res.Content, limit)
 		return res
 	}
-	if limit == 0 || len(res.Images) > 0 || utf8.RuneCountInString(res.Content) <= limit {
+	// An external (MCP) result's text is held to the provider's budget too,
+	// and it is capped even when the result carries images: the provider
+	// sends its text uncut, so this is the only limit on it.
+	if external, extLimit := d.externalResultLimit(call.Name); external {
+		if extLimit > 0 && (limit == 0 || extLimit < limit) {
+			limit = extLimit
+		}
+	} else if len(res.Images) > 0 {
+		return res
+	}
+	if limit == 0 || utf8.RuneCountInString(res.Content) <= limit {
 		return res
 	}
 	if path, err := persistToolResult(d.ToolResultsDir, call.ID, res.Content); err == nil {

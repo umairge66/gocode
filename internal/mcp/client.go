@@ -35,6 +35,9 @@ type Client struct {
 	instructions       string
 	initialized        bool
 
+	// onNotify receives server notifications (OnNotification).
+	onNotify func(method string, params json.RawMessage)
+
 	closeOnce sync.Once
 	done      chan struct{} // closed when the read loop exits
 }
@@ -69,12 +72,31 @@ func (c *Client) Connect(ctx context.Context) error {
 	return nil
 }
 
+// OnNotification registers fn to receive the server's notifications (such as
+// notifications/tools/list_changed). Each is delivered on its own goroutine,
+// so fn may make requests on this client. Set it before Connect.
+func (c *Client) OnNotification(fn func(method string, params json.RawMessage)) {
+	c.mu.Lock()
+	c.onNotify = fn
+	c.mu.Unlock()
+}
+
 // readLoop routes inbound messages: responses are delivered to the waiting
-// request by id; server-initiated requests and notifications are ignored
-// (this is a client-only implementation).
+// request by id; notifications go to the OnNotification handler, if any;
+// server-initiated requests are ignored (this is a client-only
+// implementation).
 func (c *Client) readLoop() {
 	defer close(c.done)
 	for msg := range c.transport.Messages() {
+		if n := msg.Notification; n != nil {
+			c.mu.Lock()
+			fn := c.onNotify
+			c.mu.Unlock()
+			if fn != nil {
+				go fn(n.Method, n.Params)
+			}
+			continue
+		}
 		if msg.Response == nil {
 			continue
 		}
