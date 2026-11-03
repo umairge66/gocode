@@ -835,6 +835,11 @@ func (d *Dispatcher) dispatch(ctx context.Context, call agent.ToolUse) (agent.To
 	if ad.refine != nil {
 		pc, desc, decision = ad.refine(checked.Input, pc, desc, decision)
 	}
+	// 4a. A hook's defer holds the call for a resumed session (deferral.go).
+	decision, held, deferred := applyDefer(ctx, hookDec, decision)
+	if deferred {
+		return held, nil
+	}
 	switch decision.Behavior {
 	case toolreg.BehaviorAllow:
 		// fall through to execution

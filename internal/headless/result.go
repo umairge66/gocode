@@ -71,6 +71,23 @@ type PermissionDenial struct {
 	ToolInput json.RawMessage `json:"tool_input"`
 }
 
+// DeferredToolUse is the tool call a PreToolUse hook deferred, as a result
+// reports it (deferred_tool_use).
+type DeferredToolUse struct {
+	ID    string          `json:"id"`
+	Name  string          `json:"name"`
+	Input json.RawMessage `json:"input"`
+}
+
+// NewDeferredToolUse is call as a result reports it (an absent input is {}).
+func NewDeferredToolUse(call agent.ToolUse) *DeferredToolUse {
+	in := call.Input
+	if len(in) == 0 {
+		in = json.RawMessage(`{}`)
+	}
+	return &DeferredToolUse{ID: call.ID, Name: call.Name, Input: in}
+}
+
 // Result is the final record of a print-mode run: the whole outcome of one
 // turn. A success carries Result (the final text); an error subtype carries
 // Errors instead.
@@ -94,6 +111,7 @@ type Result struct {
 	APIErrorStatus    *int                  `json:"api_error_status,omitempty"`
 	StructuredOutput  any                   `json:"structured_output,omitempty"`
 	TerminalReason    string                `json:"terminal_reason,omitempty"`
+	DeferredToolUse   *DeferredToolUse      `json:"deferred_tool_use,omitempty"`
 	Errors            []string              `json:"errors,omitempty"`
 	UUID              string                `json:"uuid"`
 }
@@ -222,6 +240,10 @@ func TerminalReason(r agent.Reason) string {
 		return "repeated_tool_calls"
 	case agent.ReasonMaxBudget:
 		return "max_budget_usd"
+	case agent.ReasonToolDeferred:
+		return "tool_deferred"
+	case agent.ReasonToolDeferredUnavailable:
+		return "tool_deferred_unavailable"
 	}
 	return ""
 }

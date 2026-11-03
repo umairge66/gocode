@@ -130,6 +130,9 @@ type entry struct {
 	AITitle     string   `json:"aiTitle,omitempty"`
 	Tag         *string  `json:"tag,omitempty"`
 	Tags        []string `json:"tags,omitempty"`
+
+	// DeferredToolUse is a deferred-tool-use line's call (deferred.go).
+	DeferredToolUse *deferredToolUse `json:"deferredToolUse,omitempty"`
 }
 
 // compactMetadata is a compact_boundary's metadata (userContext is never set,

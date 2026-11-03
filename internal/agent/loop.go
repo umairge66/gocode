@@ -1,6 +1,9 @@
 package agent
 
-import "context"
+import (
+	"context"
+	"sync"
+)
 
 // ModelCaller sends one request to the model and returns the assistant turn.
 // provider.ModelCaller (OpenRouter / Anthropic / OpenAI) plugs in here; tests
@@ -113,6 +116,15 @@ type Loop struct {
 	// delivery included).
 	LoopGuard *LoopGuardConfig
 
+	// AllowDefer lets a PreToolUse hook defer a round's only tool call: the
+	// run then ends with ReasonToolDeferred and Result.Deferred (see
+	// defercall.go). Without it a hook's defer is treated as an ask.
+	AllowDefer bool
+
+	// held is the call the dispatcher deferred in the running round.
+	heldMu sync.Mutex
+	held   *ToolUse
+
 	// guard holds the current streak of identical calls.
 	guard *loopGuard
 	// progress holds the no-progress detector's per-call-key state.
@@ -188,7 +200,9 @@ func (l *Loop) observe(m Message, resp *ModelResponse) {
 //     between, gets a note (unless it already carries an exact-repeat note);
 //     at twice the stop threshold the run ends with ReasonRepeatedToolCalls
 //     once the turn's results are recorded.
-//  8. After every model response the spend cap is checked (Budget): once it
+//  8. A PreToolUse hook may defer a round's only tool call (AllowDefer): the
+//     run ends with ReasonToolDeferred, the call unanswered (defercall.go).
+//  9. After every model response the spend cap is checked (Budget): once it
 //     is reached the response is kept, its tool calls are answered as not
 //     run, and the run ends with ReasonMaxBudget. It is checked again after
 //     a tool round, whose tools (a subagent) may have spent, so no further
@@ -350,7 +364,16 @@ func (l *Loop) Run(ctx context.Context, initial []Message) Result {
 		if verdict.stopAt >= 0 {
 			runnable = toolUses[:verdict.stopAt]
 		}
-		resultBlocks := l.dispatchTurn(WithTranscript(ctx, messages), runnable, badInputs, deferred)
+		dctx := WithTranscript(ctx, messages)
+		if l.AllowDefer && len(runnable) == 1 && verdict.stopAt < 0 {
+			dctx = withDeferrable(dctx)
+		}
+		resultBlocks := l.dispatchTurn(dctx, runnable, badInputs, deferred)
+		if held := l.takeHeld(); held != nil {
+			// A PreToolUse hook deferred the round's only call: the turn
+			// ends with it unanswered, for the caller to resume.
+			return Result{Reason: ReasonToolDeferred, Messages: messages, TurnCount: turnCount, Deferred: held}
+		}
 		if verdict.stopAt >= 0 {
 			resultBlocks = append(resultBlocks, ToolResultBlock(toolUses[verdict.stopAt].ID,
 				repeatedCallNotRun(verdict.stopTool, verdict.stopCount), true))

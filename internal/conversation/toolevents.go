@@ -91,6 +91,9 @@ func (d *toolEventDispatcher) Dispatch(ctx context.Context, call agent.ToolUse) 
 	res, err := d.inner.Dispatch(ctx, call)
 
 	end := ToolEvent{Phase: ToolEnd, ID: call.ID, Name: call.Name, Input: call.Input, Result: res.Content, IsError: res.IsError}
+	if res.Deferred {
+		end.Result = deferredToolEventText
+	}
 	if err != nil {
 		// A loop-fatal dispatch error still surfaces to the UI as a failed tool
 		// block (the loop will also map it to an is_error tool_result).

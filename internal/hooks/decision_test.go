@@ -69,10 +69,10 @@ func TestInterpretPermissionDecision(t *testing.T) {
 }
 
 func TestInterpretDeferFoldsToAskForPersonal(t *testing.T) {
-	stdout := `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"defer"}}`
-	// Project hook: defer stays no-opinion.
-	if d := Classify(0, stdout, "", DecisionOptions{Personal: false}); d.Behavior != BehaviorNone {
-		t.Errorf("project defer = %+v, want none", d)
+	stdout := `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"defer","updatedInput":{"x":1}}}`
+	// Project hook: the call is deferred, and its updatedInput dropped.
+	if d := Classify(0, stdout, "", DecisionOptions{Personal: false}); d.Behavior != BehaviorDefer || d.UpdatedInput != nil {
+		t.Errorf("project defer = %+v, want defer without updatedInput", d)
 	}
 	// Personal hook: defer -> ask.
 	if d := Classify(0, stdout, "", DecisionOptions{Personal: true}); d.Behavior != BehaviorAsk {

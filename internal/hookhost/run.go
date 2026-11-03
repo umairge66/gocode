@@ -30,10 +30,12 @@ type Result struct {
 // Blocked reports whether the merged decision denies the action.
 func (r *Result) Blocked() bool { return r != nil && r.Behavior == hooks.BehaviorDeny }
 
-// rank orders behaviours by strictness.
+// rank orders behaviours by strictness: deny > defer > ask > allow.
 func rank(b hooks.Behavior) int {
 	switch b {
 	case hooks.BehaviorDeny:
+		return 4
+	case hooks.BehaviorDefer:
 		return 3
 	case hooks.BehaviorAsk:
 		return 2
@@ -313,7 +315,7 @@ func (h *Host) Run(ctx context.Context, payload hooks.Payload, query string, has
 			merged.Behavior = d.Behavior
 			reasons = reasons[:0]
 		}
-		if d.Behavior == merged.Behavior && d.Reason != "" && (d.Behavior == hooks.BehaviorDeny || d.Behavior == hooks.BehaviorAsk) {
+		if d.Behavior == merged.Behavior && d.Reason != "" && (d.Behavior == hooks.BehaviorDeny || d.Behavior == hooks.BehaviorAsk || d.Behavior == hooks.BehaviorDefer) {
 			reasons = append(reasons, d.Reason)
 		}
 		if !d.Continue {

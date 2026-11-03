@@ -29,6 +29,10 @@ it refuses to publish a version that has no section here.
   list is refreshed when it changes.
 - Hook events PostToolUseFailure, PermissionDenied, SubagentStart and
   Notification. `/hooks` warns about events gocode never fires.
+- A PreToolUse hook can return `permissionDecision: "defer"`: the turn ends
+  without running the call, print mode reports `stop_reason: "tool_deferred"`
+  with the call in `deferred_tool_use`, and `gocode -p --resume <id>` (no
+  prompt needed) asks the hooks again and runs it.
 
 ### Changed
 

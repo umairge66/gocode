@@ -61,6 +61,9 @@ const (
 	BehaviorAsk Behavior = "ask"
 	// BehaviorNone means the hook expressed no opinion; the action proceeds.
 	BehaviorNone Behavior = "none"
+	// BehaviorDefer (PreToolUse) holds the tool call for later: the turn
+	// ends without running it, and a resumed session asks the hooks again.
+	BehaviorDefer Behavior = "defer"
 )
 
 // ErrorKind classifies a hook that did not produce a usable decision
@@ -146,8 +149,9 @@ func ParseStdout(stdout string) (*HookOutput, error) {
 //     stopReason.
 //
 //   - permissionDecision "ask" escalates to a prompt; "allow" and decision
-//     "approve" allow; "defer" is left deferred, except that for personal hooks
-//     "defer" folds to "ask".
+//     "approve" allow; "defer" defers the call (BehaviorDefer, its
+//     updatedInput dropped), except that for personal hooks "defer" folds to
+//     "ask".
 //
 //   - additionalContext, systemMessage, updatedInput and suppressOutput are
 //     carried through regardless of the behaviour.
@@ -197,8 +201,11 @@ func Interpret(out *HookOutput, opts DecisionOptions) Decision {
 	case perm == PermAllow || out.Decision == "approve":
 		d.Behavior = BehaviorAllow
 	case perm == PermDefer:
-		// Left deferred (non-personal): no opinion at this layer.
-		d.Behavior = BehaviorNone
+		// A deferred call does not run now, so a rewrite of its input has
+		// nothing to apply to; the resumed call is asked about afresh.
+		d.Behavior = BehaviorDefer
+		d.Reason = reason
+		d.UpdatedInput = nil
 	}
 	return d
 }

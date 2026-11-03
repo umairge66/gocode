@@ -171,6 +171,14 @@ func (r *sessionRuntime) resumeIntoAt(id string, fork bool, at string) (sessions
 		}
 	}
 	r.conv.SeedHistory(msgs, rec)
+	// A tool call a hook deferred in that session is still pending: it runs
+	// (after the hooks and permissions decide it again) before the next
+	// request. A fork records it in its own transcript too.
+	if call, ok := r.store.PendingDeferred(r.storeCwd, id, msgs); ok && r.conv.SetDeferredToolUse(call) && fork {
+		if dr, ok := rec.(conversation.DeferredRecorder); ok {
+			_ = dr.AppendDeferredToolUse(call)
+		}
+	}
 	// The session's spend so far (/cost, the status line, the spend cap)
 	// continues from the transcript's last cost totals.
 	if st, ok := r.store.LoadCostState(r.storeCwd, id); ok {

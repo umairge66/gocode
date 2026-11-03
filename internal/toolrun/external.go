@@ -245,6 +245,10 @@ func (d *Dispatcher) dispatchExternal(ctx context.Context, call agent.ToolUse) (
 	checked, _ := rewrittenCall(call, hookDec)
 	decision := d.Decider.Decide(pc, d.CurrentMode(), d.SnapshotRules(), hookDec)
 	decision = d.modsCheck(ctx, checked, decision)
+	decision, held, deferred := applyDefer(ctx, hookDec, decision)
+	if deferred {
+		return held, nil
+	}
 	switch decision.Behavior {
 	case toolreg.BehaviorAllow:
 		// fall through

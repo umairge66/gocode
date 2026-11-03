@@ -286,6 +286,15 @@ const (
 	// The response that crossed it is the last assistant turn; Result.Err is
 	// a *StopError carrying the cap notice.
 	ReasonMaxBudget Reason = "max_budget"
+	// ReasonToolDeferred: a PreToolUse hook deferred the round's only tool
+	// call (Loop.AllowDefer). The last message is the assistant turn with that
+	// call still unanswered; Result.Deferred names it (see defercall.go).
+	ReasonToolDeferred Reason = "tool_deferred"
+	// ReasonToolDeferredUnavailable: a resumed deferred call's tool is no
+	// longer available (an MCP server that is not connected, say); the call
+	// is still pending and no model request was made. The conversation layer
+	// reports it; the loop never does.
+	ReasonToolDeferredUnavailable Reason = "tool_deferred_unavailable"
 )
 
 // Result is the terminal outcome of a run: the stop reason, the final message
@@ -296,6 +305,8 @@ type Result struct {
 	Messages  []Message
 	TurnCount int
 	Err       error
+	// Deferred is the call a PreToolUse hook deferred (ReasonToolDeferred).
+	Deferred *ToolUse
 }
 
 // trimSpace is a tiny ASCII-space trimmer kept local to avoid pulling strings

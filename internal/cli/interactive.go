@@ -418,7 +418,11 @@ func runInteractiveSession(env *Env, s *interactiveSession, initialPrompt string
 		if p := launchAt.Swap(nil); p != nil {
 			at = *p
 		}
-		return rt.resumeIntoAt(id, s.print.resume.fork, at)
+		m, ok := rt.resumeIntoAt(id, s.print.resume.fork, at)
+		if n := deferredResumeNotice(rt.conv); ok && n != "" {
+			go prog.Send(ui.AppendSystemMsg{Text: n})
+		}
+		return m, ok
 	}
 	drv.dialogs = dialogs
 	// /resume and a model switch change the history / window outside a turn:
