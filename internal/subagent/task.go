@@ -220,7 +220,9 @@ type TaskRegistry struct {
 	names map[string]string
 	// evictedSubs receive the taskEvicted event.
 	evictedSubs map[int]func(id string)
-	nextSub     int
+	// statusSubs receive every status change (OnStatusChange).
+	statusSubs map[int]func(t *Task)
+	nextSub    int
 	// budget is the session-wide WebSearch budget, created lazily.
 	budget *WebSearchBudget
 	// refillWebSearchByDefault is the refillWebSearchBudgetByDefault setting.
@@ -266,6 +268,7 @@ func (r *TaskRegistry) Create(spec Task) *Task {
 	evicted := r.sweepLocked()
 	r.mu.Unlock()
 	r.emitEvicted(evicted)
+	r.emitStatus(out)
 	return out
 }
 
@@ -297,9 +300,9 @@ func (r *TaskRegistry) List() []*Task {
 // recording the endTime of terminal transitions.
 func (r *TaskRegistry) Update(id string, mut func(*Task)) (*Task, bool) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	t, ok := r.tasks[id]
 	if !ok {
+		r.mu.Unlock()
 		return nil, false
 	}
 	before := t.Status
@@ -313,7 +316,44 @@ func (r *TaskRegistry) Update(id string, mut func(*Task)) (*Task, bool) {
 			t.EvictAfter = r.clock().Add(TaskEvictionGrace)
 		}
 	}
-	return t.clone(), true
+	out := t.clone()
+	r.mu.Unlock()
+	if out.Status != before {
+		r.emitStatus(out)
+	}
+	return out, true
+}
+
+// OnStatusChange subscribes fn to task status changes: a task's creation
+// and every Update that changes its status. fn gets a copy of the task and
+// runs after the registry lock is released. It returns the unsubscribe
+// function.
+func (r *TaskRegistry) OnStatusChange(fn func(t *Task)) (unsubscribe func()) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.statusSubs == nil {
+		r.statusSubs = map[int]func(*Task){}
+	}
+	id := r.nextSub
+	r.nextSub++
+	r.statusSubs[id] = fn
+	return func() {
+		r.mu.Lock()
+		delete(r.statusSubs, id)
+		r.mu.Unlock()
+	}
+}
+
+func (r *TaskRegistry) emitStatus(t *Task) {
+	r.mu.RLock()
+	subs := make([]func(*Task), 0, len(r.statusSubs))
+	for _, fn := range r.statusSubs {
+		subs = append(subs, fn)
+	}
+	r.mu.RUnlock()
+	for _, fn := range subs {
+		fn(t.clone())
+	}
 }
 
 // TakeConcurrencySlot increments the live-subagent counter and returns a
