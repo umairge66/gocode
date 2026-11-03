@@ -234,6 +234,33 @@ func TestTranscriptNeutralizesTags(t *testing.T) {
 	}
 }
 
+// An MCP tool's declared annotations ride as a meta line directly above the
+// action; a tool that declares none gets no meta line.
+func TestTranscriptMCPAnnotationsMeta(t *testing.T) {
+	in := json.RawMessage(`{"table":"users"}`)
+	_, act := automode.BuildTranscript(nil, automode.Action{Tool: "mcp__db__drop", Input: in, Hints: &automode.ToolHints{Destructive: true}})
+	want := `{"meta":{"mcpAnnotations":{"destructiveHint":true}}}` + "\n" + `{"mcp__db__drop":{"table":"users"}}` + "\n"
+	if act != want {
+		t.Errorf("destructive action = %q, want %q", act, want)
+	}
+	_, act = automode.BuildTranscript(nil, automode.Action{Tool: "mcp__db__get", Input: in, Hints: &automode.ToolHints{ReadOnly: true}})
+	if !strings.HasPrefix(act, `{"meta":{"mcpAnnotations":{"readOnlyHint":true}}}`+"\n") {
+		t.Errorf("read-only action = %q", act)
+	}
+	for _, h := range []*automode.ToolHints{nil, {}} {
+		_, act = automode.BuildTranscript(nil, automode.Action{Tool: "mcp__db__q", Input: in, Hints: h})
+		if strings.Contains(act, "meta") {
+			t.Errorf("no hints, yet a meta line: %q", act)
+		}
+	}
+	// The prompts explain the line (both variants).
+	for _, v := range []string{automode.PromptFull, automode.PromptCompact} {
+		if p := automode.SystemPrompt(&automode.Rules{Prompt: v}, nil); !strings.Contains(p, "mcpAnnotations") || !strings.Contains(p, "destructiveHint") {
+			t.Errorf("%q system prompt does not describe mcpAnnotations", v)
+		}
+	}
+}
+
 // decoded flattens a chat request body: every message's text, then
 // "max_tokens=<n>" (whichever cap field the provider sent).
 func decoded(t *testing.T, raw string) string {

@@ -120,6 +120,33 @@ type Action struct {
 	Input json.RawMessage
 	// ID is the tool_use id (used to stop the transcript at this call).
 	ID string
+	// Hints are the annotations an MCP tool declares for itself (nil for a
+	// built-in tool, or an MCP tool that declares neither hint).
+	Hints *ToolHints
+}
+
+// ToolHints are an MCP tool's self-declared annotations. They reach the
+// classifier as a {"meta":{"mcpAnnotations":…}} line directly above the
+// action; the server's claim is unverified, so the prompt lets
+// DestructiveHint tighten the judgement and never lets ReadOnlyHint relax it.
+type ToolHints struct {
+	ReadOnly    bool
+	Destructive bool
+}
+
+// metaLine renders the action's harness meta line, or "" when there is none.
+func (a Action) metaLine() string {
+	if a.Hints == nil || (!a.Hints.ReadOnly && !a.Hints.Destructive) {
+		return ""
+	}
+	var ann orderedFields
+	if a.Hints.Destructive {
+		ann = append(ann, field{"destructiveHint", true})
+	}
+	if a.Hints.ReadOnly {
+		ann = append(ann, field{"readOnlyHint", true})
+	}
+	return encodeLine("meta", orderedFields{{"mcpAnnotations", ann}})
 }
 
 // reservedKeys are entry keys a tool name must not impersonate.
@@ -406,8 +433,9 @@ func buildTranscript(msgs []agent.Message, act Action, lim TranscriptLimits) bui
 	}
 	return built{
 		transcript: b.String(),
-		action:     actionLine,
-		userTurns:  strconv.Itoa(userCount) + ":" + hex.EncodeToString(userHash.Sum(nil)),
+		// A meta line sits directly above the action it describes.
+		action:    act.metaLine() + actionLine,
+		userTurns: strconv.Itoa(userCount) + ":" + hex.EncodeToString(userHash.Sum(nil)),
 	}
 }
 

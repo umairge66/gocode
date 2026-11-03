@@ -107,7 +107,7 @@ func (d *Dispatcher) classifyAsk(ctx context.Context, pc toolreg.Call, input jso
 	res := automode.Result{Verdict: automode.VerdictUnavailable, Reason: "Classifier unavailable - blocking for safety"}
 	if d.Classifier != nil {
 		res = d.Classifier.Classify(ctx, automode.Request{
-			Action:     automode.Action{Tool: string(pc.Tool), Input: input, ID: toolUseIDFrom(ctx)},
+			Action:     automode.Action{Tool: string(pc.Tool), Input: input, ID: toolUseIDFrom(ctx), Hints: d.externalHints(string(pc.Tool))},
 			Transcript: agent.TranscriptFrom(ctx),
 			DenyRules:  d.denyRuleStrings(),
 			Cwd:        d.classifierCwd(),

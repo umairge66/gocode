@@ -242,3 +242,42 @@ func TestAutoModeClassifierEndToEnd(t *testing.T) {
 		t.Fatal("blocked write ran")
 	}
 }
+
+// annotatedExternal is an MCP provider whose tools declare annotations.
+type annotatedExternal struct{ fakeExternal }
+
+func (a *annotatedExternal) Tools() []agent.ToolSchema {
+	var out []agent.ToolSchema
+	for _, n := range []string{"mcp__db__drop", "mcp__db__get", "mcp__db__plain"} {
+		out = append(out, agent.ToolSchema{Name: n, InputSchema: json.RawMessage(`{"type":"object"}`)})
+	}
+	return out
+}
+func (a *annotatedExternal) Has(n string) bool         { return strings.HasPrefix(n, "mcp__db__") }
+func (a *annotatedExternal) ReadOnly(n string) bool    { return n == "mcp__db__get" }
+func (a *annotatedExternal) Destructive(n string) bool { return n == "mcp__db__drop" }
+
+// The auto-mode classifier sees what an MCP tool declares about itself.
+func TestAutoModeClassifierGetsMCPAnnotations(t *testing.T) {
+	c := &countingClassifier{res: automode.Result{Verdict: automode.VerdictAllow}}
+	ext := &annotatedExternal{}
+	d := New(toolreg.ModeAuto, nil, WithExternalTools(ext), WithAutoClassifier(c))
+	for _, n := range []string{"mcp__db__drop", "mcp__db__get", "mcp__db__plain"} {
+		if _, err := d.Dispatch(context.Background(), agent.ToolUse{ID: "t", Name: n, Input: json.RawMessage(`{}`)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := map[string]*automode.ToolHints{}
+	for _, r := range c.reqs {
+		got[r.Action.Tool] = r.Action.Hints
+	}
+	if h, ok := got["mcp__db__drop"]; !ok || h == nil || !h.Destructive || h.ReadOnly {
+		t.Errorf("destructive tool hints = %+v (classified %v)", h, ok)
+	}
+	if h, ok := got["mcp__db__plain"]; !ok || h != nil {
+		t.Errorf("plain tool hints = %+v (classified %v)", h, ok)
+	}
+	if h, ok := got["mcp__db__get"]; ok && (h == nil || !h.ReadOnly) {
+		t.Errorf("read-only tool hints = %+v", h)
+	}
+}
