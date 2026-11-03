@@ -18,8 +18,8 @@ import (
 // Without a user to ask, print mode turns a permission "ask" into a denial.
 // Two prompters let something else decide instead:
 //
-//   - hostPrompter (stream-json input, the default there, or
-//     --permission-prompt-tool stdio): sends the host a can_use_tool control
+//   - hostPrompter (stream-json input with --permission-prompt-tool stdio):
+//     sends the host a can_use_tool control
 //     request and waits for its control_response.
 //   - mcpPromptTool (--permission-prompt-tool mcp__server__tool): calls that
 //     MCP tool with {tool_name, input, tool_use_id}; its text result is the

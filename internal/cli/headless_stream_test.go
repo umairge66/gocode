@@ -24,7 +24,7 @@ import (
 )
 
 // streamArgs are the flags of a stream-json input session.
-var streamArgs = []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"}
+var streamArgs = []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--permission-prompt-tool", "stdio"}
 
 // controlResponses indexes a run's control_response records by request id.
 func controlResponses(recs []map[string]any) map[string]map[string]any {

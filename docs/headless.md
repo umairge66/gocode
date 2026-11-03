@@ -22,7 +22,7 @@ Claude Agent SDK speaks), so an SDK-style host can drive gocode the same way.
 | `--include-partial-messages` | Adds `stream_event` records with the model's streaming events (stream-json output only). |
 | `--json-schema <schema>` | The answer is an object validated against the schema, in the result's `structured_output`. |
 | `--max-turns <n>` | Ends a turn after n model rounds (`error_max_turns`). |
-| `--permission-prompt-tool <tool>` | Who decides a permission prompt: an MCP tool (`mcp__server__tool`), or `stdio` for the stream-json host (the default with stream-json input). |
+| `--permission-prompt-tool <tool>` | Who decides a permission prompt: an MCP tool (`mcp__server__tool`), or `stdio` for the stream-json host (requires `--input-format stream-json`). Without this flag a permission prompt is denied. |
 
 ## Output records
 
@@ -119,8 +119,9 @@ error.
 
 ### Permission prompts (`can_use_tool`)
 
-When the permission rules leave a tool call to the user, a stream-json
-session asks the host instead of refusing the call:
+When the permission rules leave a tool call to the user and the session was
+started with `--input-format stream-json --permission-prompt-tool stdio`,
+gocode asks the host instead of refusing the call:
 
 ```json
 {"type":"control_request","request_id":"gocode_req_1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"make test"},"tool_use_id":"toolu_…","decision_reason":"…","permission_suggestions":[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"make:*"}],"behavior":"allow","destination":"localSettings"}]}}
@@ -161,7 +162,8 @@ every `can_use_tool`, or the turn waits.
 same JSON decision as above (`{"behavior":"allow"}` or
 `{"behavior":"deny","message":"…"}`). A failed call, or an answer that is not
 a decision, refuses the tool call. `--permission-prompt-tool stdio` names the
-stream-json host explicitly, which is what stream-json input does anyway.
+stream-json host; it is opt-in, as in Claude Code, so a host that does not
+answer `can_use_tool` never leaves a turn waiting.
 
 ## Background sessions
 

@@ -12,6 +12,7 @@ import (
 	"github.com/umairge66/gocode/internal/hooks"
 	pathguard "github.com/umairge66/gocode/internal/pathguard"
 	"github.com/umairge66/gocode/internal/protocol"
+	"github.com/umairge66/gocode/internal/textutil"
 	"github.com/umairge66/gocode/internal/toolreg"
 	"github.com/umairge66/gocode/internal/tools/fileedit"
 )
@@ -278,6 +279,7 @@ func (d *Dispatcher) dispatchExternal(ctx context.Context, call agent.ToolUse) (
 		}
 		return errResult(msg), nil
 	}
+	res.Content = neutralizeExternalText(res.Content)
 	if res.IsError {
 		return errResult(res.Content), nil
 	}
@@ -446,4 +448,17 @@ func SkillAdapter(t ModelTool) adapter {
 		description: t.Description(),
 		inputSchema: t.InputSchema(),
 	}
+}
+
+// neutralizeExternalText escapes harness control tags and fake turn markers in
+// an MCP tool's text (textutil.NeutralizeHarnessText), the same pass subagent
+// reports get: the text comes from outside the harness and must not be able to
+// pose as a system reminder or a new turn. When anything matched, a harness
+// note naming it goes first.
+func neutralizeExternalText(text string) string {
+	out, hits := textutil.NeutralizeHarnessText(text)
+	if len(hits) == 0 {
+		return text
+	}
+	return "[harness: MCP tool output matched instruction-shaped pattern(s): " + strings.Join(hits, ", ") + "]\n" + out
 }

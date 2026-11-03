@@ -88,8 +88,9 @@ func (h *headlessRun) wireEvents() {
 }
 
 // wirePrompter gives the dispatcher a prompter that lets the host decide
-// permission asks: --permission-prompt-tool's MCP tool, or the stream-json
-// host. Without either an ask stays a denial.
+// permission asks: --permission-prompt-tool's MCP tool, or (with
+// --permission-prompt-tool stdio) the stream-json host. Without either an
+// ask stays a denial.
 func (h *headlessRun) wirePrompter() {
 	d := h.rt.dispatcher
 	if d == nil {
@@ -104,7 +105,9 @@ func (h *headlessRun) wirePrompter() {
 			}
 			return h.rt.mcp.Call(ctx, name, input)
 		}})
-	case h.in != nil:
+	case tool == permissionPromptStdio && h.in != nil:
+		// Only on request, as in Claude Code: a host that never answers
+		// can_use_tool would otherwise leave every turn waiting.
 		d.SetPermissionPrompter(hostPrompter{in: h.in})
 	}
 	if h.in != nil {
