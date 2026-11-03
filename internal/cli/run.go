@@ -159,6 +159,9 @@ type printSession struct {
 	// before it starts (the root/sudo bypass refusal). See bypassmode.go.
 	modeNotice     string
 	startupRefusal string
+	// bypassAllowed: the session may switch to bypassPermissions later (it
+	// started in it, or with --allow-dangerously-skip-permissions).
+	bypassAllowed bool
 	// modeChosen reports that a startup permission mode was asked for: a
 	// --permission-mode / --dangerously-skip-permissions flag, or a usable
 	// settings permissions.defaultMode. An interactive session given none
@@ -296,6 +299,7 @@ func newPrintSession(env *Env, d *DispatchDefaults) *printSession {
 	}
 	// disableBypassPermissionsMode and the root/sudo refusal (bypassmode.go).
 	s.Mode, s.modeNotice, s.startupRefusal = gateBypassMode(env, d, s.Mode)
+	s.bypassAllowed = s.Mode == toolreg.ModeBypassPermissions || (d != nil && d.AllowBypass)
 	if s.modeNotice == msgBypassDisabledNotice {
 		// A refused bypass mode leaves only the settings mode as a choice.
 		m := toolreg.Mode(loadPermissionModeSetting(env))
@@ -685,7 +689,7 @@ func runPrint(env *Env, d *DispatchDefaults, rest []string) int {
 			fmt.Fprintln(env.Stderr, headless.ErrStreamJSONNeedsVerbose)
 			return 1
 		}
-		return runHeadlessPrint(env, newPrintSession(env, d), o, schema, streamInputPrompts(env.Stdin))
+		return runHeadlessStream(env, newPrintSession(env, d), o, schema, env.Stdin)
 	}
 	prompt := promptFromArgs(env, rest)
 	if prompt == "" {

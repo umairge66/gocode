@@ -1,8 +1,10 @@
 // Package headless holds the machine-readable output of print mode
 // (`gocode -p`): the output and input format choices, the newline-delimited
-// JSON event records (system/init, assistant, user, stream_event, result), the
-// final result record, and the JSON Schema validation behind --json-schema
-// structured output.
+// JSON event records (system/init, assistant, user, stream_event, the
+// compact_boundary / api_retry / task_* system records, result), the final
+// result record, the stream-json input control protocol (control.go), and
+// the JSON Schema validation behind --json-schema structured output. The
+// protocol is described in docs/headless.md.
 //
 // Nothing here performs I/O beyond writing records to the writer it is given;
 // in particular nothing is ever sent anywhere.

@@ -54,6 +54,7 @@ const (
 	BlockToolUse    = apiclient.BlockToolUse    // "tool_use"
 	BlockToolResult = apiclient.BlockToolResult // "tool_result"
 	BlockThinking   = apiclient.BlockThinking   // "thinking"
+	BlockImage      = apiclient.BlockImage      // "image"
 )
 
 // Stop reasons, reused from internal/apiclient.
@@ -91,6 +92,14 @@ type Message struct {
 	// history by API round with it. Providers never send it back:
 	// requests are built from Role/Content only.
 	ID string `json:"id,omitempty"`
+}
+
+// ImageSource is the source of a user image block (apiclient.ImageSource).
+type ImageSource = apiclient.ImageSource
+
+// ImageBlock builds a user image block from base64 data.
+func ImageBlock(mediaType, base64Data string) ContentBlock {
+	return ContentBlock{Type: BlockImage, Source: &ImageSource{Type: "base64", MediaType: mediaType, Data: base64Data}}
 }
 
 // TextBlock builds a text content block.

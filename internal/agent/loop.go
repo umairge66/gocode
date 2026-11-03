@@ -21,6 +21,14 @@ type StreamHandler struct {
 	OnText func(delta string)
 	// OnThinking receives each incremental extended-thinking delta.
 	OnThinking func(delta string)
+	// OnToolUseStart is told each tool_use block as it begins streaming (its
+	// id and tool name), before any of its input. A provider that does not
+	// stream tool calls never calls it.
+	OnToolUseStart func(id, name string)
+	// OnToolInputDelta receives each partial-JSON fragment of the input of
+	// the tool_use block id, in order. The fragments concatenate to the
+	// block's final input.
+	OnToolInputDelta func(id, partialJSON string)
 }
 
 // StreamingModelCaller is the optional streaming extension of ModelCaller. A

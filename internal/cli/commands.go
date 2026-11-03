@@ -72,6 +72,7 @@ var RootProgram = Command{
 		{Spec: "--input-format <format>", Help: `Input format (only works with --print): "text" (default), or "stream-json" (realtime streaming input)`},
 		{Spec: "--json-schema <schema>", Help: `JSON Schema for structured output validation (only works with --print). Example: {"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`},
 		{Spec: "--include-partial-messages", Help: "Include partial message chunks as they arrive (only works with --print and --output-format=stream-json)"},
+		{Spec: "--permission-prompt-tool <tool>", Help: `MCP tool that decides permission prompts (only works with --print), or "stdio" to ask the --input-format=stream-json host`},
 		{Spec: "--max-turns <turns>", Help: "Maximum number of agentic turns in non-interactive mode. This will early exit the conversation after the specified number of turns. (only works with --print)"},
 	},
 	Subcommands: []Command{

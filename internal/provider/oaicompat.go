@@ -264,6 +264,22 @@ func buildOAIBody(req ChatRequest, stream bool, opts oaiBodyOptions) ([]byte, er
 		if m.Content != "" {
 			om.Content = m.Content
 		}
+		if m.Role == RoleUser && len(m.Images) > 0 {
+			// A user turn with attached images: its text, then one image_url
+			// part per image.
+			parts := make([]oaiContentPart, 0, len(m.Images)+1)
+			if m.Content != "" {
+				parts = append(parts, oaiContentPart{Type: "text", Text: m.Content})
+			}
+			for _, im := range m.Images {
+				url := im.URL
+				if im.Base64 != "" {
+					url = "data:" + im.MediaType + ";base64," + im.Base64
+				}
+				parts = append(parts, oaiContentPart{Type: "image_url", ImageURL: &oaiImageURL{URL: url}})
+			}
+			om.Content = parts
+		}
 		if m.Role == RoleSystem && m.Content != "" && opts.cacheControl && req.CacheSystem && isAnthropicModel(req.Model) {
 			om.Content = []oaiContentPart{{Type: "text", Text: m.Content, CacheControl: &oaiCacheControl{Type: "ephemeral"}}}
 		}

@@ -191,6 +191,18 @@ func (m *ModelCaller) CallModelStream(ctx context.Context, req agent.ModelReques
 			h.OnThinking(s)
 		}
 	}
+	if h != nil && h.OnToolUseStart != nil {
+		creq.OnToolUseStart = func(id, name string) {
+			delivered = true
+			h.OnToolUseStart(id, name)
+		}
+	}
+	if h != nil && h.OnToolInputDelta != nil {
+		creq.OnToolInputDelta = func(id, partial string) {
+			delivered = true
+			h.OnToolInputDelta(id, partial)
+		}
+	}
 	var chatResp ChatResponse
 	err := m.withRetry(ctx, func() (bool, error) {
 		var err error
@@ -463,6 +475,10 @@ func fitOutputToWindow(capTokens, window int, req ChatRequest) int {
 // model still gets a legible result and the image is not sent.
 const imagesUnsupportedNote = "\n\n(This tool produced image content, which the active model cannot receive; only its text result is shown.)"
 
+// userImageUnsupportedNote stands in for a user-attached image when the
+// active model cannot receive images.
+const userImageUnsupportedNote = "\n\n(An image was attached, which the active model cannot receive.)"
+
 // toChatMessages converts one agent.Message into one or more ChatMessages.
 //
 // Assistant turns collapse to a single assistant message (text content plus any
@@ -493,19 +509,29 @@ func toChatMessages(msg agent.Message, imagesUnsupported bool) []ChatMessage {
 
 	// User (or any non-assistant) turn.
 	var (
-		out     []ChatMessage
-		pending string
+		out           []ChatMessage
+		pending       string
+		pendingImages []ChatImage
 	)
 	flush := func() {
-		if pending != "" {
-			out = append(out, ChatMessage{Role: RoleUser, Content: pending})
-			pending = ""
+		if pending != "" || len(pendingImages) > 0 {
+			out = append(out, ChatMessage{Role: RoleUser, Content: pending, Images: pendingImages})
+			pending, pendingImages = "", nil
 		}
 	}
 	for _, b := range msg.Content {
 		switch b.Type {
 		case apiclient.BlockText:
 			pending += b.Text
+		case apiclient.BlockImage:
+			if b.Source == nil {
+				continue
+			}
+			if imagesUnsupported {
+				pending += userImageUnsupportedNote
+				continue
+			}
+			pendingImages = append(pendingImages, ChatImage{Base64: b.Source.Data, MediaType: b.Source.MediaType, URL: b.Source.URL})
 		case apiclient.BlockToolResult:
 			flush()
 			tm := ChatMessage{

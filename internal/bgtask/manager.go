@@ -49,6 +49,7 @@ type Manager struct {
 	seq        int
 	closed     bool
 	onComplete func(info TaskInfo, notified bool)
+	onStart    func(info TaskInfo)
 	// changed is closed (and replaced) whenever a task reaches a terminal
 	// state.
 	changed chan struct{}
@@ -186,6 +187,13 @@ func (m *Manager) SetOnComplete(f func(info TaskInfo, notified bool)) {
 	m.mu.Unlock()
 }
 
+// SetOnStart installs a callback run once per task right after it started.
+func (m *Manager) SetOnStart(f func(info TaskInfo)) {
+	m.mu.Lock()
+	m.onStart = f
+	m.mu.Unlock()
+}
+
 // StartOptions describes a task to start.
 type StartOptions struct {
 	// Command is the shell command line.
@@ -256,7 +264,15 @@ func (m *Manager) StartTask(ctx context.Context, opts StartOptions) (string, err
 	entry.task.PID = proc.PID()
 	entry.proc = proc
 	m.tasks[id] = entry
+	onStart := m.onStart
 	m.mu.Unlock()
+
+	if onStart != nil {
+		entry.mu.Lock()
+		info := entry.task.snapshot()
+		entry.mu.Unlock()
+		onStart(info)
+	}
 
 	go m.reap(entry, proc)
 

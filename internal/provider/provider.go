@@ -92,6 +92,13 @@ type ChatRequest struct {
 	// delta.reasoning / reasoning_content / reasoning_details). It is never sent
 	// on the wire.
 	OnReasoning func(delta string)
+	// OnToolUseStart and OnToolInputDelta, when set on a streaming request,
+	// are told each tool_use block as it starts (id, name) and each partial
+	// JSON fragment of its input (Anthropic content_block_start tool_use /
+	// input_json_delta). Providers that do not stream tool calls ignore them.
+	// They are never sent on the wire.
+	OnToolUseStart   func(id, name string)
+	OnToolInputDelta func(id, partialJSON string)
 	// CacheSystem marks the system prompt as a cacheable prefix
 	// (agent.ModelRequest.CacheSystemPrompt). Anthropic sends cache_control
 	// {"type":"ephemeral"} on the system block; OpenRouter does the same on the
@@ -119,11 +126,13 @@ type ChatMessage struct {
 	ToolCalls  []ChatToolCall // assistant turns only
 	ToolCallID string         // tool turns only: the call this answers
 	Name       string         // optional function/tool name (tool turns)
-	// Images, when non-empty, are image parts a tool produced (tool turns only).
-	// Each provider encodes them in its own wire shape: Anthropic embeds them in
-	// the tool_result content array; OpenAI/OpenRouter (whose tool role cannot
-	// hold images) deliver them as a follow-up user message of image_url parts.
-	// Empty (the default) means a text-only turn, encoded exactly as before.
+	// Images, when non-empty, are image parts a tool produced (tool turns) or
+	// the user attached (user turns). Each provider encodes them in its own
+	// wire shape: Anthropic embeds a tool's images in the tool_result content
+	// array; OpenAI/OpenRouter (whose tool role cannot hold images) deliver
+	// them as a follow-up user message of image_url parts. A user turn's
+	// images follow its text. Empty (the default) means a text-only turn,
+	// encoded exactly as before.
 	Images []ChatImage
 	// LoadedTools, on a tool turn, names the deferred tools the result loads
 	// (a ToolSearch result). A provider with native deferred loading sends
@@ -138,6 +147,9 @@ type ChatMessage struct {
 type ChatImage struct {
 	Base64    string
 	MediaType string
+	// URL, set instead of Base64, is an image the provider fetches itself
+	// (user images only; a provider that cannot fetch URLs sends a note).
+	URL string
 }
 
 // ChatToolCall is one tool call requested by the assistant (or the neutral form
