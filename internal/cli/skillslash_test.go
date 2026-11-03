@@ -3,11 +3,13 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/umairge66/gocode/internal/agent"
+	"github.com/umairge66/gocode/internal/agenttool"
 	"github.com/umairge66/gocode/internal/subagent"
 )
 
@@ -78,5 +80,33 @@ func TestSubagentFileTouchActivatesConditionalSkill(t *testing.T) {
 	hooks.PostToolUse(context.Background(), agent.ToolUse{Name: "Edit", Input: in}, agent.ToolResult{})
 	if l := rt.conv.Skills.Listing(); !strings.Contains(l, "- gostyle: go style") {
 		t.Fatalf("conditional skill not listed after the subagent's edit: %q", l)
+	}
+}
+
+// A Skill(<name>) deny rule refuses the skill typed as `/name` too, with a
+// clear message, and keeps it out of the command menu.
+func TestSessionSkillSlashCommandDenied(t *testing.T) {
+	env, _, _, cwd := sessionEnv(t, `{"permissions":{"deny":["Skill(nope)"]}}`)
+	writeTestFile(t, filepath.Join(cwd, ".gocode", "skills", "nope", "SKILL.md"), "---\ndescription: denied skill\n---\nDo the denied thing.\n")
+
+	s := &printSession{Model: "parent-model", Provider: providerOpenRouter}
+	rt := buildSession(context.Background(), env, s, fakeCaller{reply: "ok"}, sessionConfig{})
+	defer rt.Close("other")
+
+	_, err := rt.conv.Submit(context.Background(), "/nope")
+	if !errors.Is(err, agenttool.ErrSkillDenied) || !strings.Contains(err.Error(), "blocked by a permission deny rule (Skill(nope))") {
+		t.Fatalf("Submit(/nope) err = %v", err)
+	}
+	for _, m := range rt.conv.History {
+		for _, b := range m.Content {
+			if strings.Contains(b.Text, "Do the denied thing.") {
+				t.Fatal("the denied skill's content reached the conversation")
+			}
+		}
+	}
+	for _, it := range commandSuggestions(rt.conv) {
+		if it.Name == "nope" {
+			t.Fatal("the denied skill is offered in the command menu")
+		}
 	}
 }
