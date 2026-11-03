@@ -46,10 +46,17 @@ it refuses to publish a version that has no section here.
 - A PreToolUse hook can return `permissionDecision: "defer"`: the turn ends
   without running the call, print mode reports `stop_reason: "tool_deferred"`
   with the call in `deferred_tool_use`, and `gocode -p --resume <id>` (no
-  prompt needed) asks the hooks again and runs it.
+  prompt needed) asks the hooks again and runs it. A call can be deferred
+  alongside others in the same round: the others still run, every deferred
+  call is listed in `deferred_tool_uses`, and all results go back together
+  on resume. `/compact` refuses while a deferred call is waiting.
+- Subagents pick up MCP tools that arrive while they run (within their tool
+  restrictions).
 
 ### Changed
 
+- The Agent tool's usage block reports `subagent_tokens`, as Claude Code
+  does, instead of `total_tokens`.
 - **Prompt caching in the main loop and subagents.** The system prompt and
   the conversation are cached on Anthropic, Bedrock and OpenRouter, so later
   turns cost less.
