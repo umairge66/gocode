@@ -314,6 +314,8 @@ type Conversation struct {
 	// pendingBoundary is a compaction whose boundary + rebuilt history has not
 	// been appended to Store yet (persistHistory retries it).
 	pendingBoundary *compaction.BoundaryMarker
+	// persistedCost marks the ledger totals last written to Store (cost.go).
+	persistedCost costMark
 
 	// OnToolResultsCleared, when set, is told the file paths of Read results a
 	// microcompaction just cleared, so the host can forget their read state (the
@@ -416,6 +418,7 @@ func (c *Conversation) persistHistory() {
 	if c.Store == nil {
 		return
 	}
+	defer c.persistCost()
 	n := len(c.History)
 	if c.pendingBoundary != nil {
 		if err := c.Store.AppendCompaction(*c.pendingBoundary, c.History); err == nil {

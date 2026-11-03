@@ -79,6 +79,9 @@ func estimateCompactionTokens(msgs []compaction.Message) int {
 type summarizeCaller struct {
 	// caller returns the conversation's current model caller.
 	caller func() agent.ModelCaller
+	// record, when set, receives the summary response's usage for the
+	// session's cost ledger (cost_wire.go).
+	record provider.UsageObserver
 }
 
 // Call issues the summarization request through the live model caller and reads
@@ -99,7 +102,7 @@ func (s summarizeCaller) Call(ctx context.Context, req compaction.SummarizeReque
 	}
 	msgs = append(msgs, agent.Message{Role: req.Prompt.Role, Content: req.Prompt.Content})
 
-	resp, err := mc.CallModel(ctx, agent.ModelRequest{
+	resp, err := mc.CallModel(provider.WithUsageObserver(ctx, s.record), agent.ModelRequest{
 		Messages:  msgs,
 		MaxTokens: req.MaxOutputTokens,
 	})
@@ -184,6 +187,8 @@ func (r *sessionRuntime) wireCompaction(prov, modelID string) {
 	}
 	conv := r.conv
 	r.conv.Compactor = buildCompactor(func() agent.ModelCaller { return conv.Model }, prov, modelID)
+	// The summary's spend joins the session ledger.
+	r.conv.Compactor.Caller = summarizeCaller{caller: func() agent.ModelCaller { return conv.Model }, record: r.recordUsage}
 	r.compactionProvider = prov
 	// A microcompaction that clears old Read results also forgets their read
 	// state, so an Edit must re-Read the file the model can no longer see

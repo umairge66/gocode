@@ -59,6 +59,83 @@ func (c *Conversation) recordCost(model string, u apiclient.Usage, d time.Durati
 	c.Cost.AddAPIDuration(d, d)
 }
 
+// RecordUsage accounts one model response made outside the main loop — a
+// subagent's round, a compaction summary — into the session ledger under
+// its model, priced like a main-loop turn (cost basis and unknown-price
+// flags included), with its wall time. It is safe for concurrent use (a
+// background subagent records while the main loop runs) and nil-safe.
+func (c *Conversation) RecordUsage(model string, u apiclient.Usage, d time.Duration) {
+	if c == nil || c.Cost == nil {
+		return
+	}
+	c.Cost.AddTurn(model, cost.UsageFromAPI(u))
+	c.Cost.AddAPIDuration(d, d)
+}
+
+// RecordSideQuery is RecordUsage for an auxiliary query over the session's
+// caller (a WebFetch summary, a prompt hook verdict, an auto mode classifier
+// check, an /insights report): it counts in the totals like any other
+// spend, and in the ledger's side-query share.
+func (c *Conversation) RecordSideQuery(model string, u apiclient.Usage, d time.Duration) {
+	if c == nil || c.Cost == nil {
+		return
+	}
+	usd := c.Cost.AddTurn(model, cost.UsageFromAPI(u))
+	c.Cost.RecordSideQueryCost(usd)
+	c.Cost.AddAPIDuration(d, d)
+}
+
+// CostStateRecorder is the optional capability of a SessionRecorder that
+// stores the ledger's cumulative totals next to the transcript, so a resumed
+// session continues from them (sessionstore.Session implements it).
+type CostStateRecorder interface {
+	AppendCostState(st cost.State) error
+}
+
+// costMark identifies the ledger totals last persisted, so an unchanged
+// ledger is not written again.
+type costMark struct {
+	usd    float64
+	tokens int
+	lines  int
+}
+
+func (c *Conversation) costMark() costMark {
+	l := c.Cost
+	return costMark{
+		usd:    l.TotalCostUSD(),
+		tokens: l.TotalInputTokens() + l.TotalOutputTokens() + l.TotalCacheReadInputTokens() + l.TotalCacheCreationInputTokens(),
+		lines:  l.TotalLinesAdded() + l.TotalLinesRemoved(),
+	}
+}
+
+// persistCost appends the ledger's cumulative totals to Store when they
+// changed since the last write. A Store without the capability, or no
+// ledger, records nothing.
+func (c *Conversation) persistCost() {
+	rec, ok := c.Store.(CostStateRecorder)
+	if !ok || c.Cost == nil {
+		return
+	}
+	mark := c.costMark()
+	if mark == c.persistedCost {
+		return
+	}
+	if rec.AppendCostState(c.Cost.State()) == nil {
+		c.persistedCost = mark
+	}
+}
+
+// RestoreCost installs a resumed session's saved cost totals into the ledger
+// (the load side of persistCost).
+func (c *Conversation) RestoreCost(st cost.State) {
+	if c == nil || c.Cost == nil {
+		return
+	}
+	c.Cost.Restore(st)
+	c.persistedCost = c.costMark()
+}
+
 // costModel returns the model caller the loop should drive. When a ledger is
 // wired, or the caller can report per-response usage (TurnUsageReporter), it
 // wraps c.Model so each round's usage is recorded — into the ledger, and as the

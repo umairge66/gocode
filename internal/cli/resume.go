@@ -153,6 +153,11 @@ func (r *sessionRuntime) resumeInto(id string, fork bool) (sessionstore.Meta, bo
 		}
 	}
 	r.conv.SeedHistory(msgs, rec)
+	// The session's spend so far (/cost, the status line, the spend cap)
+	// continues from the transcript's last cost totals.
+	if st, ok := r.store.LoadCostState(r.storeCwd, id); ok {
+		r.conv.RestoreCost(st)
+	}
 	r.allowResumedToolResults(id)
 	// The conversation now records to another session: the tabs gocode
 	// opened in the previous session's tab group are closed.

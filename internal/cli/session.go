@@ -408,7 +408,7 @@ func buildSession(ctx context.Context, env *Env, s *printSession, caller agent.M
 		Runner:         runner,
 		HTTPDoer:       hookDoer,
 		MCPInvoker:     mcpHookInvoker{get: func() *mcphost.Host { return r.mcp }},
-		Prompter:       modelCallerPrompter{caller: live},
+		Prompter:       modelCallerPrompter{caller: r.sideQuery(live)},
 		ContentMatcher: hookContentMatcher,
 		Canon:          canonToolName,
 		ToolInfo:       hookToolInfo,
@@ -507,12 +507,14 @@ func buildSession(ctx context.Context, env *Env, s *printSession, caller agent.M
 		toolrun.WithCompactTools(compactToolsEnabled(env)),
 	}, append(r.lsp.dispatcherOptions(), cfg.dispatcherOpts...)...)
 	r.notices = append(r.notices, addDirWarnings...)
-	r.dispatcher = newSessionDispatcher(s.Mode, env, live, opts...)
+	r.dispatcher = newSessionDispatcher(s.Mode, env, r.sideQuery(live), opts...)
 	r.wireChromeTabs(env, sessionID, cfg.interactive)
 	r.dispatcher.Hook = r.hooks.PreToolUseCall
 	// The auto mode safety classifier (automodeclassifier.go): same provider
 	// and key as the session.
-	r.dispatcher.SetAutoClassifier(newAutoModeClassifier(env, live, func() string { return r.projectMemory }))
+	classifier := newAutoModeClassifier(env, live, func() string { return r.projectMemory })
+	classifier.Caller = r.sideQuery(classifier.Caller)
+	r.dispatcher.SetAutoClassifier(classifier)
 	if r.mods != nil {
 		r.dispatcher.Mods = r.mods
 	}
@@ -684,7 +686,9 @@ func (r *sessionRuntime) wireAgentTools(env *Env, s *printSession, caller agent.
 	// Resolved at spawn time from the LIVE provider + caller, so subagents follow
 	// a mid-session /provider, /login or /model switch.
 	childFactory := func(model string) agent.ModelCaller {
-		return subagentModelFactory(s.Provider, r.conv.Model, func() *modelPolicy { return loadModelPolicy(env, s.Provider) })(model)
+		mc := subagentModelFactory(s.Provider, r.conv.Model, func() *modelPolicy { return loadModelPolicy(env, s.Provider) })(model)
+		// The child's spend joins the session ledger (cost_wire.go).
+		return r.withChildUsage(mc, r.conv.Model)
 	}
 	at := agenttool.NewAgentTool(r.tasks, r.conv.Agents, childFactory, nil)
 	// A subagent spawned in plan mode starts with the plan-mode reminder.
@@ -1611,7 +1615,7 @@ func (r *sessionRuntime) wirePromptBuiltins(env *Env, paths sessionPaths) {
 		conv.PromptGenerators[builtincmds.GeneratorInsights] = func(ctx context.Context, _ string) (string, error) {
 			rep, err := insights.Generate(ctx, insights.Options{
 				ConfigHome: base,
-				Model:      insightsModel(func() agent.ModelCaller { return conv.Model }),
+				Model:      insightsModel(func() agent.ModelCaller { return r.sideQuery(conv.Model) }),
 				PermissionGates: func() insights.PermissionGates {
 					return insights.PermissionGates{
 						CurrentSessionSeesNoDialogs: conv.Mode == toolreg.ModeBypassPermissions || conv.Mode == toolreg.ModeDontAsk,

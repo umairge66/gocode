@@ -73,6 +73,14 @@ type ModelCaller struct {
 	Rand  func() float64
 	Now   func() time.Time
 
+	// OnUsage, when set, receives the usage, model id and wall time of every
+	// response this caller produces, right as it is produced. A caller
+	// dedicated to one consumer (a subagent) reports its spend to the
+	// session's cost ledger through it. A usage observer on the request
+	// context (WithUsageObserver) takes its place for that call, so a
+	// response is reported once.
+	OnUsage UsageObserver
+
 	// mu guards the last-turn usage stash. Turns are serial within a Submit, so
 	// the mutex exists only to keep a concurrent LastTurnUsage reader (the cost
 	// wrapper) race-clean.
@@ -143,6 +151,7 @@ func (m *ModelCaller) knownNonVision(model string) bool {
 // withRetry); an "effort unsupported" 400 is retried once without effort first
 // (not counted against the retry budget).
 func (m *ModelCaller) CallModel(ctx context.Context, req agent.ModelRequest) (agent.ModelResponse, error) {
+	start := time.Now()
 	m.clearUsage()
 	creq := m.toChatRequest(req, false)
 	var chatResp ChatResponse
@@ -157,7 +166,7 @@ func (m *ModelCaller) CallModel(ctx context.Context, req agent.ModelRequest) (ag
 	if err != nil {
 		return agent.ModelResponse{}, err
 	}
-	m.stashUsage(chatResp)
+	m.stashUsage(ctx, chatResp, start)
 	return fromChatResponse(chatResp), nil
 }
 
@@ -181,6 +190,7 @@ func (m *ModelCaller) CallModelStream(ctx context.Context, req agent.ModelReques
 			h.OnText(s)
 		}
 	}
+	start := time.Now()
 	m.clearUsage()
 	creq := m.toChatRequest(req, true)
 	if h != nil && h.OnThinking != nil {
@@ -205,7 +215,7 @@ func (m *ModelCaller) CallModelStream(ctx context.Context, req agent.ModelReques
 	if err != nil {
 		return agent.ModelResponse{}, err
 	}
-	m.stashUsage(chatResp)
+	m.stashUsage(ctx, chatResp, start)
 	return fromChatResponse(chatResp), nil
 }
 
@@ -235,8 +245,10 @@ func (m *ModelCaller) clearUsage() {
 	m.mu.Unlock()
 }
 
-// stashUsage records the usage and model id of the response just produced.
-func (m *ModelCaller) stashUsage(resp ChatResponse) {
+// stashUsage records the usage and model id of the response just produced
+// and reports them to the request's usage observer, else to OnUsage. start is
+// when the call began.
+func (m *ModelCaller) stashUsage(ctx context.Context, resp ChatResponse, start time.Time) {
 	m.mu.Lock()
 	m.lastUsage = APIUsage(resp.Usage, m.providerName())
 	m.lastModel = resp.Model
@@ -244,7 +256,40 @@ func (m *ModelCaller) stashUsage(resp ChatResponse) {
 		m.lastModel = m.Model
 	}
 	m.haveUsage = true
+	model, usage := m.lastModel, m.lastUsage
 	m.mu.Unlock()
+	obs := usageObserverFrom(ctx)
+	if obs == nil {
+		obs = m.OnUsage
+	}
+	if obs != nil {
+		obs(model, usage, time.Since(start))
+	}
+}
+
+// UsageObserver receives one response's model id, usage and wall time.
+type UsageObserver func(model string, usage apiclient.Usage, d time.Duration)
+
+type usageObserverKey struct{}
+
+// WithUsageObserver returns ctx carrying obs: every response a ModelCaller
+// produces for a call made with it is reported to obs (in place of the
+// caller's OnUsage). A side query made over the session's shared caller —
+// a summary, a hook verdict, a classifier check — uses it so its spend is
+// accounted without disturbing the main loop's own accounting.
+func WithUsageObserver(ctx context.Context, obs UsageObserver) context.Context {
+	if obs == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, usageObserverKey{}, obs)
+}
+
+func usageObserverFrom(ctx context.Context) UsageObserver {
+	if ctx == nil {
+		return nil
+	}
+	obs, _ := ctx.Value(usageObserverKey{}).(UsageObserver)
+	return obs
 }
 
 // LastTurnUsage reports the usage and model id of the response most recently
