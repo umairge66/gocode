@@ -53,6 +53,7 @@ import (
 	"path"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/umairge66/gocode/internal/agent"
 	"github.com/umairge66/gocode/internal/agentsdef"
@@ -188,6 +189,12 @@ type Conversation struct {
 	MaxTokens int
 	// MaxTurns bounds the model rounds per Submit (0 → unbounded).
 	MaxTurns int
+	// maxBudgetUSD holds the session's spend cap (SetMaxBudgetUSD, budget.go)
+	// as float64 bits; it is read from subagent goroutines too. budgetWarned
+	// (under usageMu) lists the unpriced models already reported as beyond
+	// the cap's reach.
+	maxBudgetUSD atomic.Uint64
+	budgetWarned map[string]bool
 	// LoopGuard sets the repeated-identical-tool-call guard of every turn
 	// (agent.Loop.LoopGuard); nil uses agent.DefaultLoopGuard.
 	LoopGuard *agent.LoopGuardConfig
@@ -330,6 +337,8 @@ type Conversation struct {
 	// pendingBoundary is a compaction whose boundary + rebuilt history has not
 	// been appended to Store yet (persistHistory retries it).
 	pendingBoundary *compaction.BoundaryMarker
+	// persistedCost marks the ledger totals last written to Store (cost.go).
+	persistedCost costMark
 
 	// OnToolResultsCleared, when set, is told the file paths of Read results a
 	// microcompaction just cleared, so the host can forget their read state (the
@@ -432,6 +441,7 @@ func (c *Conversation) persistHistory() {
 	if c.Store == nil {
 		return
 	}
+	defer c.persistCost()
 	n := len(c.History)
 	if c.pendingBoundary != nil {
 		if err := c.Store.AppendCompaction(*c.pendingBoundary, c.History); err == nil {
@@ -748,7 +758,7 @@ func (c *Conversation) runModelTurnBlocks(ctx context.Context, content []agent.C
 	}
 
 	// --- (c) inject the skills listing into the turn context -----------------
-	system := c.turnSystem()
+	system, systemContext := c.turnSystem()
 
 	// --- (d) append the user turn and run the agent loop ---------------------
 	blocks := append([]agent.ContentBlock(nil), content...)
@@ -766,17 +776,19 @@ func (c *Conversation) runModelTurnBlocks(ctx context.Context, content []agent.C
 	turnStart := len(c.History)
 
 	loop := agent.Loop{
-		Model:       c.fallbackModel(c.costModel()),
-		Tools:       c.toolsDispatcher(),
-		Hooks:       c.Hooks,
-		System:      system,
-		ToolSchemas: c.ToolSchemas,
-		MaxTokens:   c.MaxTokens,
-		MaxTurns:    c.MaxTurns,
-		LoopGuard:   c.LoopGuard,
-		MidTurn:     c.takeMidTurnContext,
-		OnMessage:   c.OnMessage,
-		Done:        c.TurnDone,
+		Model:         c.fallbackModel(c.costModel()),
+		Tools:         c.toolsDispatcher(),
+		Hooks:         c.Hooks,
+		System:        system,
+		SystemContext: systemContext,
+		ToolSchemas:   c.ToolSchemas,
+		MaxTokens:     c.MaxTokens,
+		MaxTurns:      c.MaxTurns,
+		LoopGuard:     c.LoopGuard,
+		MidTurn:       c.takeMidTurnContext,
+		Budget:        c.BudgetExceeded,
+		OnMessage:     c.OnMessage,
+		Done:          c.TurnDone,
 	}
 	// Thread the optional streaming callbacks into the loop. Nil callbacks leave
 	// the loop's StreamHandler nil, so the turn behaves exactly as before.
@@ -911,7 +923,7 @@ func (c *Conversation) ResumeWithQueuedContext(ctx context.Context) (res Result,
 		return Result{History: c.History}, false, err
 	}
 
-	system := c.turnSystem()
+	system, systemContext := c.turnSystem()
 
 	// Build the user turn from the queued context alone (no prompt block).
 	var blocks []agent.ContentBlock
@@ -931,17 +943,19 @@ func (c *Conversation) ResumeWithQueuedContext(ctx context.Context) (res Result,
 	turnStart := len(c.History)
 
 	loop := agent.Loop{
-		Model:       c.fallbackModel(c.costModel()),
-		Tools:       c.toolsDispatcher(),
-		Hooks:       c.Hooks,
-		System:      system,
-		ToolSchemas: c.ToolSchemas,
-		MaxTokens:   c.MaxTokens,
-		MaxTurns:    c.MaxTurns,
-		LoopGuard:   c.LoopGuard,
-		MidTurn:     c.takeMidTurnContext,
-		OnMessage:   c.OnMessage,
-		Done:        c.TurnDone,
+		Model:         c.fallbackModel(c.costModel()),
+		Tools:         c.toolsDispatcher(),
+		Hooks:         c.Hooks,
+		System:        system,
+		SystemContext: systemContext,
+		ToolSchemas:   c.ToolSchemas,
+		MaxTokens:     c.MaxTokens,
+		MaxTurns:      c.MaxTurns,
+		LoopGuard:     c.LoopGuard,
+		MidTurn:       c.takeMidTurnContext,
+		Budget:        c.BudgetExceeded,
+		OnMessage:     c.OnMessage,
+		Done:          c.TurnDone,
 	}
 	loop.StreamHandler = c.streamHandler()
 	r, emergency := c.runLoopRecovering(ctx, &loop)
@@ -1275,21 +1289,22 @@ func (c *Conversation) maybeCompact(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-// turnSystem builds the system prompt for this turn: the base System with the
-// available-skills listing appended.
-func (c *Conversation) turnSystem() string {
+// turnSystem builds the system prompt for this turn: the base System, which
+// stays byte-identical for the session so providers can cache it as a prompt
+// prefix, and the available-skills listing as the trailing context, which
+// changes when skills are added or invoked and so is sent after the cached
+// prefix (agent.Loop.SystemContext). A provider without explicit caching
+// receives the two joined, exactly as when the listing was appended to the
+// system prompt.
+func (c *Conversation) turnSystem() (system, context string) {
 	if c.Skills == nil {
-		return c.System
+		return c.System, ""
 	}
 	listing := c.Skills.Listing()
 	if listing == "" {
-		return c.System
+		return c.System, ""
 	}
-	block := skills.ListingHeader + "\n\n" + listing
-	if c.System == "" {
-		return block
-	}
-	return c.System + "\n\n" + block
+	return c.System, skills.ListingHeader + "\n\n" + listing
 }
 
 // toCompaction / fromCompaction convert between the agent loop's Message type

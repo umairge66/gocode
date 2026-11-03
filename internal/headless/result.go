@@ -14,6 +14,9 @@ const (
 	SubtypeErrorMaxTurns            = "error_max_turns"
 	SubtypeErrorDuringExecution     = "error_during_execution"
 	SubtypeErrorMaxStructuredOutput = "error_max_structured_output_retries"
+	// SubtypeErrorMaxBudgetUSD: the session reached its spend cap
+	// (--max-budget-usd / maxSessionCostUsd) and the turn stopped.
+	SubtypeErrorMaxBudgetUSD = "error_max_budget_usd"
 )
 
 // ServerToolUse counts the server-side tool requests of a turn.
@@ -217,6 +220,8 @@ func TerminalReason(r agent.Reason) string {
 		return "prompt_too_long"
 	case agent.ReasonRepeatedToolCalls:
 		return "repeated_tool_calls"
+	case agent.ReasonMaxBudget:
+		return "max_budget_usd"
 	}
 	return ""
 }

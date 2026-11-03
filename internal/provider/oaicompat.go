@@ -281,7 +281,12 @@ func buildOAIBody(req ChatRequest, stream bool, opts oaiBodyOptions) ([]byte, er
 			om.Content = parts
 		}
 		if m.Role == RoleSystem && m.Content != "" && opts.cacheControl && req.CacheSystem && isAnthropicModel(req.Model) {
-			om.Content = []oaiContentPart{{Type: "text", Text: m.Content, CacheControl: &oaiCacheControl{Type: "ephemeral"}}}
+			head, tail := splitCachedSystem(m.Content, req.SystemCacheSplit)
+			parts := []oaiContentPart{{Type: "text", Text: head, CacheControl: &oaiCacheControl{Type: "ephemeral"}}}
+			if tail != "" {
+				parts = append(parts, oaiContentPart{Type: "text", Text: tail})
+			}
+			om.Content = parts
 		}
 		if len(m.ToolCalls) > 0 {
 			om.ToolCalls = make([]oaiToolCall, len(m.ToolCalls))
@@ -313,6 +318,17 @@ func buildOAIBody(req ChatRequest, stream bool, opts oaiBodyOptions) ([]byte, er
 				})
 			}
 			body.Messages = append(body.Messages, oaiMessage{Role: RoleUser, Content: parts})
+		}
+	}
+
+	// Rolling breakpoint for an Anthropic model: a trailing user text turn
+	// becomes a text part carrying cache_control (a trailing tool result is
+	// left as it is).
+	if n := len(body.Messages); n > 0 && opts.cacheControl && req.CacheMessages && isAnthropicModel(req.Model) {
+		if last := &body.Messages[n-1]; last.Role == RoleUser {
+			if text, ok := last.Content.(string); ok && text != "" {
+				last.Content = []oaiContentPart{{Type: "text", Text: text, CacheControl: &oaiCacheControl{Type: "ephemeral"}}}
+			}
 		}
 	}
 

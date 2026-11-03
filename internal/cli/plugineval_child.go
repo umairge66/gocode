@@ -231,6 +231,9 @@ func runEvalChildSession(childEnv *Env, s *printSession, o evalChildOptions, pro
 		rec["subtype"], rec["is_error"], rec["result"] = "error_during_execution", true, repeatedCallsReason(res.Err)
 		rec["terminal_reason"] = "repeated_tool_calls"
 		code = 1
+	case res.Reason == agent.ReasonMaxBudget:
+		rec["subtype"], rec["is_error"], rec["result"] = headless.SubtypeErrorMaxBudgetUSD, true, stopErrorText(res.Err, "Spend cap reached")
+		rec["terminal_reason"] = headless.TerminalReason(res.Reason)
 	case res.Reason == agent.ReasonMaxTurns:
 		rec["subtype"], rec["is_error"] = "error_max_turns", true
 		rec["result"] = fmt.Sprintf("Reached max turns (%s)", o.maxTurns)

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/umairge66/gocode/internal/agent"
 	"github.com/umairge66/gocode/internal/mcphost"
@@ -204,7 +205,15 @@ func modsModelHost(r *sessionRuntime, deps modsDeps) mods.ModelHost {
 			}
 			msgs = append(msgs, provider.ChatMessage{Role: provider.RoleUser, Content: req.Prompt})
 			modsDebugf("$.model.complete (%s): %s via %s, max %d tokens", req.Plugin, model, pc.Provider.Name(), req.MaxTokens)
+			start := time.Now()
 			resp, err := pc.Provider.Chat(ctx, provider.ChatRequest{Model: model, Messages: msgs, MaxTokens: req.MaxTokens, Effort: req.Effort})
+			if err == nil {
+				// A plugin's completion is session spend (cost_wire.go).
+				if resp.Model != "" {
+					model = resp.Model
+				}
+				r.recordSideQuery(model, provider.APIUsage(resp.Usage, pc.Provider.Name()), time.Since(start))
+			}
 			if err != nil {
 				var api *provider.APIError
 				if errors.As(err, &api) {
@@ -225,7 +234,7 @@ func modsModelHost(r *sessionRuntime, deps modsDeps) mods.ModelHost {
 			history := forkableHistory(append([]agent.Message(nil), conv.History...))
 			history = append(history, agent.UserMessage(agent.TextBlock(prompt)))
 			modsDebugf("$.model.fork (%s): %d messages, tools denied", plugin, len(history))
-			resp, err := deps.live.CallModel(ctx, agent.ModelRequest{System: conv.System, Messages: history})
+			resp, err := r.sideQuery(deps.live).CallModel(ctx, agent.ModelRequest{System: conv.System, Messages: history})
 			if err != nil {
 				var api *provider.APIError
 				if errors.As(err, &api) {

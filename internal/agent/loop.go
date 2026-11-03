@@ -54,8 +54,14 @@ type Loop struct {
 	// Hooks runs the PreToolUse / PostToolUse checkpoints (optional).
 	Hooks PermissionHook
 
-	// System is the system prompt passed on every model request.
+	// System is the system prompt passed on every model request. It is
+	// marked as a cacheable prefix (ModelRequest.CacheSystemPrompt), so it
+	// must stay byte-identical across the rounds of a run; text that may
+	// change goes in SystemContext.
 	System string
+	// SystemContext is trailing system text sent after System but outside
+	// its cached prefix (ModelRequest.SystemContext).
+	SystemContext string
 	// ToolSchemas advertises the available tools to the model.
 	ToolSchemas []ToolSchema
 	// MaxTokens caps each response (0 → caller/model default).
@@ -78,6 +84,12 @@ type Loop struct {
 	// next call instead of only at the start of the next turn. It is not
 	// called when the turn budget is spent (no further model call follows).
 	MidTurn func(ctx context.Context) []ContentBlock
+
+	// Budget, when set, is asked after every model response, once its cost
+	// is accounted; a non-nil error means the session's spend cap is reached
+	// and the run ends with ReasonMaxBudget (see budget.go). The error's text
+	// is the user-facing notice.
+	Budget func() error
 
 	// Done, when set, is asked after each tool round; true ends the turn as
 	// completed right there, without another model request. A subagent uses it
@@ -176,6 +188,11 @@ func (l *Loop) observe(m Message, resp *ModelResponse) {
 //     between, gets a note (unless it already carries an exact-repeat note);
 //     at twice the stop threshold the run ends with ReasonRepeatedToolCalls
 //     once the turn's results are recorded.
+//  8. After every model response the spend cap is checked (Budget): once it
+//     is reached the response is kept, its tool calls are answered as not
+//     run, and the run ends with ReasonMaxBudget. It is checked again after
+//     a tool round, whose tools (a subagent) may have spent, so no further
+//     request is made once the cap is reached.
 //
 // On abort every tool_use in the history is answered (synthetic interrupted
 // results), so the returned Messages are always a valid next request. A tool
@@ -218,12 +235,19 @@ func (l *Loop) Run(ctx context.Context, initial []Message) Result {
 		// the always-loaded tools plus those loaded so far.
 		messages = AnnounceDeferredTools(messages, l.ToolSchemas)
 		tools, deferred := SelectTools(l.ToolSchemas, messages)
+		// Prompt caching: tools + System form a stable prefix, and the
+		// conversation carries rolling breakpoints, so every round after the
+		// first reads what the previous round wrote. Providers without
+		// explicit caching ignore both flags.
 		resp, err := l.callModel(ctx, ModelRequest{
-			Messages:      messages,
-			System:        l.System,
-			Tools:         tools,
-			MaxTokens:     l.MaxTokens,
-			DeferredTools: deferred,
+			Messages:          messages,
+			System:            l.System,
+			SystemContext:     l.SystemContext,
+			Tools:             tools,
+			MaxTokens:         l.MaxTokens,
+			DeferredTools:     deferred,
+			CacheSystemPrompt: l.System != "",
+			CacheMessages:     true,
 		})
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
@@ -235,6 +259,13 @@ func (l *Loop) Run(ctx context.Context, initial []Message) Result {
 		assistant, badInputs := sanitizeToolInputs(resp.Message)
 		if assistant.Role == "" {
 			assistant.Role = RoleAssistant
+		}
+		// Spend cap: the response that crossed it completes, then the run
+		// stops before any of its tools run or another request is made.
+		if l.Budget != nil {
+			if spent := l.Budget(); spent != nil {
+				return l.budgetStop(messages, assistant, &resp, turnCount, spent)
+			}
 		}
 		toolUses := assistant.ToolUseBlocks()
 
@@ -368,6 +399,14 @@ func (l *Loop) Run(ctx context.Context, initial []Message) Result {
 		}
 
 		maxOutputRecoveries, malformedRetried, noOutputNudged, pauseResumes = 0, false, false, 0
+
+		// --- spend cap: the round's tools (a subagent, say) may have spent it -
+		if l.Budget != nil {
+			if spent := l.Budget(); spent != nil {
+				return Result{Reason: ReasonMaxBudget, Messages: messages, TurnCount: turnCount,
+					Err: &StopError{Kind: StopKindMaxBudget, Message: spent.Error()}}
+			}
+		}
 
 		// --- max-turns guard, then loop ---------------------------------------
 		turnCount++

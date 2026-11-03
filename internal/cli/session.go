@@ -412,7 +412,7 @@ func buildSession(ctx context.Context, env *Env, s *printSession, caller agent.M
 		Runner:         runner,
 		HTTPDoer:       hookDoer,
 		MCPInvoker:     mcpHookInvoker{get: func() *mcphost.Host { return r.mcp }},
-		Prompter:       modelCallerPrompter{caller: live},
+		Prompter:       modelCallerPrompter{caller: r.sideQuery(live)},
 		ContentMatcher: hookContentMatcher,
 		Canon:          canonToolName,
 		ToolInfo:       hookToolInfo,
@@ -514,7 +514,7 @@ func buildSession(ctx context.Context, env *Env, s *printSession, caller agent.M
 		toolrun.WithCompactTools(compactToolsEnabled(env)),
 	}, append(r.lsp.dispatcherOptions(), cfg.dispatcherOpts...)...)
 	r.notices = append(r.notices, addDirWarnings...)
-	r.dispatcher = newSessionDispatcher(s.Mode, env, live, opts...)
+	r.dispatcher = newSessionDispatcher(s.Mode, env, r.sideQuery(live), opts...)
 	r.wireChromeTabs(env, sessionID, cfg.interactive)
 	r.dispatcher.Hook = r.hooks.PreToolUseCall
 	// PermissionDenied and Notification (permission_prompt) hooks
@@ -522,7 +522,9 @@ func buildSession(ctx context.Context, env *Env, s *printSession, caller agent.M
 	wireDispatcherHookEvents(r.dispatcher, r.hooks)
 	// The auto mode safety classifier (automodeclassifier.go): same provider
 	// and key as the session.
-	r.dispatcher.SetAutoClassifier(newAutoModeClassifier(env, live, func() string { return r.projectMemory }))
+	classifier := newAutoModeClassifier(env, live, func() string { return r.projectMemory })
+	classifier.Caller = r.sideQuery(classifier.Caller)
+	r.dispatcher.SetAutoClassifier(classifier)
 	if r.mods != nil {
 		r.dispatcher.Mods = r.mods
 	}
@@ -562,6 +564,10 @@ func buildSession(ctx context.Context, env *Env, s *printSession, caller agent.M
 	if s != nil && s.MaxTurns > 0 {
 		conv.MaxTurns = s.MaxTurns
 	}
+	// The spend cap (--max-budget-usd, maxSessionCostUsd,
+	// GOCODE_MAX_SESSION_COST_USD), checked after every model response of
+	// the main loop and of every subagent. See maxbudget.go.
+	conv.SetMaxBudgetUSD(sessionMaxBudget(env, s))
 	// --setting-sources gates the user and project skills, commands and
 	// agents (settingsources.go).
 	scoped := sourceScopedPaths(env, paths)
@@ -709,7 +715,9 @@ func (r *sessionRuntime) wireAgentTools(env *Env, s *printSession, caller agent.
 	// Resolved at spawn time from the LIVE provider + caller, so subagents follow
 	// a mid-session /provider, /login or /model switch.
 	childFactory := func(model string) agent.ModelCaller {
-		return subagentModelFactory(s.Provider, r.conv.Model, func() *modelPolicy { return loadModelPolicy(env, s.Provider) })(model)
+		mc := subagentModelFactory(s.Provider, r.conv.Model, func() *modelPolicy { return loadModelPolicy(env, s.Provider) })(model)
+		// The child's spend joins the session ledger (cost_wire.go).
+		return r.withChildUsage(mc, r.conv.Model)
 	}
 	at := agenttool.NewAgentTool(r.tasks, r.conv.Agents, childFactory, nil)
 	// A subagent spawned in plan mode starts with the plan-mode reminder.
@@ -720,6 +728,11 @@ func (r *sessionRuntime) wireAgentTools(env *Env, s *printSession, caller agent.
 	at.MaxDepth = subagent.MaxSpawnDepthFromEnv(env.Getenv)
 	// Subagents use the same repeated-tool-call guard as the main agent.
 	at.LoopGuard = r.conv.LoopGuard
+	// They stop at the session's spend cap, and none starts once it is
+	// reached; at most GOCODE_MAX_CONCURRENT_SUBAGENTS (default 20) run at
+	// once.
+	at.Budget = r.conv.BudgetExceeded
+	at.MaxConcurrent = subagent.MaxConcurrentFromEnv(env.Getenv)
 	// The compact Agent description goes with the compact tool texts; its
 	// subagents' copies (ForChild) keep the same variant.
 	at.CompactDescription = compactToolsEnabled(env)
@@ -1644,7 +1657,7 @@ func (r *sessionRuntime) wirePromptBuiltins(env *Env, paths sessionPaths) {
 		conv.PromptGenerators[builtincmds.GeneratorInsights] = func(ctx context.Context, _ string) (string, error) {
 			rep, err := insights.Generate(ctx, insights.Options{
 				ConfigHome: base,
-				Model:      insightsModel(func() agent.ModelCaller { return conv.Model }),
+				Model:      insightsModel(func() agent.ModelCaller { return r.sideQuery(conv.Model) }),
 				PermissionGates: func() insights.PermissionGates {
 					return insights.PermissionGates{
 						CurrentSessionSeesNoDialogs: conv.Mode == toolreg.ModeBypassPermissions || conv.Mode == toolreg.ModeDontAsk,

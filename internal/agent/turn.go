@@ -195,6 +195,19 @@ type ModelRequest struct {
 	// automatically (OpenAI, DeepSeek, Gemini …) ignore it, as do non-Anthropic
 	// models. Set it only when System is byte-identical across calls.
 	CacheSystemPrompt bool
+	// SystemContext is trailing system text that may change between the
+	// calls of one conversation (the available-skills listing). It is sent
+	// after System: a provider that caches System as a prefix keeps it
+	// outside the cached part, and every other provider receives
+	// System + "\n\n" + SystemContext as one system prompt, exactly as if
+	// it had been appended to System.
+	SystemContext string
+	// CacheMessages asks the provider to also cache the conversation itself
+	// with rolling breakpoints on the latest messages (Anthropic direct: the
+	// last block of the last message and of the previous user turn), so each
+	// round reads the previous round's prefix from the cache. Providers that
+	// cache automatically, or not at all, ignore it.
+	CacheMessages bool
 	// DeferredTools are the deferred tools not loaded yet in this
 	// conversation (see SelectTools), in a stable order. Tools carries what a
 	// provider sends as callable definitions; a provider with native deferred
@@ -269,6 +282,10 @@ const (
 	// up to the loop guard's stop threshold; that call was not run.
 	// Result.Err is a *StopError naming the tool and the count.
 	ReasonRepeatedToolCalls Reason = "repeated_tool_calls"
+	// ReasonMaxBudget: the session's spend cap was reached (Loop.Budget).
+	// The response that crossed it is the last assistant turn; Result.Err is
+	// a *StopError carrying the cap notice.
+	ReasonMaxBudget Reason = "max_budget"
 )
 
 // Result is the terminal outcome of a run: the stop reason, the final message

@@ -239,8 +239,11 @@ func (d *Dispatcher) Schemas() []agent.ToolSchema {
 	for _, name := range rest {
 		add(name)
 	}
-	// External (MCP) tools follow the built-ins, in the provider's order.
+	// External (MCP) tools follow the built-ins, sorted by name: servers
+	// connect concurrently, so their own order varies from run to run, and
+	// the tools array leads the prompt prefix providers cache.
 	ext := d.externalSchemas()
+	sort.SliceStable(ext, func(i, j int) bool { return ext[i].Name < ext[j].Name })
 	external := make(map[string]bool, len(ext))
 	for _, s := range ext {
 		external[s.Name] = true
