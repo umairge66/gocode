@@ -266,6 +266,14 @@ type AgentTool struct {
 	// captured count. nil falls back to ToolNames.
 	MCPToolNames func() []string
 
+	// ToolsVersion, when set with MCPToolNames and ToolSchemas, reports the
+	// version of the live MCP tool table (mcphost.Host.ToolsVersion). A
+	// running subagent whose version is behind refreshes its tool list before
+	// its next model request: MCP tools its agent type may use that arrived
+	// are added (and let through its dispatcher), those that went away are
+	// dropped (childToolRefresher).
+	ToolsVersion func() uint64
+
 	// Worktrees creates and cleans up `isolation: "worktree"` worktrees. nil
 	// uses git in the process cwd (NewGitWorktrees).
 	Worktrees WorktreeManager
@@ -888,17 +896,25 @@ func (t *AgentTool) prepare(in AgentInput) (*subagent.Spawner, subagent.SpawnReq
 
 	model := t.resolveModel(in.Model, a)
 	childDepth := t.Depth + 1
-	allowed := t.allowedTools(a, childDepth)
+	// allowedNow is the child's tool list as of now; a tool refresh
+	// (childToolRefresher) recomputes it when MCP tools change.
+	allowedNow := func() []string {
+		allowed := t.allowedTools(a, childDepth)
+		if in.skill != nil {
+			// disallowed-tools removes the named tools from the fork's tool
+			// pool; rule forms with content (e.g. "Bash(rm:*)") keep the tool
+			// and act as deny rules on the child dispatcher instead.
+			allowed = withoutTools(allowed, in.skill.Scope.DenyRules)
+		}
+		return allowed
+	}
+	allowed := allowedNow()
 	if in.skill != nil {
 		// A forked skill's `model` takes precedence over the agent definition
 		// (the command's model is preferred); "inherit" is no override.
 		if m := strings.TrimSpace(in.skill.Model); m != "" && !strings.EqualFold(m, "inherit") {
 			model = t.skillForkModel(m)
 		}
-		// disallowed-tools removes the named tools from the fork's tool pool;
-		// rule forms with content (e.g. "Bash(rm:*)") keep the tool and act as deny
-		// rules on the child dispatcher instead.
-		allowed = withoutTools(allowed, in.skill.Scope.DenyRules)
 	}
 
 	sp := &subagent.Spawner{
@@ -933,6 +949,11 @@ func (t *AgentTool) prepare(in AgentInput) (*subagent.Spawner, subagent.SpawnReq
 	if t.ToolSchemas != nil {
 		sp.ToolSchemasFor = func(subagent.AgentType, subagent.SpawnRequest) []agent.ToolSchema {
 			return t.ToolSchemas(allowed)
+		}
+		if t.ToolsVersion != nil && t.MCPToolNames != nil {
+			sp.RefreshToolsFor = func(_ subagent.AgentType, _ subagent.SpawnRequest, d agent.ToolDispatcher) func([]agent.ToolSchema) []agent.ToolSchema {
+				return t.childToolRefresher(allowedNow, d)
+			}
 		}
 	}
 
@@ -976,6 +997,78 @@ func (t *AgentTool) prepare(in AgentInput) (*subagent.Spawner, subagent.SpawnReq
 		req.Context = t.PromptContext()
 	}
 	return sp, req, model, allowed, nil
+}
+
+// toolRestricter is a child dispatcher whose allowed tool list can be
+// replaced (toolrun.Dispatcher.Restrict).
+type toolRestricter interface{ Restrict(allowed []string) }
+
+// restricterOf finds the toolRestricter under d's wrappers, or nil.
+func restricterOf(d agent.ToolDispatcher) toolRestricter {
+	for d != nil {
+		if r, ok := d.(toolRestricter); ok {
+			return r
+		}
+		u, ok := d.(interface{ Unwrap() agent.ToolDispatcher })
+		if !ok {
+			return nil
+		}
+		d = u.Unwrap()
+	}
+	return nil
+}
+
+// childToolRefresher is a subagent loop's RefreshTools. When the MCP tool
+// table changed (ToolsVersion), it recomputes the child's tool list the way
+// the spawn did (allowedNow: the agent type's tools / disallowedTools, MCP
+// patterns included, and a forked skill's disallowed-tools), lets the new list
+// through the child's dispatcher, and applies the change in MCP tools to the
+// advertised list: tools that appeared are added with the dispatcher's schema,
+// those that went away (or are no longer allowed) are dropped, everything else
+// is kept as is.
+func (t *AgentTool) childToolRefresher(allowedNow func() []string, d agent.ToolDispatcher) func([]agent.ToolSchema) []agent.ToolSchema {
+	var mu sync.Mutex
+	ver := t.ToolsVersion()
+	return func(cur []agent.ToolSchema) []agent.ToolSchema {
+		mu.Lock()
+		defer mu.Unlock()
+		v := t.ToolsVersion()
+		if v == ver {
+			return cur
+		}
+		ver = v
+		next := allowedNow()
+		if r := restricterOf(d); r != nil {
+			r.Restrict(next)
+		}
+		fresh := map[string]agent.ToolSchema{}
+		var order []string
+		for _, s := range t.ToolSchemas(next) {
+			if subagent.MCPServerOfTool(s.Name) != "" {
+				fresh[s.Name] = s
+				order = append(order, s.Name)
+			}
+		}
+		out := make([]agent.ToolSchema, 0, len(cur)+len(fresh))
+		have := map[string]bool{}
+		for _, s := range cur {
+			if subagent.MCPServerOfTool(s.Name) != "" {
+				f, ok := fresh[s.Name]
+				if !ok {
+					continue // gone, or no longer allowed
+				}
+				s = f // its definition may have changed
+			}
+			have[s.Name] = true
+			out = append(out, s)
+		}
+		for _, n := range order {
+			if !have[n] {
+				out = append(out, fresh[n])
+			}
+		}
+		return out
+	}
 }
 
 // toolError carries a verbatim model-facing message while matching a sentinel
@@ -1393,6 +1486,9 @@ func (c *countingDispatcher) Dispatch(ctx context.Context, call agent.ToolUse) (
 	}
 	return c.inner.Dispatch(ctx, call)
 }
+
+// Unwrap returns the wrapped dispatcher.
+func (c *countingDispatcher) Unwrap() agent.ToolDispatcher { return c.inner }
 
 func (c *countingDispatcher) IsConcurrencySafe(call agent.ToolUse) bool {
 	if cc, ok := c.inner.(agent.ConcurrencyClassifier); ok {

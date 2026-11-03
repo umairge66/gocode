@@ -156,6 +156,14 @@ type Spawner struct {
 	// from the live tool registry.
 	ToolSchemasFor func(a AgentType, req SpawnRequest) []agent.ToolSchema
 
+	// RefreshToolsFor returns the child loop's agent.Loop.RefreshTools, so
+	// tools that arrive while it runs (an MCP server that finished
+	// connecting, tools/list_changed) reach it as they reach the main loop.
+	// dispatcher is the one passed to Spawn, for a host that has to let the
+	// new tools through it too. Optional (nil: the tool list is fixed). The
+	// refreshed list is limited to the agent type like ToolSchemasFor's.
+	RefreshToolsFor func(a AgentType, req SpawnRequest, dispatcher agent.ToolDispatcher) func([]agent.ToolSchema) []agent.ToolSchema
+
 	// MaxTurns bounds the child loop's model rounds (0 → unbounded).
 	MaxTurns int
 	// Budget is the session's spend cap check (agent.Loop.Budget). The child
@@ -292,23 +300,24 @@ func (s *Spawner) Spawn(ctx context.Context, req SpawnRequest, model agent.Model
 	// for a subagent that finishes without being interrupted.
 	mgr := s.SessionManager()
 	sess := &Session{
-		taskID:      task.ID,
-		agentType:   a.Name,
-		mgr:         mgr,
-		registry:    s.Registry,
-		model:       model,
-		dispatcher:  dispatcher,
-		system:      s.systemPrompt(a, req),
-		toolSchemas: s.toolSchemas(a, req),
-		hooks:       s.hooksFor(a, req),
-		maxTurns:    s.MaxTurns,
-		loopGuard:   s.LoopGuard,
-		budget:      s.Budget,
-		capture:     s.Capture,
-		summarize:   s.Summarize,
-		stopHook:    s.StopHook,
-		history:     []agent.Message{firstMessage(req)},
-		slot:        slot,
+		taskID:       task.ID,
+		agentType:    a.Name,
+		mgr:          mgr,
+		registry:     s.Registry,
+		model:        model,
+		dispatcher:   dispatcher,
+		system:       s.systemPrompt(a, req),
+		toolSchemas:  s.toolSchemas(a, req),
+		refreshTools: s.refreshTools(a, req, dispatcher),
+		hooks:        s.hooksFor(a, req),
+		maxTurns:     s.MaxTurns,
+		loopGuard:    s.LoopGuard,
+		budget:       s.Budget,
+		capture:      s.Capture,
+		summarize:    s.Summarize,
+		stopHook:     s.StopHook,
+		history:      []agent.Message{firstMessage(req)},
+		slot:         slot,
 		// Resumed turns take their slot under the same cap.
 		maxConcurrent: s.maxConcurrent(),
 	}
@@ -501,6 +510,42 @@ func (s *Spawner) toolSchemas(a AgentType, req SpawnRequest) []agent.ToolSchema 
 		}
 	}
 	return append(out, handback)
+}
+
+// refreshTools wraps RefreshToolsFor's refresher so a refresh never adds a
+// tool the agent type may not use (tools / disallowedTools, MCP patterns
+// included) and never drops the SubagentHandback tool.
+func (s *Spawner) refreshTools(a AgentType, req SpawnRequest, dispatcher agent.ToolDispatcher) func([]agent.ToolSchema) []agent.ToolSchema {
+	if s.RefreshToolsFor == nil || s.ToolSchemasFor == nil {
+		return nil
+	}
+	inner := s.RefreshToolsFor(a, req, dispatcher)
+	if inner == nil {
+		return nil
+	}
+	handback := string(protocol.CmdSubagentHandback)
+	return func(cur []agent.ToolSchema) []agent.ToolSchema {
+		next := inner(cur)
+		out := make([]agent.ToolSchema, 0, len(next))
+		hasHandback := false
+		for _, ts := range next {
+			switch {
+			case ts.Name == handback:
+				hasHandback = true
+			case !a.ToolAllowed(ts.Name):
+				continue
+			}
+			out = append(out, ts)
+		}
+		if !hasHandback {
+			for _, ts := range cur {
+				if ts.Name == handback {
+					out = append(out, ts)
+				}
+			}
+		}
+		return out
+	}
 }
 
 // handbackCapture wraps the real tool dispatcher and intercepts SubagentHandback
