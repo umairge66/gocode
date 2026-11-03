@@ -31,8 +31,10 @@ import (
 // permission-response is refused (or, in a race, dropped by the worker as no
 // longer matching its prompt).
 //
-// Only permission prompts take this path: AskUserQuestion and the plan
-// approval are still answered in the terminal.
+// The same handoff carries the worker's AskUserQuestion dialog and its plan
+// approval dialog (PendingPermission.Kind "question" / "plan"); the decision
+// is the same allow / deny object, a question's answers riding in
+// updatedInput.answers as they do for a can_use_tool answer.
 // -----------------------------------------------------------------------------
 
 const (
@@ -45,9 +47,20 @@ const (
 // maxPermissionBytes bounds both files when read.
 const maxPermissionBytes = 1 << 20
 
-// PendingPermission is a background session's open permission prompt.
+// Kinds of open prompt (PendingPermission.Kind).
+const (
+	PromptPermission = "permission" // a tool call's permission prompt
+	PromptQuestion   = "question"   // AskUserQuestion; input is {"questions":[…]}
+	PromptPlan       = "plan"       // ExitPlanMode's plan approval; input is {"plan":…}
+)
+
+// PendingPermission is a background session's open permission prompt,
+// question or plan approval.
 type PendingPermission struct {
-	RequestID string          `json:"requestId"`
+	RequestID string `json:"requestId"`
+	// Kind is PromptPermission, PromptQuestion or PromptPlan ("" is a
+	// permission prompt, as written before kinds existed).
+	Kind      string          `json:"kind,omitempty"`
 	ToolName  string          `json:"toolName"`
 	Input     json.RawMessage `json:"input"`
 	ToolUseID string          `json:"toolUseId,omitempty"`
