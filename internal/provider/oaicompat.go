@@ -84,6 +84,35 @@ type oaiCacheControl struct {
 	Type string `json:"type"` // "ephemeral"
 }
 
+// markOAIBreakpoint puts the rolling prompt-cache breakpoint for an
+// Anthropic model behind OpenRouter on the request's trailing turn: the text
+// of the last user or tool message becomes a text part carrying
+// cache_control (OpenRouter passes it through to Anthropic on either role).
+// A trailing message with no text (the image follow-up of a tool result) is
+// skipped for the tool message before it.
+func markOAIBreakpoint(msgs []oaiMessage) {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		m := &msgs[i]
+		if m.Role != RoleUser && m.Role != RoleTool {
+			return
+		}
+		switch c := m.Content.(type) {
+		case string:
+			if c != "" {
+				m.Content = []oaiContentPart{{Type: "text", Text: c, CacheControl: &oaiCacheControl{Type: "ephemeral"}}}
+				return
+			}
+		case []oaiContentPart:
+			for k := len(c) - 1; k >= 0; k-- {
+				if c[k].Type == "text" && c[k].Text != "" {
+					c[k].CacheControl = &oaiCacheControl{Type: "ephemeral"}
+					return
+				}
+			}
+		}
+	}
+}
+
 // oaiImageURL is the image_url payload: a data: URL (data:<mime>;base64,<data>).
 type oaiImageURL struct {
 	URL string `json:"url"`
@@ -321,15 +350,8 @@ func buildOAIBody(req ChatRequest, stream bool, opts oaiBodyOptions) ([]byte, er
 		}
 	}
 
-	// Rolling breakpoint for an Anthropic model: a trailing user text turn
-	// becomes a text part carrying cache_control (a trailing tool result is
-	// left as it is).
-	if n := len(body.Messages); n > 0 && opts.cacheControl && req.CacheMessages && isAnthropicModel(req.Model) {
-		if last := &body.Messages[n-1]; last.Role == RoleUser {
-			if text, ok := last.Content.(string); ok && text != "" {
-				last.Content = []oaiContentPart{{Type: "text", Text: text, CacheControl: &oaiCacheControl{Type: "ephemeral"}}}
-			}
-		}
+	if opts.cacheControl && req.CacheMessages && isAnthropicModel(req.Model) {
+		markOAIBreakpoint(body.Messages)
 	}
 
 	if len(req.Tools) > 0 {

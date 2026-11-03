@@ -462,6 +462,67 @@ func TestPromptCacheOnlyForSupportedModels(t *testing.T) {
 	}
 }
 
+// CacheMessages puts rolling cachePoint blocks at the end of the last message
+// (here a tool result turn) and of the user turn before it; with the system
+// checkpoint that is 3 of the 4 Converse allows.
+func TestRollingMessageCachePoints(t *testing.T) {
+	req := provider.ChatRequest{
+		Model: "us.anthropic.claude-sonnet-4-6",
+		Messages: []provider.ChatMessage{
+			{Role: provider.RoleSystem, Content: "sys"},
+			{Role: provider.RoleUser, Content: "first"},
+			{Role: provider.RoleAssistant, Content: "ok"},
+			{Role: provider.RoleUser, Content: "go"},
+			{Role: provider.RoleAssistant, ToolCalls: []provider.ChatToolCall{{ID: "a", Name: "bash", Arguments: "{}"}, {ID: "b", Name: "bash", Arguments: "{}"}}},
+			{Role: provider.RoleTool, ToolCallID: "a", Content: "out a"},
+			{Role: provider.RoleTool, ToolCallID: "b", Content: "out b"},
+		},
+		Tools:         []provider.ChatTool{{Name: "bash"}},
+		CacheSystem:   true,
+		CacheMessages: true,
+	}
+	b, err := buildConverseBody(req, req.Model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body struct {
+		Messages []cvMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(b, &body); err != nil {
+		t.Fatal(err)
+	}
+	if got := bytes.Count(b, []byte(`"cachePoint"`)); got != 3 {
+		t.Fatalf("cachePoints = %d, want 3 (system + 2 rolling): %s", got, b)
+	}
+	last := body.Messages[len(body.Messages)-1]
+	if c := last.Content; len(c) != 3 || c[0].ToolResult == nil || c[1].ToolResult == nil || c[2].CachePoint == nil {
+		t.Errorf("last turn should be the tool results then a cachePoint: %s", b)
+	}
+	prevUser := body.Messages[len(body.Messages)-3]
+	if c := prevUser.Content; prevUser.Role != "user" || c[len(c)-1].CachePoint == nil {
+		t.Errorf("previous user turn lacks a cachePoint: %s", b)
+	}
+	if c := body.Messages[0].Content; c[len(c)-1].CachePoint != nil {
+		t.Errorf("older turns must not be marked: %s", b)
+	}
+
+	// Never more than Converse's limit, and none for a model without caching.
+	text := "x"
+	msgs := []cvMessage{{Role: "user", Content: []cvBlock{{Text: &text}}}, {Role: "assistant", Content: []cvBlock{{Text: &text}}}, {Role: "user", Content: []cvBlock{{Text: &text}}}}
+	markCachePoints(msgs, 1)
+	if len(msgs[0].Content) != 1 || len(msgs[2].Content) != 2 {
+		t.Errorf("a budget of 1 marks only the last turn: %+v", msgs)
+	}
+	req.Model = "anthropic.claude-3-haiku-20240307-v1:0"
+	if b, _ := buildConverseBody(req, req.Model); bytes.Contains(b, []byte("cachePoint")) {
+		t.Errorf("cachePoint sent to Claude 3 Haiku: %s", b)
+	}
+	req.Model, req.CacheMessages = "us.anthropic.claude-sonnet-4-6", false
+	if b, _ := buildConverseBody(req, req.Model); bytes.Count(b, []byte(`"cachePoint"`)) != 1 {
+		t.Errorf("without CacheMessages only the system checkpoint: %s", b)
+	}
+}
+
 func TestToolHistoryWithoutToolsGetsToolConfig(t *testing.T) {
 	req := provider.ChatRequest{
 		Model: "us.anthropic.claude-sonnet-4-6",
