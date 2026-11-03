@@ -29,16 +29,6 @@ func outsideFixture(t *testing.T) (proj, outside, file string) {
 	return proj, outside, file
 }
 
-// skipAbsolutePathRules skips a check that relies on an absolute path rule
-// ("//<path>"): the rule engine matches those against POSIX paths only, so
-// they never match a drive-letter path on Windows.
-func skipAbsolutePathRules(t *testing.T) {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("absolute path rules (//<path>) do not match drive-letter paths on Windows")
-	}
-}
-
 func recordPrompter(kind PermissionResponseKind, persisted *[]string) *fakePrompter {
 	return &fakePrompter{respond: func(req PermissionRequest) (PermissionResponse, error) {
 		resp := PermissionResponse{Kind: kind}
@@ -111,7 +101,6 @@ func TestOutsideReadAsks(t *testing.T) {
 }
 
 func TestOutsideReadDontAskAgainIsSessionRule(t *testing.T) {
-	skipAbsolutePathRules(t)
 	proj, outside, file := outsideFixture(t)
 	var persisted []string
 	p := recordPrompter(PermissionAllowedAlways, &persisted)
@@ -144,7 +133,6 @@ func TestOutsideReadAllowRuleAndAdditionalDir(t *testing.T) {
 		t.Fatalf("additional dir: %+v", res)
 	}
 	// An allow rule.
-	skipAbsolutePathRules(t)
 	rules := toolreg.RuleSet{{Behavior: toolreg.RuleAllow, ToolName: "Read", Content: "//" + strings.TrimPrefix(outside, "/") + "/**"}}
 	d = New(toolreg.ModeDefault, rules, WithSessionFiles(sessionFilesFor(proj, t.TempDir(), false)))
 	if res := dispatch(t, d, string(protocol.ToolRead), map[string]any{"file_path": file}); res.IsError {
@@ -155,7 +143,7 @@ func TestOutsideReadAllowRuleAndAdditionalDir(t *testing.T) {
 func TestOutsideReadDenyRuleAndBlockSetting(t *testing.T) {
 	proj, outside, file := outsideFixture(t)
 	p := recordPrompter(PermissionAllowedOnce, nil)
-	if runtime.GOOS != "windows" { // absolute path rules: see skipAbsolutePathRules
+	{
 		rules := toolreg.RuleSet{{Behavior: toolreg.RuleDeny, ToolName: "Read", Content: "//" + strings.TrimPrefix(outside, "/") + "/**"}}
 		d := New(toolreg.ModeDefault, rules, WithSessionFiles(sessionFilesFor(proj, t.TempDir(), false)), WithPermissionPrompter(p))
 		if res := dispatch(t, d, string(protocol.ToolRead), map[string]any{"file_path": file}); !res.IsError {

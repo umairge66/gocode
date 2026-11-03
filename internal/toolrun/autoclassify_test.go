@@ -143,7 +143,6 @@ func TestAutoModeClassifierUnavailableAsksOrDenies(t *testing.T) {
 }
 
 func TestAutoModeDenyRuleBeatsClassifier(t *testing.T) {
-	skipAbsolutePathRules(t)
 	proj, outside := autoFixture(t)
 	c := &countingClassifier{res: automode.Result{Verdict: automode.VerdictAllow}}
 	rules := toolreg.RuleSet{{Behavior: toolreg.RuleDeny, ToolName: "Write", Content: "//" + strings.TrimPrefix(outside, "/") + "/**"}}

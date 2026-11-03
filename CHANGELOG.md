@@ -6,6 +6,19 @@ it refuses to publish a version that has no section here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Windows: absolute path rules now work.** A deny, ask or allow rule for an
+  absolute path (`Read(//d/secret/**)`) never matched a drive-letter path such
+  as `D:\secret\creds.txt`, so such a deny rule protected nothing. Absolute
+  rules now match on Windows, written as `//d/secret/**` (the drive letter as
+  the first folder), `//D:/secret/**`, `//D:\secret\**`, or just a drive path
+  like `D:\secret\creds.txt`. UNC paths (`\\server\share\…`) are not
+  matched by absolute rules.
+- Windows: path rules ignore case, as Windows paths do, so a file cannot slip
+  past a deny rule by spelling its name differently (`Secret\key` and
+  `secret/**`).
+
 ## [0.1.6] - 2026-11-04
 
 This release includes Chrome extension 0.4.2. If you use gocode in Chrome,

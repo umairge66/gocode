@@ -14,9 +14,26 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 )
+
+// goos is runtime.GOOS; tests set it to exercise the Windows path rules on
+// any platform.
+var goos = runtime.GOOS
+
+// Windows paths in path rules.
+//
+// Windows paths have a drive ("D:\work\x") and are not case-sensitive, while
+// rules are written in POSIX form. An absolute rule ("//...") is matched
+// against the path's POSIX spelling, the drive letter as the first segment in
+// lower case: D:\work\x is /d/work/x, so "//d/work/**" covers it (the
+// form Claude Code documents for Windows). "//D:/work/**" and
+// "//D:\work\**" are read the same way. Every rule is matched without regard
+// to case on Windows, so a different spelling of a name cannot step around a
+// deny rule. A UNC path (\\server\share\...) has no drive and is not matched
+// by an absolute rule.
 
 // PathRuleRoots holds the directories a path rule is resolved against.
 type PathRuleRoots struct {
@@ -102,7 +119,12 @@ var gitignoreCache sync.Map // pattern -> *regexp.Regexp (nil when unusable)
 // tested path here). "*" and "?" stay within one segment, "**" spans
 // segments, "[...]" is a class and "\x" escapes x.
 func compileGitignore(pat string) (re *regexp.Regexp, dirOnly bool) {
+	// Windows paths are not case-sensitive, so neither is a rule there.
+	fold := goos == "windows"
 	key := pat
+	if fold {
+		key = "(?i)" + pat
+	}
 	if v, ok := gitignoreCache.Load(key); ok {
 		c := v.(compiledIgnore)
 		return c.re, c.dirOnly
@@ -121,6 +143,9 @@ func compileGitignore(pat string) (re *regexp.Regexp, dirOnly bool) {
 		return nil, false
 	}
 	var b strings.Builder
+	if fold {
+		b.WriteString("(?i)")
+	}
 	b.WriteString("^")
 	if !anchored {
 		b.WriteString("(?:.*/)?")
@@ -267,6 +292,11 @@ func physicalTwin(root string) string {
 // normalization. A deny / ask rule is also tried against the
 // symlink-resolved spelling of its root.
 func (r PathRuleRoots) PathRuleMatches(content, source, p string, allow bool) bool {
+	// On Windows a rule written as a drive path ("C:\\Users\\me\\x",
+	// "C:/Users/me/x") is an absolute rule.
+	if goos == "windows" && len(content) >= 3 && isASCIILetter(content[0]) && content[1] == ':' && (content[2] == '\\' || content[2] == '/') {
+		content = "//" + content
+	}
 	if r.pathRuleMatches(content, source, p, allow) {
 		return true
 	}
@@ -282,6 +312,9 @@ func (r PathRuleRoots) PathRuleMatches(content, source, p string, allow bool) bo
 
 func (r PathRuleRoots) pathRuleMatches(content, source, p string, allow bool) bool {
 	root, rawPattern := r.ResolvePathRule(content, source)
+	if root == "/" && goos == "windows" {
+		return windowsAbsoluteRuleMatches(rawPattern, p, allow)
+	}
 	pattern := normalizeRulePattern(rawPattern, allow)
 	if pattern == "/**" || pattern == "**" {
 		// Whole-root form: everything beneath the root (not the root
@@ -308,6 +341,59 @@ func (r PathRuleRoots) pathRuleMatches(content, source, p string, allow bool) bo
 		}
 	}
 	return false
+}
+
+// windowsAbsoluteRuleMatches matches an absolute rule's pattern (the part
+// after the first "/" of "//...") against a Windows path p. Both are brought
+// to the POSIX drive form first (see "Windows paths in path rules").
+func windowsAbsoluteRuleMatches(rawPattern, p string, allow bool) bool {
+	posix, ok := windowsPOSIXPath(p)
+	if !ok {
+		return false
+	}
+	pattern := normalizeRulePattern(windowsRulePattern(rawPattern), allow)
+	rel := strings.TrimPrefix(posix, "/")
+	if rel == "" {
+		return false
+	}
+	if pattern == "/**" || pattern == "**" {
+		return true
+	}
+	return gitignoreMatches(pattern, rel)
+}
+
+// windowsPOSIXPath spells a Windows drive path in POSIX form: "D:\a\b"
+// (or "D:/a/b") is "/d/a/b". ok is false for a path without a drive letter
+// (a UNC or relative path).
+func windowsPOSIXPath(p string) (string, bool) {
+	if len(p) < 2 || p[1] != ':' || !isASCIILetter(p[0]) {
+		return "", false
+	}
+	rest := strings.ReplaceAll(p[2:], "\\", "/")
+	for strings.Contains(rest, "//") {
+		rest = strings.ReplaceAll(rest, "//", "/")
+	}
+	rest = strings.TrimSuffix(rest, "/")
+	if rest != "" && !strings.HasPrefix(rest, "/") {
+		return "", false // "D:x" is relative to the drive's current directory
+	}
+	return "/" + strings.ToLower(p[:1]) + rest, true
+}
+
+// windowsRulePattern brings an absolute rule's pattern to the POSIX drive
+// form: "/D:/work/**" and "/D:\work\**" become "/d/work/**"; "/d/work/**"
+// is unchanged. Backslashes are separators here (a Windows user writing
+// "//C:\Users\..." means a path), not gitignore escapes.
+func windowsRulePattern(pat string) string {
+	if !strings.HasPrefix(pat, "/") {
+		return pat
+	}
+	body := pat[1:]
+	if len(body) >= 2 && isASCIILetter(body[0]) && body[1] == ':' {
+		body = strings.ToLower(body[:1]) + body[2:]
+		body = strings.ReplaceAll(body, "\\", "/")
+	}
+	return "/" + body
 }
 
 // IsMatchAllPathRule reports whether a rule content covers the whole
