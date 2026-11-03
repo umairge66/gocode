@@ -273,6 +273,10 @@ const (
 	// up to the loop guard's stop threshold; that call was not run.
 	// Result.Err is a *StopError naming the tool and the count.
 	ReasonRepeatedToolCalls Reason = "repeated_tool_calls"
+	// ReasonMaxBudget: the session's spend cap was reached (Loop.Budget).
+	// The response that crossed it is the last assistant turn; Result.Err is
+	// a *StopError carrying the cap notice.
+	ReasonMaxBudget Reason = "max_budget"
 )
 
 // Result is the terminal outcome of a run: the stop reason, the final message

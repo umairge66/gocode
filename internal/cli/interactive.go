@@ -414,7 +414,10 @@ func runInteractiveSession(env *Env, s *interactiveSession, initialPrompt string
 	// /resume and a model switch change the history / window outside a turn:
 	// refresh the context gauge right away rather than at the next turn end.
 	dialogs.onContextChanged = drv.refreshContextIfIdle
-	drv.limits.maxCostUSD = loadMaxSessionCost(env)
+	// The spend cap the session resolved (buildSession), also enforced inside
+	// the agent loops.
+	drv.limits.flagCostUSD = s.print.MaxBudgetUSD
+	drv.limits.maxCostUSD = rt.conv.MaxBudgetUSD()
 
 	// Now the program exists, bind the dialog seams to it and route the dialog
 	// confirm/dismiss callbacks to whichever is waiting. The AskUserQuestion asker,
@@ -1684,6 +1687,8 @@ func (d *turnDriver) run(isResume bool, runner func(context.Context) (conversati
 			d.status.turnAborted()
 		case res.Reason == agent.ReasonRepeatedToolCalls:
 			d.status.turnEnded(repeatedCallsReason(res.Err))
+		case res.Reason == agent.ReasonMaxBudget:
+			d.status.turnEnded(stopErrorText(res.Err, "Spend cap reached"))
 		case res.Err != nil:
 			d.status.apiFailure(res.Err)
 		case res.Kind == conversation.ResultModel:
@@ -1696,7 +1701,7 @@ func (d *turnDriver) run(isResume bool, runner func(context.Context) (conversati
 			turnOutcome = "failed"
 		case res.Reason == agent.ReasonAborted || ctx.Err() != nil:
 			turnOutcome = "interrupted"
-		case res.Reason == agent.ReasonRepeatedToolCalls:
+		case res.Reason == agent.ReasonRepeatedToolCalls || res.Reason == agent.ReasonMaxBudget:
 			turnOutcome = "stopped"
 		case res.Err != nil:
 			turnOutcome = "failed"
@@ -1729,6 +1734,10 @@ func (d *turnDriver) run(isResume bool, runner func(context.Context) (conversati
 			// The guard ended the turn; the user decides how to go on.
 			finalizeStream("")
 			d.prog.Send(ui.AppendSystemMsg{Text: repeatedCallsNotice(res.Err)})
+		case res.Reason == agent.ReasonMaxBudget:
+			// The spend cap ended the turn after the response that crossed it.
+			finalizeStream("")
+			d.prog.Send(ui.AppendErrorMsg{Text: spendCapStopNotice(res.Err)})
 		case res.Err != nil:
 			turnFailed = true
 			finalizeStream("")

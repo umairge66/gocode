@@ -554,6 +554,10 @@ func buildSession(ctx context.Context, env *Env, s *printSession, caller agent.M
 	if s != nil && s.MaxTurns > 0 {
 		conv.MaxTurns = s.MaxTurns
 	}
+	// The spend cap (--max-budget-usd, maxSessionCostUsd,
+	// GOCODE_MAX_SESSION_COST_USD), checked after every model response of
+	// the main loop and of every subagent. See maxbudget.go.
+	conv.SetMaxBudgetUSD(sessionMaxBudget(env, s))
 	conv.Skills = skills.Load(fsys, skills.LoadConfig{UserDir: paths.configDir, Home: paths.home, Cwd: paths.cwd, ManagedRoot: managedSkillsRoot(env)})
 	// Skill/command allowed-tools under allowManagedPermissionRulesOnly
 	// (toolgrants.go); the -p path prints a stderr line.
@@ -699,6 +703,11 @@ func (r *sessionRuntime) wireAgentTools(env *Env, s *printSession, caller agent.
 	at.MaxDepth = subagent.MaxSpawnDepthFromEnv(env.Getenv)
 	// Subagents use the same repeated-tool-call guard as the main agent.
 	at.LoopGuard = r.conv.LoopGuard
+	// They stop at the session's spend cap, and none starts once it is
+	// reached; at most GOCODE_MAX_CONCURRENT_SUBAGENTS (default 20) run at
+	// once.
+	at.Budget = r.conv.BudgetExceeded
+	at.MaxConcurrent = subagent.MaxConcurrentFromEnv(env.Getenv)
 	// The compact Agent description goes with the compact tool texts; its
 	// subagents' copies (ForChild) keep the same variant.
 	at.CompactDescription = compactToolsEnabled(env)

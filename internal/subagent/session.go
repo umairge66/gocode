@@ -73,8 +73,13 @@ type Session struct {
 	hooks       agent.PermissionHook
 	maxTurns    int
 	loopGuard   *agent.LoopGuardConfig
+	budget      func() error
 	capture     bool
 	summarize   ActivitySummarizer
+
+	// slot is the concurrency slot the spawn reserved for the first turn
+	// (taken over by it, then nil); a resumed turn takes a fresh one.
+	slot func()
 }
 
 // TaskID returns the session's task id.
@@ -125,6 +130,9 @@ func (s *Session) runTurn(ctx context.Context, input []agent.ContentBlock) (Repo
 	summarize := s.summarize
 	reg := s.registry
 	taskID := s.taskID
+	budget := s.budget
+	slot := s.slot
+	s.slot = nil
 	s.mu.Unlock()
 
 	defer cancel()
@@ -145,7 +153,10 @@ func (s *Session) runTurn(ctx context.Context, input []agent.ContentBlock) (Repo
 	if started != nil {
 		who.Name = started.Name
 	}
-	release := reg.TakeConcurrencySlot()
+	release := slot
+	if release == nil {
+		release = reg.TakeConcurrencySlot()
+	}
 
 	// Live capture (optional, UI-agnostic): wrap the dispatcher so every tool
 	// call records a transcript entry and refreshes Task.Activity, and wrap the
@@ -169,6 +180,7 @@ func (s *Session) runTurn(ctx context.Context, input []agent.ContentBlock) (Repo
 		Hooks:       hooks,
 		MaxTurns:    maxTurns,
 		LoopGuard:   loopGuard,
+		Budget:      budget,
 		// Messages sent to this agent while it runs are delivered at its next
 		// tool round (the task's pendingMessages are drained).
 		MidTurn: func(context.Context) []agent.ContentBlock {

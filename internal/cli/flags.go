@@ -54,6 +54,14 @@ type DispatchDefaults struct {
 	MaxTurns      string
 	MaxTurnsSet   bool
 	MaxTurnsLimit int
+
+	// --max-budget-usd <amount>: the raw value and whether the flag was
+	// given; MaxBudgetUSDLimit is the validated cap dispatch hands to the
+	// session (0 = none; the maxSessionCostUsd setting and
+	// GOCODE_MAX_SESSION_COST_USD then apply). See maxbudget.go.
+	MaxBudgetUSD      string
+	MaxBudgetUSDSet   bool
+	MaxBudgetUSDLimit float64
 }
 
 // stripDebugFlags removes the debug options (--debug[=filter], -d,
@@ -94,8 +102,8 @@ func parseDispatchDefaults(args []string) (*DispatchDefaults, []string) {
 	var allowBypass bool
 	var cont, resume, fork, noPersist bool
 	var resumeVal, sessionID string
-	var maxTurns string
-	var maxTurnsSet bool
+	var maxTurns, maxBudget string
+	var maxTurnsSet, maxBudgetSet bool
 	var allowedTools, disallowedTools []string
 	var rest []string
 
@@ -170,6 +178,8 @@ func parseDispatchDefaults(args []string) (*DispatchDefaults, []string) {
 			sessionID = next()
 		case key == "--max-turns" && avail:
 			maxTurns, maxTurnsSet = next(), true
+		case key == "--max-budget-usd" && avail:
+			maxBudget, maxBudgetSet = next(), true
 		case key == "--fork-session":
 			fork = true
 		case key == "--no-session-persistence":
@@ -184,7 +194,7 @@ func parseDispatchDefaults(args []string) (*DispatchDefaults, []string) {
 		mode = inheritMode
 	}
 	if mode == "" && model == "" && provider == "" && effort == "" && agent == "" && fallbackModel == "" &&
-		!allowBypass && !cont && !resume && !fork && !noPersist && sessionID == "" && !maxTurnsSet &&
+		!allowBypass && !cont && !resume && !fork && !noPersist && sessionID == "" && !maxTurnsSet && !maxBudgetSet &&
 		len(allowedTools) == 0 && len(disallowedTools) == 0 {
 		return nil, rest
 	}
@@ -206,6 +216,8 @@ func parseDispatchDefaults(args []string) (*DispatchDefaults, []string) {
 		NoSessionPersistence: noPersist,
 		MaxTurns:             maxTurns,
 		MaxTurnsSet:          maxTurnsSet,
+		MaxBudgetUSD:         maxBudget,
+		MaxBudgetUSDSet:      maxBudgetSet,
 	}
 	if permMode == "" && inheritMode != "" {
 		d.PermissionModeInherited = true

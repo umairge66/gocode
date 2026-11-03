@@ -67,6 +67,7 @@ var RootProgram = Command{
 		{Spec: "--json-schema <schema>", Help: `JSON Schema for structured output validation (only works with --print). Example: {"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`},
 		{Spec: "--include-partial-messages", Help: "Include partial message chunks as they arrive (only works with --print and --output-format=stream-json)"},
 		{Spec: "--max-turns <turns>", Help: "Maximum number of agentic turns in non-interactive mode. This will early exit the conversation after the specified number of turns. (only works with --print)"},
+		{Spec: "--max-budget-usd <amount>", Help: "Maximum dollar amount to spend on model calls in this session, subagents included. The turn stops after the response that crosses it. Overrides maxSessionCostUsd and GOCODE_MAX_SESSION_COST_USD (a managed policy value still wins)"},
 	},
 	Subcommands: []Command{
 		{

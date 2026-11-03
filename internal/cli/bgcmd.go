@@ -43,7 +43,7 @@ var bgValueFlags = map[string]bool{
 	"--debug-file": true, "--model": true, "--permission-mode": true, "--effort": true, "--agent": true,
 	"--name": true, "-n": true, "--session-id": true, "--resume": true, "-r": true, "--exec": true,
 	"--append-system-prompt": true, "--system-prompt": true, "--allowed-tools": true, "--allowedTools": true,
-	"--disallowed-tools": true, "--disallowedTools": true, "--fallback-model": true, "--max-turns": true,
+	"--disallowed-tools": true, "--disallowedTools": true, "--fallback-model": true, "--max-turns": true, "--max-budget-usd": true,
 	"--output-format": true, "--input-format": true,
 }
 

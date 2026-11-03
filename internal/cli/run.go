@@ -194,10 +194,13 @@ type printSession struct {
 	MaxRetries int
 	// MaxTurns is the validated --max-turns limit for a print run (0 = none;
 	// GOCODE_CODE_MAX_TURNS then applies). See maxturns.go.
-	MaxTurns   int
-	retrySleep retrySleepFunc
-	retryMu    sync.Mutex
-	retryObs   retryObserver
+	MaxTurns int
+	// MaxBudgetUSD is the validated --max-budget-usd cap (0 = none); see
+	// maxbudget.go for how it combines with the settings and environment.
+	MaxBudgetUSD float64
+	retrySleep   retrySleepFunc
+	retryMu      sync.Mutex
+	retryObs     retryObserver
 
 	// resume is the parsed --continue/--resume/--session-id intent for this run,
 	// threaded from the dispatch defaults. It drives session persistence and
@@ -313,6 +316,7 @@ func newPrintSession(env *Env, d *DispatchDefaults) *printSession {
 		s.AllowedTools = d.AllowedTools
 		s.DisallowedTools = d.DisallowedTools
 		s.MaxTurns = d.MaxTurnsLimit
+		s.MaxBudgetUSD = d.MaxBudgetUSDLimit
 	}
 	if perr == nil {
 		s.resolveAuth(env)

@@ -305,6 +305,14 @@ func runMain(env *Env, t []string) int {
 		fmt.Fprintf(env.Stderr, "Error: %v\n", err)
 		return 1
 	}
+	if defaults != nil && defaults.MaxBudgetUSDSet {
+		limit, err := parseMaxBudgetFlag(defaults.MaxBudgetUSD)
+		if err != nil {
+			fmt.Fprintf(env.Stderr, "Error: %v\n", err)
+			return 1
+		}
+		defaults.MaxBudgetUSDLimit = limit
+	}
 
 	printMode := hasPrintFlag(rest) || (env.Stdout == os.Stdout && !env.StdoutTTY)
 	if msg := validateSessionFlags(env, defaults); msg != "" {

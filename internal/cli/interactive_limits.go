@@ -60,8 +60,11 @@ type limitState struct {
 	// ctxShown records that a context figure has been shown this session, so a
 	// later empty history (after /clear) shows 0% instead of hiding the gauge.
 	ctxShown bool
-	// maxCostUSD is the per-session spend cap (0: none).
+	// maxCostUSD is the per-session spend cap (0: none); the conversation's
+	// loops enforce the same value (Conversation.SetMaxBudgetUSD).
 	maxCostUSD float64
+	// flagCostUSD is the --max-budget-usd value the cap is re-resolved with.
+	flagCostUSD float64
 	// costWarned records the one-shot 80%-of-cap warning.
 	costWarned bool
 	// unpricedWarned records the models already warned about: a spend cap
@@ -203,6 +206,13 @@ func parseCostCap(v any) (float64, bool) {
 // overrides the user/project/local settings, where the last source that sets
 // maxSessionCostUsd wins. Non-secret: read like any other local setting.
 func loadMaxSessionCost(env *Env) float64 {
+	return resolveMaxSessionCost(env, 0)
+}
+
+// resolveMaxSessionCost is loadMaxSessionCost with the --max-budget-usd
+// value: a flag above 0 ranks after a policy value and before the
+// environment and the settings.
+func resolveMaxSessionCost(env *Env, flag float64) float64 {
 	ordered := settingsload.EffectiveSources(fsfacade.OSFS{}, settingsContext(env), settingsload.CanonicalSourceOrder)
 	var fromSettings, fromPolicy float64
 	var haveSettings, havePolicy bool
@@ -223,6 +233,9 @@ func loadMaxSessionCost(env *Env) float64 {
 	}
 	if havePolicy {
 		return fromPolicy
+	}
+	if flag > 0 {
+		return flag
 	}
 	if s := strings.TrimSpace(envGetenv(env)(maxSessionCostEnv)); s != "" {
 		if v, ok := parseCostCap(s); ok {
@@ -312,11 +325,18 @@ func (d *turnDriver) spendCapError() string {
 	// Blocked: re-read the cap so a value the user just raised (or removed)
 	// in the settings applies without a restart.
 	if d.env != nil {
-		if fresh := loadMaxSessionCost(d.env); fresh != limit {
+		d.limits.mu.Lock()
+		flag := d.limits.flagCostUSD
+		d.limits.mu.Unlock()
+		if fresh := resolveMaxSessionCost(d.env, flag); fresh != limit {
 			d.limits.mu.Lock()
 			d.limits.maxCostUSD = fresh
 			d.limits.costWarned = false
 			d.limits.mu.Unlock()
+			// The running loops enforce the same, refreshed cap.
+			if d.conv != nil {
+				d.conv.SetMaxBudgetUSD(fresh)
+			}
 			limit = fresh
 			if limit <= 0 || spent < limit {
 				return ""
@@ -327,6 +347,13 @@ func (d *turnDriver) spendCapError() string {
 		"To continue, raise or remove %q in your settings (e.g. .gocode/settings.local.json) and resend, "+
 		"or restart with a higher %s. Slash commands such as /usage and /clear still work.",
 		cost.FormatUSD(spent), cost.FormatUSD(limit), maxSessionCostSetting, maxSessionCostEnv)
+}
+
+// spendCapStopNotice is the notice for a turn the spend cap stopped inside
+// the agent loop.
+func spendCapStopNotice(err error) string {
+	return stopErrorText(err, "Spend cap reached") + ", so the turn stopped after the response that crossed it. " +
+		fmt.Sprintf("To continue, raise or remove %q in your settings, or restart with a higher --max-budget-usd or %s.", maxSessionCostSetting, maxSessionCostEnv)
 }
 
 // isLocalCommandInput reports whether an input is a slash command, which the

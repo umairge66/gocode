@@ -426,6 +426,8 @@ func (h *headlessRun) turnWith(ctx context.Context, submit func(context.Context)
 		r.SetSuccess(printLocalResultText(h.env, h.s, h.rt, res, preTokens, preMsgs))
 	case res.Reason == agent.ReasonMaxTurns:
 		r.SetError(headless.SubtypeErrorMaxTurns, fmt.Sprintf("Reached maximum number of turns (%d)", conv.MaxTurns))
+	case res.Reason == agent.ReasonMaxBudget:
+		r.SetError(headless.SubtypeErrorMaxBudgetUSD, stopErrorText(res.Err, "Reached maximum budget"))
 	case res.Reason == agent.ReasonAborted:
 		msg := "aborted"
 		if res.Err != nil {
@@ -472,6 +474,7 @@ func (h *headlessRun) turnWith(ctx context.Context, submit func(context.Context)
 			h.priceNoticeShown = true
 			h.notices([]string{cost.UnknownPriceNotice(conv.Cost.UnknownCostModels())})
 		}
+		h.budgetNotices(conv)
 	}
 	r.ModelUsage = headless.ModelUsageFrom(conv.Cost, func(model string) (int, int) {
 		caps := provider.CapabilitiesFor(h.s.Provider, model)

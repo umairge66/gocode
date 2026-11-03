@@ -52,6 +52,7 @@ import (
 	"path"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/umairge66/gocode/internal/agent"
 	"github.com/umairge66/gocode/internal/agentsdef"
@@ -183,6 +184,12 @@ type Conversation struct {
 	MaxTokens int
 	// MaxTurns bounds the model rounds per Submit (0 → unbounded).
 	MaxTurns int
+	// maxBudgetUSD holds the session's spend cap (SetMaxBudgetUSD, budget.go)
+	// as float64 bits; it is read from subagent goroutines too. budgetWarned
+	// (under usageMu) lists the unpriced models already reported as beyond
+	// the cap's reach.
+	maxBudgetUSD atomic.Uint64
+	budgetWarned map[string]bool
 	// LoopGuard sets the repeated-identical-tool-call guard of every turn
 	// (agent.Loop.LoopGuard); nil uses agent.DefaultLoopGuard.
 	LoopGuard *agent.LoopGuardConfig
@@ -758,6 +765,7 @@ func (c *Conversation) runModelTurnBlocks(ctx context.Context, content []agent.C
 		MaxTurns:      c.MaxTurns,
 		LoopGuard:     c.LoopGuard,
 		MidTurn:       c.takeMidTurnContext,
+		Budget:        c.BudgetExceeded,
 		OnMessage:     c.OnMessage,
 		Done:          c.TurnDone,
 	}
@@ -846,6 +854,7 @@ func (c *Conversation) ResumeWithQueuedContext(ctx context.Context) (res Result,
 		MaxTurns:      c.MaxTurns,
 		LoopGuard:     c.LoopGuard,
 		MidTurn:       c.takeMidTurnContext,
+		Budget:        c.BudgetExceeded,
 		OnMessage:     c.OnMessage,
 		Done:          c.TurnDone,
 	}

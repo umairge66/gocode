@@ -145,6 +145,14 @@ type Spawner struct {
 
 	// MaxTurns bounds the child loop's model rounds (0 → unbounded).
 	MaxTurns int
+	// Budget is the session's spend cap check (agent.Loop.Budget). The child
+	// loop stops on it like the main loop does, and a spawn while it reports
+	// the cap reached is refused (ErrSpendCap). nil: no cap.
+	Budget func() error
+	// MaxConcurrent caps how many subagents run at once across the session
+	// (0 → DefaultMaxConcurrentSubagents); a spawn past it is refused with
+	// ErrConcurrentLimit.
+	MaxConcurrent int
 	// LoopGuard sets the child loop's repeated-tool-call guard; nil uses
 	// agent.DefaultLoopGuard. A stop ends the child as failed, and the
 	// reason reaches the parent.
@@ -226,6 +234,18 @@ func (s *Spawner) Spawn(ctx context.Context, req SpawnRequest, model agent.Model
 		return Report{}, nil, fmt.Errorf("subagent: agent type %q not found; available agents: %s", req.SubagentType, strings.Join(s.Types.Names(), ", "))
 	}
 
+	if s.Budget != nil {
+		if err := s.Budget(); err != nil {
+			return Report{}, nil, SpendCapError(err)
+		}
+	}
+	// The concurrency slot is reserved before the task exists, so parallel
+	// spawns cannot overshoot the cap; the first turn takes it over.
+	slot, ok := s.Registry.TryTakeConcurrencySlot(s.maxConcurrent())
+	if !ok {
+		return Report{}, nil, ConcurrentLimitError(s.maxConcurrent())
+	}
+
 	// Record the task.
 	task := s.Registry.Create(Task{
 		AgentType:       a.Name,
@@ -265,9 +285,11 @@ func (s *Spawner) Spawn(ctx context.Context, req SpawnRequest, model agent.Model
 		hooks:       s.hooksFor(a, req),
 		maxTurns:    s.MaxTurns,
 		loopGuard:   s.LoopGuard,
+		budget:      s.Budget,
 		capture:     s.Capture,
 		summarize:   s.Summarize,
 		history:     []agent.Message{firstMessage(req)},
+		slot:        slot,
 	}
 	mgr.add(sess)
 

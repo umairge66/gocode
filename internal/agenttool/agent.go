@@ -194,6 +194,14 @@ type AgentTool struct {
 	// LoopGuard sets each child loop's repeated-tool-call guard; nil uses
 	// agent.DefaultLoopGuard.
 	LoopGuard *agent.LoopGuardConfig
+	// Budget is the session's spend cap check (agent.Loop.Budget): every
+	// child loop stops on it, and while it reports the cap reached a spawn
+	// fails with a tool error naming the cap. nil: no cap.
+	Budget func() error
+	// MaxConcurrent caps the subagents running at once across the session
+	// (0 → subagent.DefaultMaxConcurrentSubagents); a spawn past it fails
+	// with "Concurrent subagent limit reached".
+	MaxConcurrent int
 
 	// Depth is the nesting depth of the agent that owns this tool (0 for the
 	// main conversation). ParentID is that agent's task id ("" for main).
@@ -401,6 +409,13 @@ func (t *AgentTool) maxDepth() int {
 		return t.MaxDepth
 	}
 	return subagent.DefaultMaxSpawnDepth
+}
+
+func (t *AgentTool) maxConcurrent() int {
+	if t.MaxConcurrent > 0 {
+		return t.MaxConcurrent
+	}
+	return subagent.DefaultMaxConcurrentSubagents
 }
 
 // resolvedType pairs a spawnable agent type with its custom definition (nil
@@ -804,6 +819,17 @@ func (t *AgentTool) prepare(in AgentInput) (*subagent.Spawner, subagent.SpawnReq
 		return fail(fmt.Errorf("%w (depth %d of %d). Complete this task directly using your tools instead of spawning another agent. If the user explicitly requested deeper nesting, ask them to raise GOCODE_CODE_MAX_SUBAGENT_SPAWN_DEPTH.", ErrNestingLimit, t.Depth, cap))
 	}
 
+	// Spend cap and concurrency cap, before anything is set up (the spawn
+	// itself re-checks the concurrency cap atomically).
+	if t.Budget != nil {
+		if err := t.Budget(); err != nil {
+			return fail(subagent.SpendCapError(err))
+		}
+	}
+	if cap := t.maxConcurrent(); t.Tasks.ConcurrentSubagents() >= cap {
+		return fail(subagent.ConcurrentLimitError(cap))
+	}
+
 	reg, byName := t.catalog()
 
 	// A caller whose own definition forbids the Agent tool cannot spawn.
@@ -869,11 +895,13 @@ func (t *AgentTool) prepare(in AgentInput) (*subagent.Spawner, subagent.SpawnReq
 	}
 
 	sp := &subagent.Spawner{
-		Registry:  t.Tasks,
-		Types:     reg,
-		MaxDepth:  t.maxDepth(),
-		MaxTurns:  t.MaxTurns,
-		LoopGuard: t.LoopGuard,
+		Registry:      t.Tasks,
+		Types:         reg,
+		MaxDepth:      t.maxDepth(),
+		MaxTurns:      t.MaxTurns,
+		LoopGuard:     t.LoopGuard,
+		Budget:        t.Budget,
+		MaxConcurrent: t.maxConcurrent(),
 		// Register every spawn's live session in the shared manager so it is
 		// addressable by task id for the interactive Resume/Stop/Close controls.
 		Sessions: t.sessionManager(),
