@@ -555,7 +555,14 @@ func buildSession(ctx context.Context, env *Env, s *printSession, caller agent.M
 	// --setting-sources gates the user and project skills, commands and
 	// agents (settingsources.go).
 	scoped := sourceScopedPaths(env, paths)
-	conv.Skills = skills.Load(fsys, skills.LoadConfig{UserDir: scoped.configDir, Home: scoped.home, Cwd: scoped.projectCwd, ManagedRoot: managedSkillsRoot(env)})
+	// Project skills come from cwd up to the git root.
+	skillRoot := ""
+	if scoped.projectCwd != "" {
+		skillRoot = findGitRoot(scoped.projectCwd)
+	}
+	conv.Skills = skills.Load(fsys, skills.LoadConfig{UserDir: scoped.configDir, Home: scoped.home, Cwd: scoped.projectCwd, ProjectRoot: skillRoot, WalkStop: paths.home, ManagedRoot: managedSkillsRoot(env)})
+	// A skill the Skill(<name>) deny rules refuse is not listed.
+	conv.Skills.Denied = skillDeniedFunc(r.dispatcher)
 	// Skill/command allowed-tools under allowManagedPermissionRulesOnly
 	// (toolgrants.go); the -p path prints a stderr line.
 	if s.grants == nil {
@@ -616,7 +623,7 @@ func buildSession(ctx context.Context, env *Env, s *printSession, caller agent.M
 	conv.HookHost = r.hooks
 	// Files the agent reads/edits/writes bring in their conditional rules and
 	// nested-directory memory (see nestedMemoryHooks).
-	conv.Hooks = withNestedMemory(&hookhost.LoopHooks{Host: r.hooks, SkipPreToolUse: true}, mem.nested, paths.cwd)
+	conv.Hooks = withFileContext(&hookhost.LoopHooks{Host: r.hooks, SkipPreToolUse: true}, mem.nested, conv.Skills, paths.cwd)
 	conv.RunLoop = r.hooks.RunLoop
 	conv.OnModeChange = func(m toolreg.Mode) { r.dispatcher.SetMode(m) }
 	if r.chromeTabs != nil {

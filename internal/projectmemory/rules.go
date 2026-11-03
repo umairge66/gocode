@@ -255,6 +255,17 @@ func expandBraces(p string, b *braceBudget) []string {
 	return done
 }
 
+// PathPatterns parses a `paths:` frontmatter value the way rule files read it
+// (see splitPathPatterns). Skills use it for their own `paths:` condition.
+func PathPatterns(v any) []string { return splitPathPatterns(v) }
+
+// PathsMatch reports whether target (an absolute path) lies below base and
+// its base-relative path matches globs (see globsMatch).
+func PathsMatch(globs []string, base, target string) bool {
+	rel, ok := relUnder(base, target)
+	return ok && globsMatch(globs, rel)
+}
+
 // globsMatch reports whether rel (a slash path relative to the rule's base
 // directory) is matched by the gitignore-style globs: a pattern without a
 // slash matches at any depth, a leading or inner slash anchors it to the base,

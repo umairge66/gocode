@@ -16,6 +16,7 @@ import (
 	"github.com/umairge66/gocode/internal/projectmemory"
 	"github.com/umairge66/gocode/internal/protocol"
 	"github.com/umairge66/gocode/internal/settingspolicy"
+	"github.com/umairge66/gocode/internal/skills"
 	"github.com/umairge66/gocode/internal/subagent"
 	"github.com/umairge66/gocode/internal/systemprompt"
 	"github.com/umairge66/gocode/internal/toolreg"
@@ -185,10 +186,12 @@ func subagentMemoryFor(env *Env, paths sessionPaths, mem sessionMemory) func(sub
 // edits or writes bring in their conditional rules and nested-directory
 // memory: PostToolUse records the touched path, and at the end of the
 // tool-result round each new source is appended as a system-reminder user
-// message.
+// message. A touched file also activates the conditional (`paths:`) skills it
+// matches, which join the skills listing from the next request on.
 type nestedMemoryHooks struct {
 	inner  agent.PermissionHook
 	nested *projectmemory.Nested
+	skills *skills.Registry
 	cwd    string
 
 	mu      sync.Mutex
@@ -202,10 +205,16 @@ var (
 
 // withNestedMemory wraps inner; a nil tracker returns inner unchanged.
 func withNestedMemory(inner agent.PermissionHook, nested *projectmemory.Nested, cwd string) agent.PermissionHook {
-	if nested == nil {
+	return withFileContext(inner, nested, nil, cwd)
+}
+
+// withFileContext is withNestedMemory that also activates reg's conditional
+// skills; with neither a tracker nor a registry it returns inner unchanged.
+func withFileContext(inner agent.PermissionHook, nested *projectmemory.Nested, reg *skills.Registry, cwd string) agent.PermissionHook {
+	if nested == nil && reg == nil {
 		return inner
 	}
-	return &nestedMemoryHooks{inner: inner, nested: nested, cwd: cwd}
+	return &nestedMemoryHooks{inner: inner, nested: nested, skills: reg, cwd: cwd}
 }
 
 func (h *nestedMemoryHooks) PreToolUse(ctx context.Context, call agent.ToolUse) (agent.PermissionDecision, error) {
@@ -237,6 +246,7 @@ func (h *nestedMemoryHooks) PostToolUse(ctx context.Context, call agent.ToolUse,
 	if !filepath.IsAbs(p) && h.cwd != "" {
 		p = filepath.Join(h.cwd, p)
 	}
+	h.skills.ActivateForPath(p, h.cwd)
 	h.mu.Lock()
 	h.touched = append(h.touched, p)
 	h.mu.Unlock()
