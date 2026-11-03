@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -189,16 +190,24 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	return nil
 }
 
-// drainStderr accumulates server stderr for diagnostics, bounded at 64 MiB.
+// maxStderrTail is how much of a server's stderr is kept for diagnostics: the
+// most recent output, so a chatty server neither pins memory for the whole
+// session nor hides its latest errors behind old log lines.
+const maxStderrTail = 1 << 20
+
+// drainStderr accumulates server stderr for diagnostics, keeping the last
+// maxStderrTail bytes.
 func (t *StdioTransport) drainStderr(r io.Reader) {
-	const maxStderr = 64 << 20
 	buf := make([]byte, 4096)
 	for {
 		n, err := r.Read(buf)
 		if n > 0 {
 			t.mu.Lock()
-			if t.stderr.Len() < maxStderr {
-				t.stderr.Write(buf[:n])
+			t.stderr.Write(buf[:n])
+			if t.stderr.Len() > 2*maxStderrTail {
+				tail := t.stderr.String()[t.stderr.Len()-maxStderrTail:]
+				t.stderr.Reset()
+				t.stderr.WriteString(tail)
 			}
 			t.mu.Unlock()
 		}
@@ -208,24 +217,104 @@ func (t *StdioTransport) drainStderr(r io.Reader) {
 	}
 }
 
+// maxStdioLine bounds one inbound stdio message.
+const maxStdioLine = 64 << 20
+
 // readPump reads newline-delimited JSON from stdout, decodes each line into a
-// Message, and forwards it. Non-JSON lines are skipped.
+// Message, and forwards it. Non-JSON lines are skipped. A line over
+// maxStdioLine is discarded instead of ending the connection, and when it is
+// a response to a request of ours, that request gets an error response.
 func (t *StdioTransport) readPump(r io.Reader) {
 	defer close(t.msgs)
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), 64<<20)
-	for scanner.Scan() {
-		line := strings.TrimRight(scanner.Text(), "\r")
-		if line == "" {
-			continue
+	br := bufio.NewReaderSize(r, 64*1024)
+	var line []byte
+	for {
+		var tooLong bool
+		var head []byte
+		var err error
+		line, head, tooLong, err = readStdioLine(br, line[:0], maxStdioLine)
+		if tooLong {
+			if msg, ok := oversizedResponse(head); ok {
+				t.msgs <- msg
+			}
+		} else if l := bytes.TrimRight(line, "\r\n"); len(l) > 0 {
+			// DecodeMessage copies what it keeps, so line can be reused.
+			if msg, derr := DecodeMessage(l); derr == nil {
+				t.msgs <- msg
+			}
 		}
-		msg, err := DecodeMessage([]byte(line))
 		if err != nil {
-			// Non-JSON / unparseable line: skip.
-			continue
+			return
 		}
-		t.msgs <- msg
+		if cap(line) > 4<<20 {
+			line = nil // let one huge message's buffer go
+		}
 	}
+}
+
+// readStdioLine reads one '\n'-terminated line into buf. When the line is
+// longer than max it is consumed and dropped: tooLong is set and head keeps
+// its first bytes (enough to find the JSON-RPC id).
+func readStdioLine(br *bufio.Reader, buf []byte, max int) (line, head []byte, tooLong bool, err error) {
+	for {
+		chunk, rerr := br.ReadSlice('\n')
+		if !tooLong {
+			if len(buf)+len(chunk) > max {
+				tooLong = true
+				head = append([]byte(nil), buf[:min(len(buf), 4096)]...)
+				if len(head) < 4096 {
+					head = append(head, chunk[:min(len(chunk), 4096-len(head))]...)
+				}
+				buf = buf[:0]
+			} else {
+				buf = appendDoubling(buf, chunk)
+			}
+		}
+		switch {
+		case rerr == bufio.ErrBufferFull:
+			continue
+		case rerr != nil:
+			return buf, head, tooLong, rerr
+		default:
+			return buf, head, tooLong, nil
+		}
+	}
+}
+
+// appendDoubling appends b to buf, doubling the capacity when it runs out.
+// append grows large slices by only 1.25x, which copies a tens-of-megabytes
+// line about five times over while it is read.
+func appendDoubling(buf, b []byte) []byte {
+	if need := len(buf) + len(b); need > cap(buf) {
+		nb := make([]byte, len(buf), max(need, 2*cap(buf)))
+		copy(nb, buf)
+		buf = nb
+	}
+	return append(buf, b...)
+}
+
+var responseIDRE = regexp.MustCompile(`"id"\s*:\s*("(?:[^"\\]|\\.)*"|-?\d+)`)
+
+// oversizedResponse builds the error response for a dropped oversized line
+// that answers one of our requests (it has an "id" and no "method" near its
+// start). Lines it cannot attribute are dropped silently.
+func oversizedResponse(head []byte) (Message, bool) {
+	if bytes.Contains(head, []byte(`"method"`)) {
+		return Message{}, false
+	}
+	loc := responseIDRE.FindSubmatchIndex(head)
+	if loc == nil {
+		return Message{}, false
+	}
+	// An "id" after the result started may be part of the result's content.
+	if r := bytes.Index(head, []byte(`"result"`)); r >= 0 && r < loc[0] {
+		return Message{}, false
+	}
+	m := [][]byte{nil, head[loc[2]:loc[3]]}
+	return Message{Response: &Response{JSONRPC: JSONRPCVersion, ID: append(RequestID(nil), m[1]...), Error: &RPCError{
+		Code:    ErrInternalError,
+		Message: fmt.Sprintf("the server's response was over %d MiB and was not read; ask for less output (for example a narrower query or a page of results)", maxStdioLine>>20),
+	}}}, true
 }
 
 // Send JSON-encodes msg and writes it followed by a newline.

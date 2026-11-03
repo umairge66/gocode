@@ -72,47 +72,50 @@ type Message struct {
 	Response     *Response
 }
 
-// IsRequest reports whether e looks like a JSON-RPC request (has both a
-// "method" and a non-null "id").
-func isRequestObject(raw map[string]json.RawMessage) bool {
-	id, hasID := raw["id"]
-	_, hasMethod := raw["method"]
-	return hasMethod && hasID && string(id) != "null"
-}
-
 // DecodeMessage parses one newline-framed JSON-RPC message into the tagged
 // Message union, classifying it as follows:
 //   - method + id        -> Request
 //   - method, no id      -> Notification
 //   - result or error    -> Response
 func DecodeMessage(data []byte) (Message, error) {
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
+	// One pass into an envelope: a tools/call result can be tens of
+	// megabytes, and decoding it twice (into a map to classify, then into the
+	// typed message) copied it twice.
+	var env struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Method  json.RawMessage `json:"method"`
+		Params  json.RawMessage `json:"params"`
+		Result  json.RawMessage `json:"result"`
+		Error   json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(data, &env); err != nil {
 		return Message{}, fmt.Errorf("mcp: malformed JSON-RPC message: %w", err)
 	}
-	_, hasMethod := raw["method"]
-	_, hasResult := raw["result"]
-	_, hasError := raw["error"]
+	hasMethod := len(env.Method) > 0
+	hasResult := len(env.Result) > 0
+	hasError := len(env.Error) > 0
+	var method string
+	if hasMethod {
+		if err := json.Unmarshal(env.Method, &method); err != nil {
+			return Message{}, err
+		}
+	}
 
 	switch {
-	case hasMethod && isRequestObject(raw):
-		var r Request
-		if err := json.Unmarshal(data, &r); err != nil {
-			return Message{}, err
-		}
-		return Message{Request: &r}, nil
+	case hasMethod && len(env.ID) > 0 && string(env.ID) != "null":
+		return Message{Request: &Request{JSONRPC: env.JSONRPC, ID: env.ID, Method: method, Params: env.Params}}, nil
 	case hasMethod:
-		var n Notification
-		if err := json.Unmarshal(data, &n); err != nil {
-			return Message{}, err
-		}
-		return Message{Notification: &n}, nil
+		return Message{Notification: &Notification{JSONRPC: env.JSONRPC, Method: method, Params: env.Params}}, nil
 	case hasResult || hasError:
-		var resp Response
-		if err := json.Unmarshal(data, &resp); err != nil {
-			return Message{}, err
+		resp := &Response{JSONRPC: env.JSONRPC, ID: env.ID, Result: env.Result}
+		if hasError && string(env.Error) != "null" {
+			resp.Error = new(RPCError)
+			if err := json.Unmarshal(env.Error, resp.Error); err != nil {
+				return Message{}, err
+			}
 		}
-		return Message{Response: &resp}, nil
+		return Message{Response: resp}, nil
 	default:
 		return Message{}, fmt.Errorf("mcp: unrecognized JSON-RPC message: %s", data)
 	}

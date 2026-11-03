@@ -56,6 +56,12 @@ var turnMarkerRE = regexp.MustCompile(`(?m)^([ \t]*)(Human|Assistant):`)
 // the sorted, de-duplicated list of what matched ("system-reminder tag",
 // "Human: turn marker" …); nil when nothing did, and then text is unchanged.
 func NeutralizeHarnessText(text string) (string, []string) {
+	// Most text has nothing to neutralize; checking first avoids copying it
+	// (ReplaceAllStringFunc always builds a new string), which matters for
+	// tool output that can run to tens of megabytes.
+	if !harnessTagRE.MatchString(text) && !turnMarkerRE.MatchString(text) {
+		return text, nil
+	}
 	seen := map[string]bool{}
 	out := harnessTagRE.ReplaceAllStringFunc(text, func(m string) string {
 		sub := harnessTagRE.FindStringSubmatch(m)
