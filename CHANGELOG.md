@@ -128,6 +128,16 @@ it refuses to publish a version that has no section here.
     `blob:`/`file:` pages are checked against the site rules.
   - A tab the user opens from a gocode tab is no longer adopted (and closed
     at the end of the session).
+- Chrome (extension 0.4.1): clicks, keys and screenshots now work on a gocode
+  tab in the background (or a minimized window). A click there used to return
+  "done" while the page got nothing, and a screenshot timed out after 20s. The
+  extension now has Chrome treat the page as visible while gocode drives it
+  (focus emulation, without bringing the tab to the front) and checks that
+  every input reached the page. When it did not, the same events are sent
+  from inside the page and the result says they are untrusted; when even that
+  fails, the action fails with the reason. A screenshot that still cannot be
+  taken fails within 8s saying why. A link a background click opens no
+  longer takes the user's view.
 
 ## [0.1.5] - 2026-11-03
 

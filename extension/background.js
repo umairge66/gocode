@@ -58,6 +58,8 @@ const MAX_BATCH_IMAGE_BYTES = 24 * 1024 * 1024;
 // with an error naming what it was doing, rather than hanging the command.
 const CDP_TIMEOUT_MS = 15000;
 const SCREENSHOT_TIMEOUT_MS = 20000;
+const HIDDEN_SCREENSHOT_TIMEOUT_MS = 8000; // a background tab: fail fast with a reason
+const DELIVERY_GRACE_MS = 300; // how long input may take to reach the page before it counts as lost
 const SCRIPT_TIMEOUT_MS = 15000;
 const JS_TIMEOUT_MS = 30000;
 const JS_GRACE_MS = 2000; // past JS_TIMEOUT_MS, for Chrome's own evaluation timeout to answer
@@ -268,7 +270,12 @@ function bounded(promise, ms, what, op) {
 // dismissed dialog), returned with the result.
 
 function newCtx(op) {
-  return { op: op || newOp(), attached: new Set(), releases: new Map(), notes: [], onDrag: null };
+  return {
+    op: op || newOp(), attached: new Set(), releases: new Map(), notes: [], onDrag: null,
+    // Background-tab handling (see "background tabs" below): tabId -> what
+    // prepareTab found and did, and tabId -> the screencast frame sink.
+    prepared: new Map(), frames: new Map(),
+  };
 }
 
 async function dispatch(method, params, op) {
@@ -519,6 +526,9 @@ async function detachAll(ctx) {
       // Already gone (tab closed, user cancelled) — nothing to clean up.
     }
     ctx.attached.delete(tabId);
+    // Detaching also ends the focus emulation (see "background tabs").
+    ctx.prepared.delete(tabId);
+    ctx.frames.delete(tabId);
     const release = ctx.releases.get(tabId);
     ctx.releases.delete(tabId);
     if (release) release();
@@ -591,6 +601,7 @@ if (chrome.debugger.onEvent) {
     if (!ctx) return;
     if (method === "Page.javascriptDialogOpening") handleDialog(ctx, source.tabId, params);
     else if (method === "Input.dragIntercepted" && ctx.onDrag) ctx.onDrag((params && params.data) || null);
+    else if (method === "Page.screencastFrame") onScreencastFrame(ctx, source.tabId, params);
   });
 }
 
@@ -603,6 +614,8 @@ chrome.debugger.onDetach.addListener((source, reason) => {
   if (!ctx) return;
   sessions.delete(tabId);
   ctx.attached.delete(tabId);
+  ctx.prepared.delete(tabId);
+  ctx.frames.delete(tabId);
   const release = ctx.releases.get(tabId);
   ctx.releases.delete(tabId);
   if (release) release();
@@ -932,14 +945,22 @@ async function resolveTabId(tabId, sid) {
 // closed by gocode's cleanup. "While acting" includes a short grace period
 // after the action, since a popup can open a moment after the click.
 
+//
+// gocode acts on background tabs, and a link a click follows may open its tab
+// in front (target=_blank does). When the gocode tab was in the background, the
+// tab the user was looking at in that window is made active again, so the new
+// tab opens behind it like the gocode tab it came from.
 const OPEN_GRACE_MS = 3000;
-// actingTabs: tabId -> { count, until }.
+// actingTabs: tabId -> { count, until, view, groupId }; view is the tab the
+// user had in front in the gocode tab's window ({ id, windowId }; null when
+// that was the gocode tab), groupId the gocode tab's group.
 const actingTabs = new Map();
 
 async function acting(tabId, fn) {
-  const cur = actingTabs.get(tabId) || { count: 0, until: 0 };
+  const cur = actingTabs.get(tabId) || { count: 0, until: 0, view: null };
   cur.count++;
   actingTabs.set(tabId, cur);
+  if (cur.count === 1) Object.assign(cur, await viewedTab(tabId));
   try {
     return await fn();
   } finally {
@@ -948,23 +969,89 @@ async function acting(tabId, fn) {
   }
 }
 
+// viewedTab returns { view, groupId }: view is the active tab of tabId's
+// window when that is another tab (tabId is in the background), else null;
+// groupId is tabId's tab group.
+async function viewedTab(tabId) {
+  try {
+    const t = await getTab(tabId);
+    if (!t) return { view: null, groupId: null };
+    if (t.active) return { view: null, groupId: t.groupId };
+    const [a] = await chrome.tabs.query({ active: true, windowId: t.windowId });
+    return { view: a && a.id !== tabId ? { id: a.id, windowId: t.windowId } : null, groupId: t.groupId };
+  } catch (e) {
+    return { view: null, groupId: null };
+  }
+}
+
 function openedByGocodeAction(openerId) {
   const a = actingTabs.get(openerId);
   return !!a && (a.count > 0 || Date.now() <= a.until);
 }
 
+// actingOpener returns the gocode tab whose action opened tab: its opener,
+// or — since Chrome names the window's active tab as the opener of a tab a
+// link in a background tab opens — a gocode tab acting in the group Chrome put
+// the new tab in. null when no gocode action opened it.
+function actingOpener(tab, groups) {
+  if (tab.openerTabId != null && openedByGocodeAction(tab.openerTabId)) return tab.openerTabId;
+  if (tab.groupId == null || tab.groupId === TAB_GROUP_NONE || !groups.includes(tab.groupId)) return null;
+  for (const [id, a] of actingTabs) {
+    if (a.view != null && openedByGocodeAction(id) && a.groupId === tab.groupId) return id;
+  }
+  return null;
+}
+
 chrome.tabs.onCreated.addListener(async (tab) => {
-  if (tab.openerTabId == null || !openedByGocodeAction(tab.openerTabId)) return;
-  const opener = await getTab(tab.openerTabId);
+  // Recorded before anything is awaited: Chrome may activate the tab meanwhile.
+  const early = tab.openerTabId != null && openedByGocodeAction(tab.openerTabId) ? tab.openerTabId : null;
+  const earlyView = early != null ? (actingTabs.get(early) || {}).view : null;
+  if (earlyView != null) openedBehind.set(tab.id, { view: earlyView, until: Date.now() + OPEN_GRACE_MS });
   const own = await ownership();
-  if (!isOwnedTab(opener, own)) return;
+  const openerId = actingOpener(tab, own.groups);
+  if (openerId == null) return;
+  const view = (actingTabs.get(openerId) || {}).view;
+  if (view != null && !openedBehind.has(tab.id)) openedBehind.set(tab.id, { view, until: Date.now() + OPEN_GRACE_MS });
+  const opener = await getTab(openerId);
+  if (!isOwnedTab(opener, own)) {
+    openedBehind.delete(tab.id);
+    return;
+  }
   const grouped = own.groups.includes(opener.groupId);
   const sid = grouped ? await groupSession(opener.groupId) : "";
   await addToGocodeGroup(tab.id, sid, grouped ? opener.groupId : undefined);
+  const now = await getTab(tab.id);
+  if (now && now.active) await keepBehind(tab.id);
 });
+
+// openedBehind: tabs a gocode action opened from a background gocode tab ->
+// { view, until }: view is the tab the user had in front ({ id, windowId }),
+// shown again if the new tab comes to the front in that window.
+const openedBehind = new Map();
+
+async function keepBehind(tabId) {
+  const o = openedBehind.get(tabId);
+  if (!o) return;
+  openedBehind.delete(tabId);
+  if (Date.now() > o.until) return;
+  const t = await getTab(tabId);
+  if (!t || !t.active || t.windowId !== o.view.windowId) return;
+  try {
+    await chrome.tabs.update(o.view.id, { active: true });
+  } catch (e) {
+    // The user's tab closed meanwhile.
+  }
+}
+
+if (chrome.tabs.onActivated) {
+  chrome.tabs.onActivated.addListener((info) => {
+    if (info && openedBehind.has(info.tabId)) keepBehind(info.tabId);
+  });
+}
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   actingTabs.delete(tabId);
+  openedBehind.delete(tabId);
   await removeFromList("ownedTabs", tabId);
   await removeFromList("openedTabs", tabId);
   await removeFromList("keptTabs", tabId);
@@ -1033,10 +1120,26 @@ async function viewportInfo(ctx, tabId) {
       return {
         dpr, w: css.clientWidth, h: css.clientHeight,
         sx: (vis && vis.pageX) || 0, sy: (vis && vis.pageY) || 0,
+        ...(await cdpVisibility(ctx, tabId)),
       };
     }
   } catch (e) {}
-  return { dpr: 1, w: 0, h: 0, sx: 0, sy: 0 };
+  return { dpr: 1, w: 0, h: 0, sx: 0, sy: 0, ...(await cdpVisibility(ctx, tabId)) };
+}
+
+// cdpVisibility reads the page's visibility and focus through CDP (for pages
+// where extension scripts are blocked); {} when that fails too.
+async function cdpVisibility(ctx, tabId) {
+  try {
+    await ensureAttached(ctx, tabId);
+    const r = await cdp(ctx, tabId, "Runtime.evaluate", {
+      expression: "({ vis: document.visibilityState, focus: document.hasFocus() })", returnByValue: true,
+    }, 3000);
+    const v = r && r.result && r.result.value;
+    return v && typeof v === "object" ? { vis: v.vis, focus: v.focus } : {};
+  } catch (e) {
+    return {};
+  }
 }
 
 // showCursor injects (once) and moves a PERSISTENT, visible arrow cursor at CSS
@@ -1081,12 +1184,20 @@ async function showCursor(ctx, tabId, x, y) {
 // resizeImage scales a PNG data URL to w x h CSS pixels, so screenshot pixel
 // coords equal CSS/CDP coords (or a requested fraction of them). Runs in the
 // service worker via OffscreenCanvas (no FileReader, which SWs lack).
-async function resizeImage(dataUrl, w, h) {
+//
+// crop { x, y, w, h, vw } takes only that rectangle (CSS pixels of a viewport
+// vw CSS pixels wide) of the source image.
+async function resizeImage(dataUrl, w, h, crop) {
   const blob = await (await fetch(dataUrl)).blob();
   const bmp = await createImageBitmap(blob);
   const canvas = new OffscreenCanvas(w, h);
   const cx = canvas.getContext("2d");
-  cx.drawImage(bmp, 0, 0, w, h);
+  if (crop) {
+    const k = bmp.width && crop.vw ? bmp.width / crop.vw : 1;
+    cx.drawImage(bmp, crop.x * k, crop.y * k, crop.w * k, crop.h * k, 0, 0, w, h);
+  } else {
+    cx.drawImage(bmp, 0, 0, w, h);
+  }
   const out = await canvas.convertToBlob({ type: "image/png" });
   const bytes = new Uint8Array(await out.arrayBuffer());
   let bin = "";
@@ -1095,6 +1206,206 @@ async function resizeImage(dataUrl, w, h) {
     bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
   }
   return "data:image/png;base64," + btoa(bin);
+}
+
+// --- background tabs: making input and screenshots work, and checking delivery ---
+//
+// gocode's tabs normally sit in the background (tabs_create opens them with
+// active:false), or the whole window is minimized or covered. Such a page is
+// hidden (document.visibilityState "hidden", document.hasFocus() false), and
+// Chrome (checked on Chrome 156 through chrome.debugger) then:
+//   - drops CDP mouse presses and key presses: Input.dispatchMouseEvent and
+//     Input.dispatchKeyEvent return success, but the page gets no pointerdown,
+//     click or keydown (a mouseMoved may stall for seconds first, a wheel may
+//     time out); Input.insertText still arrives;
+//   - renders no frames, so Page.captureScreenshot answers late or never.
+//
+// What gocode does, least intrusive first:
+//   1. Emulation.setFocusEmulationEnabled on the hidden tab while gocode holds
+//      the debugger (prepareTab). Chrome then counts the page as being captured:
+//      it becomes visible and focused to itself, renders and hit-tests, and
+//      takes clicks, keys and wheels as real (trusted) input — while staying in
+//      the background, without being brought to the front or the window being
+//      raised. Detaching the debugger ends it and the page is hidden again.
+//      (This is what Playwright does for its pages.) Verified: hidden-tab clicks,
+//      keys and wheels are delivered and the tab the user looks at stays active.
+//   2. Screenshots of such a tab run with a screencast going (Page.startScreencast
+//      keeps frames coming, which captureScreenshot waits for), with a short
+//      timeout, falling back to the last screencast frame; a tab that still
+//      renders nothing fails within HIDDEN_SCREENSHOT_TIMEOUT_MS saying why,
+//      instead of hanging for SCREENSHOT_TIMEOUT_MS.
+//   3. Every input action is checked: before dispatching, capture-phase
+//      listeners go into every frame of the page (armWatch); after it, gocode
+//      looks for the trusted events the action must cause (a pointerdown/
+//      mousedown/click, a keydown, a wheel, an input event). Nothing arrived ->
+//      the same action is done with DOM events from the page itself (pageAgent
+//      dom_*), which are untrusted, and the result says so (delivery "dom").
+//      When that cannot be done either, the action fails with the reason; it
+//      is never reported as done.
+//   4. A scroll on a background tab is done in the page from the start (a wheel
+//      event, then scrolling the element under the point): a CDP wheel there
+//      sometimes makes Chrome switch the window's tabs (seen on Chrome 156 /
+//      Linux, cycling through them like a wheel over the tab strip), which
+//      would take the user's view away.
+// gocode never activates the tab (chrome.tabs.update active:true) to get input
+// through: that would take the user's view of their window away, and step 1
+// works without it. (A link the input follows may open its tab in front: see
+// keepBehind.)
+
+// The trusted events that show an action arrived. A release alone is no
+// evidence of a click: Chrome may drop the press of a hidden tab and deliver
+// the release.
+const DELIVERY_EVENTS = {
+  click: ["pointerdown", "mousedown", "click", "auxclick", "contextmenu", "dblclick"],
+  move: ["pointermove", "mousemove", "pointerover", "mouseover"],
+  drag: ["pointerdown", "mousedown", "dragstart"],
+  wheel: ["wheel", "scroll"],
+  key: ["keydown", "keyup", "keypress", "beforeinput", "input"],
+  // Not textInput: Chrome fires it even when nothing editable has focus.
+  text: ["beforeinput", "input"],
+};
+
+// prepareTab attaches the debugger to a tab gocode is about to drive or
+// capture and, when the page is hidden or unfocused, turns on focus emulation
+// (once per attach). It returns the viewport info and { hidden, emulated }:
+// hidden is the page's state before gocode changed it.
+async function prepareTab(ctx, tabId) {
+  await ensureAttached(ctx, tabId);
+  const info = await viewportInfo(ctx, tabId);
+  let p = ctx.prepared.get(tabId);
+  if (!p) {
+    p = { hidden: false, emulated: false };
+    ctx.prepared.set(tabId, p);
+  }
+  const hidden = info.vis === "hidden";
+  if (hidden) p.hidden = true;
+  if (!p.emulated && (hidden || info.focus === false)) {
+    try {
+      await cdp(ctx, tabId, "Emulation.setFocusEmulationEnabled", { enabled: true }, 5000);
+      p.emulated = true;
+    } catch (e) {
+      // An old Chrome: the DOM fallback below still gets input through.
+      if (ctx.op.aborted) throw e;
+    }
+  }
+  return { info, hidden: p.hidden, emulated: p.emulated };
+}
+
+// runInFrames runs func(...args) in every frame of the tab and returns the
+// chrome.scripting results ({ frameId, result } each).
+async function runInFrames(ctx, tabId, func, args, what, timeoutMs) {
+  checkOp(ctx.op);
+  const call = chrome.scripting.executeScript({ target: { tabId, allFrames: true }, func, args: args || [] });
+  const r = await bounded(call, timeoutMs || SCRIPT_TIMEOUT_MS, what, ctx.op);
+  return Array.isArray(r) ? r : [];
+}
+
+let watchSeq = 0;
+
+// armWatch starts recording the events an action of this kind causes, in
+// every frame. It returns the watch token, or null when the page cannot be
+// watched (extension scripts are blocked on it).
+async function armWatch(ctx, tabId, kind) {
+  const token = "w" + Date.now().toString(36) + "_" + ++watchSeq;
+  try {
+    const r = await runInFrames(ctx, tabId, pageAgent, ["watch", { token, types: DELIVERY_EVENTS[kind] }], "preparing to check the input", 5000);
+    return r.some((x) => x && x.result && x.result.ok) ? token : null;
+  } catch (e) {
+    if (ctx.op.aborted) throw e;
+    return null;
+  }
+}
+
+// readWatch reports what the watch saw: "seen" (a trusted event arrived),
+// "navigated" (the page was replaced, which only input could have done here),
+// "none", or "unknown" (the page could not be asked). keep leaves the watch
+// running.
+async function readWatch(ctx, tabId, token, keep) {
+  if (!token) return "unknown";
+  let rs;
+  try {
+    rs = await runInFrames(ctx, tabId, pageAgent, ["seen", { token, keep: !!keep }], "checking the input", 5000);
+  } catch (e) {
+    if (ctx.op.aborted) throw e;
+    return "unknown";
+  }
+  if (rs.some((x) => x && x.result && x.result.armed && (x.result.events || []).some((ev) => ev.trusted))) return "seen";
+  const top = rs.find((x) => x && x.frameId === 0) || rs[0];
+  if (!top || !top.result) return "unknown";
+  return top.result.armed === false ? "navigated" : "none";
+}
+
+// deliveryOf waits for the action's events (polling, up to graceMs) and
+// stops the watch.
+async function deliveryOf(ctx, tabId, token, graceMs) {
+  if (!token) return "unknown";
+  const until = Date.now() + graceMs;
+  let got = await readWatch(ctx, tabId, token, true);
+  for (let wait = 25; got === "none" && Date.now() < until; wait *= 2) {
+    const ms = Math.max(1, Math.min(wait, until - Date.now()));
+    await bounded(sleep(ms), ms + 1000, "waiting for the input to arrive", ctx.op);
+    got = await readWatch(ctx, tabId, token, true);
+  }
+  if (got !== "navigated" && got !== "unknown") await readWatch(ctx, tabId, token, false); // remove the listeners
+  return got;
+}
+
+// domFallback does an action with DOM events in the page (see pageAgent
+// dom_*). The page first gets transient user activation from CDP (as a real
+// click gives it), so a popup or target=_blank link the dispatched click opens
+// is not blocked.
+async function domFallback(ctx, tabId, opName, arg, what) {
+  try {
+    await cdp(ctx, tabId, "Runtime.evaluate", { expression: "0", userGesture: true }, 3000);
+  } catch (e) {
+    if (ctx.op.aborted) throw e;
+  }
+  return await pageCall(ctx, tabId, opName, arg, what);
+}
+
+// onScreencastFrame keeps the latest frame of a screencast gocode runs for a
+// hidden tab (see captureHidden) and acknowledges it, so Chrome sends more.
+function onScreencastFrame(ctx, tabId, p) {
+  const sink = ctx.frames.get(tabId);
+  if (sink && p && p.data) sink.frame = p.data;
+  try {
+    chrome.debugger.sendCommand({ tabId }, "Page.screencastFrameAck", { sessionId: p && p.sessionId }, () => {
+      void chrome.runtime.lastError;
+    });
+  } catch (e) {}
+}
+
+// captureHidden takes Page.captureScreenshot of a hidden tab while a
+// screencast keeps it rendering. When the capture does not answer in time it
+// returns the last screencast frame ({ data, frame: true }); with no frame
+// either it fails with the reason.
+async function captureHidden(ctx, tabId, params) {
+  const sink = { frame: null };
+  ctx.frames.set(tabId, sink);
+  let casting = false;
+  try {
+    try {
+      await cdp(ctx, tabId, "Page.startScreencast", { format: "png", everyNthFrame: 1 }, 5000);
+      casting = true;
+    } catch (e) {
+      if (ctx.op.aborted) throw e;
+    }
+    try {
+      return await cdp(ctx, tabId, "Page.captureScreenshot", params, HIDDEN_SCREENSHOT_TIMEOUT_MS);
+    } catch (e) {
+      if (!e || !e.timedOut) throw e;
+      if (sink.frame) return { data: sink.frame, frame: true };
+      throw new Error(
+        "Could not take a screenshot of tab " + tabId + ": the tab is in the background (hidden) and Chrome rendered no image of it within " +
+          Math.round(HIDDEN_SCREENSHOT_TIMEOUT_MS / 1000) + "s. Try again; if it keeps failing, ask the user to bring the gocode tab to the front."
+      );
+    }
+  } finally {
+    ctx.frames.delete(tabId);
+    if (casting) {
+      try { await cdp(ctx, tabId, "Page.stopScreencast", {}, 3000); } catch (e) {}
+    }
+  }
 }
 
 // --- computer (CDP mouse/keyboard input + screenshots) ----------------------
@@ -1389,18 +1700,21 @@ function keyParams(type, d, mask, text) {
   return p;
 }
 
-async function sendKeyEvent(ctx, tabId, params) {
-  await cdp(ctx, tabId, "Input.dispatchKeyEvent", params);
+// sendKeyEvent sends one key event through CDP, or — with a sink (an array) —
+// records it there instead (the DOM fallback replays the recorded events).
+async function sendKeyEvent(ctx, tabId, params, sink) {
+  if (sink) sink.push(params);
+  else await cdp(ctx, tabId, "Input.dispatchKeyEvent", params);
 }
 
 // pressChord sends the CDP events for one planned chord.
-async function pressChord(ctx, tabId, plan) {
+async function pressChord(ctx, tabId, plan, sink) {
   let mask = 0;
   const held = [];
   const down = async (m) => {
     mask |= m.bit;
     held.push(m);
-    await sendKeyEvent(ctx, tabId, keyParams("rawKeyDown", m, mask, null));
+    await sendKeyEvent(ctx, tabId, keyParams("rawKeyDown", m, mask, null), sink);
   };
   for (const m of plan.mods) await down(m);
   const base = plan.base;
@@ -1412,20 +1726,21 @@ async function pressChord(ctx, tabId, plan) {
     if (IS_MAC && (mask & MOD_META) && !(mask & (MOD_CTRL | MOD_ALT)) && base.base && MAC_COMMANDS[base.base]) {
       p.commands = [base.base === "z" && (mask & MOD_SHIFT) ? "redo" : MAC_COMMANDS[base.base]];
     }
-    await sendKeyEvent(ctx, tabId, p);
-    await sendKeyEvent(ctx, tabId, keyParams("keyUp", base, mask, null));
+    await sendKeyEvent(ctx, tabId, p, sink);
+    await sendKeyEvent(ctx, tabId, keyParams("keyUp", base, mask, null), sink);
   }
   for (let i = held.length - 1; i >= 0; i--) {
     mask &= ~held[i].bit;
-    await sendKeyEvent(ctx, tabId, keyParams("keyUp", held[i], mask, null));
+    await sendKeyEvent(ctx, tabId, keyParams("keyUp", held[i], mask, null), sink);
   }
 }
 
 // pressKeys presses a space-separated key sequence `repeat` times. Every token
 // is parsed before any event is sent, so a bad token presses nothing. An
 // unknown multi-character name with no modifiers is inserted as text (be
-// forgiving; prefer the type action for text).
-async function pressKeys(ctx, tabId, text, repeat) {
+// forgiving; prefer the type action for text). With a sink (an array) the
+// events are recorded there instead of sent ({ type:"text", text } for text).
+async function pressKeys(ctx, tabId, text, repeat, sink) {
   const tokens = String(text).trim().split(/\s+/).filter(Boolean);
   if (tokens.length === 0) throw new Error("key action requires text (the key(s) to press)");
   const n = repeat === undefined || repeat === null ? 1 : Number(repeat);
@@ -1441,8 +1756,10 @@ async function pressKeys(ctx, tabId, text, repeat) {
   for (let r = 0; r < n; r++) {
     for (const plan of plans) {
       if (!plan) continue;
-      if (plan.literal !== undefined) await typeText(ctx, tabId, plan.literal);
-      else await pressChord(ctx, tabId, plan);
+      if (plan.literal !== undefined) {
+        if (sink) sink.push({ type: "text", text: plan.literal });
+        else await typeText(ctx, tabId, plan.literal);
+      } else await pressChord(ctx, tabId, plan, sink);
     }
   }
 }
@@ -1467,6 +1784,9 @@ async function mouseClick(ctx, tabId, coord, button, clickCount, modifiers) {
 async function mouseMove(ctx, tabId, coord) {
   if (!coord) throw new Error("mouse move requires a coordinate or ref");
   await showCursor(ctx, tabId, coord[0], coord[1]);
+  // Chrome sends the page no mousemove for a move to where the pointer
+  // already is: come from one pixel away, so the hover always registers.
+  await mouseEvent(ctx, tabId, "mouseMoved", coord[0] > 0 ? coord[0] - 1 : coord[0] + 1, coord[1], { buttons: 0 });
   await mouseEvent(ctx, tabId, "mouseMoved", coord[0], coord[1], { buttons: 0 });
 }
 
@@ -1516,7 +1836,9 @@ async function mouseDrag(ctx, tabId, start, end) {
   }
 }
 
-async function mouseScroll(ctx, tabId, coord, direction, amount) {
+// scrollPlan works out a scroll action's wheel event: the point (the given
+// one, else the viewport centre) and the deltas (100 px per scroll_amount).
+async function scrollPlan(ctx, tabId, coord, direction, amount) {
   let x, y;
   if (coord) [x, y] = coord;
   else {
@@ -1533,7 +1855,11 @@ async function mouseScroll(ctx, tabId, coord, direction, amount) {
     case "right": deltaX = ticks; break;
     default: deltaY = ticks;
   }
-  await mouseEvent(ctx, tabId, "mouseWheel", x, y, { deltaX, deltaY });
+  return { x, y, deltaX, deltaY };
+}
+
+async function mouseScroll(ctx, tabId, w) {
+  await mouseEvent(ctx, tabId, "mouseWheel", w.x, w.y, { deltaX: w.deltaX, deltaY: w.deltaY });
 }
 
 async function typeText(ctx, tabId, text) {
@@ -1976,7 +2302,10 @@ function pageAgent(op, arg) {
 
   // ---- point (a ref -> a clickable viewport point) ----
 
-  function deepHit(x, y) {
+  // deepHitAt returns the element at viewport point (x, y) — through open
+  // shadow roots and same-origin iframes — with the point in that element's
+  // own frame.
+  function deepHitAt(x, y) {
     let doc = document, lx = x, ly = y;
     let hit = doc.elementFromPoint(lx, ly);
     for (let i = 0; hit && i < 20; i++) {
@@ -1990,17 +2319,18 @@ function pageAgent(op, arg) {
         try { d = hit.contentDocument; } catch (e) {}
         if (d && d.elementFromPoint) {
           const r = hit.getBoundingClientRect();
-          lx -= r.left + (hit.clientLeft || 0);
-          ly -= r.top + (hit.clientTop || 0);
-          doc = d;
-          const inner = d.elementFromPoint(lx, ly);
-          if (inner) { hit = inner; continue; }
+          const nx = lx - (r.left + (hit.clientLeft || 0));
+          const ny = ly - (r.top + (hit.clientTop || 0));
+          const inner = d.elementFromPoint(nx, ny);
+          if (inner) { doc = d; lx = nx; ly = ny; hit = inner; continue; }
         }
       }
       break;
     }
-    return hit;
+    return { el: hit, x: lx, y: ly };
   }
+
+  const deepHit = (x, y) => deepHitAt(x, y).el;
 
   function within(el, n) {
     for (let i = 0; n && i < 1000; i++) {
@@ -2211,7 +2541,339 @@ function pageAgent(op, arg) {
     return fail("is a <" + tag + ">, which is not a form field. Click it, or find the input it belongs to.");
   }
 
+  // ---- delivery check (watch / seen) ----
+  //
+  // watch adds capture-phase listeners on this frame's window for the event
+  // types an input action must produce; seen reports what arrived. Capture on
+  // window runs before any page listener, so a page that stops propagation
+  // still shows up. The record lives in this document's isolated world: after
+  // a navigation the new document has none (armed: false).
+
+  function watch() {
+    const W = (S.watches = S.watches || {});
+    const rec = { events: [], off: [] };
+    for (const type of Array.isArray(arg.types) ? arg.types : []) {
+      const f = (e) => {
+        if (rec.events.length < 40) rec.events.push({ type: e.type, trusted: e.isTrusted === true });
+      };
+      window.addEventListener(type, f, true);
+      rec.off.push(() => window.removeEventListener(type, f, true));
+    }
+    W[arg.token] = rec;
+    return { ok: true };
+  }
+
+  function seen() {
+    const rec = S.watches && S.watches[arg.token];
+    if (!rec) return { armed: false };
+    if (!arg.keep) {
+      delete S.watches[arg.token];
+      for (const f of rec.off) f();
+    }
+    return { armed: true, events: rec.events.slice() };
+  }
+
+  // ---- DOM fallback (dom_click / dom_move / dom_wheel / dom_drag / dom_keys / dom_text) ----
+  //
+  // When Chrome does not deliver CDP input to a background tab, these dispatch
+  // the same DOM events from the page itself, at the element under the point
+  // (through open shadow roots and same-origin iframes), with clientX/Y in
+  // that element's frame, button/buttons/detail and the modifier keys. They
+  // are untrusted (isTrusted false), so the browser's own default actions do
+  // not run; the ones pages rely on most are done here instead: focusing what
+  // is clicked, scrolling for a wheel, inserting typed text, Enter submitting
+  // a form, Backspace/Delete, select-all. A click's own activation behaviour
+  // (following a link, toggling a checkbox, submitting with a button) does run
+  // for a dispatched click.
+
+  const MODS = (m) => ({ altKey: !!(m & 1), ctrlKey: !!(m & 2), metaKey: !!(m & 4), shiftKey: !!(m & 8) });
+
+  function viewOf(el) {
+    return (el && el.ownerDocument && el.ownerDocument.defaultView) || window;
+  }
+
+  function makeEvent(el, ctor, type, init) {
+    const view = viewOf(el);
+    const C = view[ctor] || view.MouseEvent || view.Event;
+    const o = { bubbles: true, cancelable: true, composed: true, view, ...init };
+    try {
+      return new C(type, o);
+    } catch (e) {
+      return new view.Event(type, o);
+    }
+  }
+
+  // send dispatches one event on el and reports whether it was not cancelled.
+  function send(el, ctor, type, init) {
+    return el.dispatchEvent(makeEvent(el, ctor, type, init));
+  }
+
+  function parentOf(n) {
+    return n.parentNode || n.host || null;
+  }
+
+  const FOCUSABLE = /^(a|area|button|input|select|textarea|iframe|summary)$/;
+
+  function focusFor(el) {
+    for (let n = el, i = 0; n && n.nodeType === 1 && i < 100; n = parentOf(n), i++) {
+      const t = tagOf(n);
+      const ok = (FOCUSABLE.test(t) && (t !== "a" && t !== "area" ? true : n.hasAttribute("href"))) ||
+        n.hasAttribute("tabindex") || n.isContentEditable;
+      if (ok && !n.disabled) return n;
+    }
+    return null;
+  }
+
+  function hitOrError(x, y) {
+    const h = deepHitAt(x, y);
+    if (!h.el) return { error: "there is no element at (" + x + ", " + y + ") to send the events to" };
+    const t = tagOf(h.el);
+    if (t === "iframe" || t === "frame") {
+      return { error: "the point (" + x + ", " + y + ") is inside a frame from another site, which DOM events from this page cannot reach" };
+    }
+    return h;
+  }
+
+  function pointerInit(h, mods, button, buttons, detail) {
+    return { clientX: h.x, clientY: h.y, screenX: h.x, screenY: h.y, button, buttons, detail: detail || 0,
+      pointerId: 1, pointerType: "mouse", isPrimary: true, ...MODS(mods) };
+  }
+
+  function domMove(h, mods, buttons) {
+    send(h.el, "PointerEvent", "pointerover", pointerInit(h, mods, -1, buttons));
+    send(h.el, "MouseEvent", "mouseover", pointerInit(h, mods, 0, buttons));
+    send(h.el, "PointerEvent", "pointermove", pointerInit(h, mods, -1, buttons));
+    send(h.el, "MouseEvent", "mousemove", pointerInit(h, mods, 0, buttons));
+  }
+
+  function domClick() {
+    const h = hitOrError(arg.x, arg.y);
+    if (h.error) return h;
+    const el = h.el;
+    const mods = arg.mods | 0;
+    const button = arg.button === "right" ? 2 : arg.button === "middle" ? 1 : 0;
+    const mask = button === 2 ? 2 : button === 1 ? 4 : 1;
+    const n = Math.max(1, Math.min(3, arg.clickCount | 0 || 1));
+    domMove(h, mods, 0);
+    let focused = false;
+    for (let i = 1; i <= n; i++) {
+      const down = send(el, "PointerEvent", "pointerdown", pointerInit(h, mods, button, mask, 0));
+      // A cancelled pointerdown suppresses mousedown (and its focus), not the click.
+      const mdown = down ? send(el, "MouseEvent", "mousedown", pointerInit(h, mods, button, mask, i)) : false;
+      if (mdown && !focused) {
+        focused = true;
+        const f = focusFor(el);
+        const doc = el.ownerDocument;
+        if (f && f.focus) f.focus({ preventScroll: true });
+        else if (doc && doc.activeElement && doc.activeElement.blur) doc.activeElement.blur();
+      }
+      send(el, "PointerEvent", "pointerup", pointerInit(h, mods, button, 0, 0));
+      send(el, "MouseEvent", "mouseup", pointerInit(h, mods, button, 0, i));
+      if (button === 2) send(el, "PointerEvent", "contextmenu", pointerInit(h, mods, 2, 0, 0));
+      else if (button === 1) send(el, "PointerEvent", "auxclick", pointerInit(h, mods, 1, 0, i));
+      else send(el, "PointerEvent", "click", pointerInit(h, mods, 0, 0, i));
+    }
+    if (button === 0 && n >= 2) send(el, "MouseEvent", "dblclick", pointerInit(h, mods, 0, 0, 2));
+    return { ok: true, target: describe(el) };
+  }
+
+  function domHover() {
+    const h = hitOrError(arg.x, arg.y);
+    if (h.error) return h;
+    domMove(h, 0, 0);
+    return { ok: true, target: describe(h.el) };
+  }
+
+  function canScroll(el, dx, dy) {
+    if (!el || el.nodeType !== 1) return false;
+    let cs = null;
+    try { cs = viewOf(el).getComputedStyle(el); } catch (e) {}
+    const oy = cs ? cs.overflowY : "", ox = cs ? cs.overflowX : "";
+    const sy = dy && /(auto|scroll|overlay)/.test(oy) && el.scrollHeight > el.clientHeight &&
+      (dy > 0 ? el.scrollTop + el.clientHeight < el.scrollHeight : el.scrollTop > 0);
+    const sx = dx && /(auto|scroll|overlay)/.test(ox) && el.scrollWidth > el.clientWidth &&
+      (dx > 0 ? el.scrollLeft + el.clientWidth < el.scrollWidth : el.scrollLeft > 0);
+    return !!(sy || sx);
+  }
+
+  function domWheel() {
+    const h = hitOrError(arg.x, arg.y);
+    if (h.error) return h;
+    const dx = Number(arg.dx) || 0, dy = Number(arg.dy) || 0;
+    const go = send(h.el, "WheelEvent", "wheel", { ...pointerInit(h, 0, 0, 0), deltaX: dx, deltaY: dy, deltaMode: 0 });
+    if (!go) return { ok: true, target: describe(h.el), scrolled: false };
+    // Scroll what the browser would: the nearest scrollable ancestor, else the page.
+    let box = h.el;
+    while (box && box.nodeType === 1 && !canScroll(box, dx, dy)) box = parentOf(box);
+    if (box && box.nodeType === 1 && box.scrollBy) box.scrollBy(dx, dy);
+    else viewOf(h.el).scrollBy(dx, dy);
+    return { ok: true, target: describe(h.el), scrolled: true };
+  }
+
+  function domDrag() {
+    const s = hitOrError(arg.sx, arg.sy);
+    if (s.error) return s;
+    const steps = 5;
+    send(s.el, "PointerEvent", "pointerdown", pointerInit(s, 0, 0, 1, 0));
+    send(s.el, "MouseEvent", "mousedown", pointerInit(s, 0, 0, 1, 1));
+    let src = null;
+    for (let n = s.el, i = 0; n && n.nodeType === 1 && i < 50; n = parentOf(n), i++) {
+      const d = attr(n, "draggable");
+      if (d === "true" || (d !== "false" && (tagOf(n) === "img" || (tagOf(n) === "a" && n.hasAttribute("href"))))) { src = n; break; }
+    }
+    const view = viewOf(s.el);
+    let dt = null;
+    if (src && view.DataTransfer) {
+      try { dt = new view.DataTransfer(); } catch (e) {}
+    }
+    const dragging = !!(src && dt && send(src, "DragEvent", "dragstart", { ...pointerInit(s, 0, 0, 1), dataTransfer: dt }));
+    let last = s, over = false;
+    for (let i = 1; i <= steps; i++) {
+      const x = Math.round(arg.sx + ((arg.ex - arg.sx) * i) / steps);
+      const y = Math.round(arg.sy + ((arg.ey - arg.sy) * i) / steps);
+      const h = deepHitAt(x, y);
+      if (!h.el) continue;
+      if (dragging) {
+        if (h.el !== last.el) send(h.el, "DragEvent", "dragenter", { ...pointerInit(h, 0, 0, 1), dataTransfer: dt });
+        over = !send(h.el, "DragEvent", "dragover", { ...pointerInit(h, 0, 0, 1), dataTransfer: dt });
+      } else {
+        send(h.el, "PointerEvent", "pointermove", pointerInit(h, 0, -1, 1));
+        send(h.el, "MouseEvent", "mousemove", pointerInit(h, 0, 0, 1));
+      }
+      last = h;
+    }
+    if (dragging) {
+      // A drop target accepts by cancelling dragover; otherwise the drag leaves.
+      if (over) send(last.el, "DragEvent", "drop", { ...pointerInit(last, 0, 0, 0), dataTransfer: dt });
+      else send(last.el, "DragEvent", "dragleave", { ...pointerInit(last, 0, 0, 0), dataTransfer: dt });
+      send(src, "DragEvent", "dragend", { ...pointerInit(last, 0, 0, 0), dataTransfer: dt });
+    }
+    send(last.el, "PointerEvent", "pointerup", pointerInit(last, 0, 0, 0, 0));
+    send(last.el, "MouseEvent", "mouseup", pointerInit(last, 0, 0, 0, 1));
+    return { ok: true, target: describe(s.el), drag: dragging ? (over ? "drag-and-drop" : "drag (not dropped: the target did not accept it)") : "mouse drag" };
+  }
+
+  // activeTarget returns the focused element, through open shadow roots and
+  // same-origin iframes.
+  function activeTarget() {
+    let el = document.activeElement;
+    for (let i = 0; el && i < 20; i++) {
+      if (el.shadowRoot && el.shadowRoot.activeElement) { el = el.shadowRoot.activeElement; continue; }
+      const t = tagOf(el);
+      if (t === "iframe" || t === "frame") {
+        let d = null;
+        try { d = el.contentDocument; } catch (e) {}
+        if (d && d.activeElement) { el = d.activeElement; continue; }
+      }
+      break;
+    }
+    return el || document.body || document.documentElement;
+  }
+
+  function isTextField(el) {
+    const t = tagOf(el);
+    if (t === "textarea") return true;
+    if (t !== "input") return false;
+    return /^(text|search|email|url|tel|password|number|)$/.test((attr(el, "type") || "").toLowerCase());
+  }
+
+  // insertText puts text into the focused field at its selection, as typing
+  // does, and reports whether a field took it.
+  function insertText(el, text) {
+    if (!el || el.disabled || el.readOnly) return false;
+    if (isTextField(el)) {
+      if (!send(el, "InputEvent", "beforeinput", { inputType: "insertText", data: text })) return true;
+      const v = String(el.value);
+      let a = v.length, b = v.length;
+      try { if (el.selectionStart != null) { a = el.selectionStart; b = el.selectionEnd; } } catch (e) {}
+      setNative(el, "value", v.slice(0, a) + text + v.slice(b));
+      try { el.setSelectionRange(a + text.length, a + text.length); } catch (e) {}
+      send(el, "InputEvent", "input", { inputType: "insertText", data: text, cancelable: false });
+      return true;
+    }
+    if (el.isContentEditable) {
+      const doc = el.ownerDocument;
+      if (doc && doc.execCommand && doc.execCommand("insertText", false, text)) return true;
+      el.textContent = String(el.textContent) + text;
+      send(el, "InputEvent", "input", { inputType: "insertText", data: text, cancelable: false });
+      return true;
+    }
+    return false;
+  }
+
+  function deleteText(el, forward) {
+    if (!isTextField(el) || el.disabled || el.readOnly) return false;
+    const v = String(el.value);
+    let a = v.length, b = v.length;
+    try { if (el.selectionStart != null) { a = el.selectionStart; b = el.selectionEnd; } } catch (e) {}
+    if (a === b) { if (forward) b = Math.min(v.length, b + 1); else a = Math.max(0, a - 1); }
+    if (a === b) return true;
+    const type = forward ? "deleteContentForward" : "deleteContentBackward";
+    if (!send(el, "InputEvent", "beforeinput", { inputType: type })) return true;
+    setNative(el, "value", v.slice(0, a) + v.slice(b));
+    try { el.setSelectionRange(a, a); } catch (e) {}
+    send(el, "InputEvent", "input", { inputType: type, cancelable: false });
+    return true;
+  }
+
+  // domKeys replays the key events the extension planned (the same ones it
+  // sends through CDP) on the focused element.
+  function domKeys() {
+    const el = activeTarget();
+    const plain = [];
+    let suppressed = false;
+    for (const k of Array.isArray(arg.events) ? arg.events : []) {
+      if (k.type === "text") { if (insertText(el, k.text)) plain.push("text"); continue; }
+      const init = { key: k.key, code: k.code || "", keyCode: k.windowsVirtualKeyCode || 0, which: k.windowsVirtualKeyCode || 0,
+        location: k.location || 0, repeat: false, ...MODS(k.modifiers | 0) };
+      if (k.type === "keyUp") { send(el, "KeyboardEvent", "keyup", init); continue; }
+      const go = send(el, "KeyboardEvent", "keydown", init);
+      if (!go) { suppressed = true; continue; }
+      const m = k.modifiers | 0;
+      if (k.text != null && k.text !== "\r") {
+        if (send(el, "KeyboardEvent", "keypress", { ...init, charCode: k.text.charCodeAt(0) }) && insertText(el, k.text)) plain.push("text");
+      } else if (k.key === "Enter" && !(m & (2 | 4 | 1))) {
+        send(el, "KeyboardEvent", "keypress", { ...init, charCode: 13 });
+        if (tagOf(el) === "input" && el.form) {
+          if (el.form.requestSubmit) el.form.requestSubmit(); else el.form.submit();
+          plain.push("submit");
+        } else if (insertText(el, "\n")) plain.push("text");
+      } else if ((k.key === "Backspace" || k.key === "Delete") && !(m & (2 | 4 | 1))) {
+        if (deleteText(el, k.key === "Delete")) plain.push("delete");
+      } else if (k.key === "a" && (m & (2 | 4)) && isTextField(el) && el.select) {
+        el.select();
+        plain.push("select");
+      }
+    }
+    return { ok: true, target: describe(el), defaults: plain, suppressed };
+  }
+
+  // domText inserts typed text into the focused field.
+  function domText() {
+    const el = activeTarget();
+    if (!insertText(el, String(arg.text == null ? "" : arg.text))) {
+      return { error: "no text field has focus (the focus is on " + describe(el) + "). Click the field first, then type" };
+    }
+    return { ok: true, target: describe(el) };
+  }
+
   switch (op) {
+    case "watch":
+      return watch();
+    case "seen":
+      return seen();
+    case "dom_click":
+      return domClick();
+    case "dom_move":
+      return domHover();
+    case "dom_wheel":
+      return domWheel();
+    case "dom_drag":
+      return domDrag();
+    case "dom_keys":
+      return domKeys();
+    case "dom_text":
+      return domText();
     case "find":
       return find();
     case "point":
@@ -2228,6 +2890,7 @@ function pageAgent(op, arg) {
       return {
         dpr: window.devicePixelRatio || 1, w: window.innerWidth, h: window.innerHeight,
         sx: window.scrollX || 0, sy: window.scrollY || 0,
+        vis: document.visibilityState, focus: document.hasFocus ? document.hasFocus() : undefined,
       };
     case "origin":
       return String(self.origin);
@@ -2309,48 +2972,151 @@ async function doComputer(params, policy, ctx) {
     return { action, ok: true };
   }
 
+  const kind = INPUT_KIND[action];
+  if (!kind) throw new Error("unsupported computer action: " + action);
   return await acting(tabId, async () => {
-    // Input actions require CDP; attach via the shared session.
-    await ensureAttached(ctx, tabId);
-    const pointer = !["type", "key", "keypress"].includes(action);
+    // Input actions require CDP; attach via the shared session (and make a
+    // background tab take input, see "background tabs").
+    const prep = await prepareTab(ctx, tabId);
+    if (kind === "text" && !params.text) return { action, tabId, ok: true }; // nothing to type
+    const pointer = kind !== "key" && kind !== "text";
     const coord = pointer ? await resolveCoord(ctx, tabId, params, action === "scroll") : null;
     const out = { action, tabId, ok: true };
-    switch (action) {
-      case "left_click":
-      case "click":
-        await mouseClick(ctx, tabId, coord, "left", 1, params.modifiers);
-        break;
-      case "right_click":
-        await mouseClick(ctx, tabId, coord, "right", 1, params.modifiers);
-        break;
-      case "double_click":
-        await mouseClick(ctx, tabId, coord, "left", 2, params.modifiers);
-        break;
-      case "triple_click":
-        await mouseClick(ctx, tabId, coord, "left", 3, params.modifiers);
-        break;
-      case "hover":
-      case "mouse_move":
-        await mouseMove(ctx, tabId, coord);
-        break;
-      case "left_click_drag":
-        out.drag = await mouseDrag(ctx, tabId, coordOf(params.start_coordinate, "start_coordinate"), coord);
-        break;
-      case "scroll":
-        await mouseScroll(ctx, tabId, coord, params.scroll_direction, params.scroll_amount);
-        break;
-      case "type":
-        await typeText(ctx, tabId, params.text || "");
-        break;
-      case "key":
-      case "keypress":
-        await pressKeys(ctx, tabId, params.text || "", params.repeat);
-        break;
-      default:
-        throw new Error("unsupported computer action: " + action);
+    // Everything that can be refused is checked before anything is sent.
+    let start = null, wheel = null, keyEvents = null;
+    if (action === "left_click_drag") {
+      start = coordOf(params.start_coordinate, "start_coordinate");
+      if (!start || !coord) throw new Error("left_click_drag requires start_coordinate and coordinate");
+    } else if (pointer && action !== "scroll" && !coord) {
+      throw new Error((kind === "move" ? "mouse move" : "click") + " requires a coordinate or ref");
     }
+    if (action === "scroll") wheel = await scrollPlan(ctx, tabId, coord, params.scroll_direction, params.scroll_amount);
+    if (kind === "key") {
+      keyEvents = [];
+      await pressKeys(ctx, tabId, params.text || "", params.repeat, keyEvents);
+    }
+    if (action === "scroll" && prep.hidden) {
+      // A CDP wheel on a background tab can make Chrome switch the window's
+      // tabs (seen on Chrome 156 / Linux: the unconsumed wheel reaches the tab
+      // strip), which would take the user's view away: scroll in the page.
+      const r = await domAction(ctx, tabId, action, { coord, wheel, params });
+      out.delivery = "dom";
+      out.domReason = "background-scroll";
+      out.background = true;
+      if (r && r.scrolled === false) out.scrolled = false;
+      return out;
+    }
+
+    const token = await armWatch(ctx, tabId, kind);
+    try {
+      switch (action) {
+        case "left_click":
+        case "click":
+          await mouseClick(ctx, tabId, coord, "left", 1, params.modifiers);
+          break;
+        case "right_click":
+          await mouseClick(ctx, tabId, coord, "right", 1, params.modifiers);
+          break;
+        case "double_click":
+          await mouseClick(ctx, tabId, coord, "left", 2, params.modifiers);
+          break;
+        case "triple_click":
+          await mouseClick(ctx, tabId, coord, "left", 3, params.modifiers);
+          break;
+        case "hover":
+        case "mouse_move":
+          await mouseMove(ctx, tabId, coord);
+          break;
+        case "left_click_drag":
+          out.drag = await mouseDrag(ctx, tabId, start, coord);
+          break;
+        case "scroll":
+          await mouseScroll(ctx, tabId, wheel);
+          break;
+        case "type":
+          await typeText(ctx, tabId, params.text || "");
+          break;
+        case "key":
+        case "keypress":
+          await pressKeys(ctx, tabId, params.text || "", params.repeat);
+          break;
+      }
+    } catch (e) {
+      // On a hidden tab Chrome may hold CDP input until it times out: that
+      // input did not arrive, so it goes the DOM way below.
+      if (!(e && e.timedOut && prep.hidden && !ctx.op.aborted)) {
+        if (token) await readWatch(ctx, tabId, token, false).catch(() => {});
+        throw e;
+      }
+    }
+
+    // A wheel reaches the page's main thread after the CDP call answers
+    // (Chrome scrolls on the compositor first), so it gets longer.
+    const got = await deliveryOf(ctx, tabId, token, kind === "wheel" ? DELIVERY_GRACE_MS * 4 : DELIVERY_GRACE_MS);
+    if (got === "seen" || got === "navigated") {
+      out.delivery = "input";
+    } else if (got === "unknown") {
+      out.delivery = "unconfirmed";
+    } else {
+      // Nothing reached the page: do it with DOM events, or fail saying why.
+      const why = kind === "text"
+        ? "nothing on the page took the text"
+        : prep.hidden
+          ? "the tab is in the background (hidden) and Chrome did not deliver the input to it"
+          : "the page received none of the events it causes";
+      let r;
+      try {
+        r = await domAction(ctx, tabId, action, { coord, start, wheel, keyEvents, params });
+      } catch (e) {
+        if (ctx.op.aborted) throw e;
+        throw new Error(action + " was not delivered: " + why + ", and sending it as DOM events failed too: " + String((e && e.message) || e));
+      }
+      out.delivery = "dom";
+      out.domReason = "not-delivered";
+      if (r && r.drag) out.drag = r.drag;
+      if (r && r.scrolled === false) out.scrolled = false;
+      if (r && r.suppressed) out.keysCancelled = true;
+    }
+    if (prep.hidden) out.background = true;
     return out;
   });
+}
+
+// INPUT_KIND maps each input action to the events that show it arrived (see
+// DELIVERY_EVENTS).
+const INPUT_KIND = {
+  left_click: "click", click: "click", right_click: "click", double_click: "click", triple_click: "click",
+  hover: "move", mouse_move: "move", left_click_drag: "drag", scroll: "wheel",
+  type: "text", key: "key", keypress: "key",
+};
+
+// domAction does an input action with DOM events in the page (the fallback
+// when CDP input did not arrive; see "background tabs").
+async function domAction(ctx, tabId, action, a) {
+  const what = action + " (as DOM events)";
+  const [x, y] = a.coord || [0, 0];
+  switch (action) {
+    case "left_click":
+    case "click":
+    case "right_click":
+    case "double_click":
+    case "triple_click": {
+      const button = action === "right_click" ? "right" : "left";
+      const clickCount = action === "double_click" ? 2 : action === "triple_click" ? 3 : 1;
+      return await domFallback(ctx, tabId, "dom_click", { x, y, button, clickCount, mods: modifierMask(a.params.modifiers) }, what);
+    }
+    case "hover":
+    case "mouse_move":
+      return await domFallback(ctx, tabId, "dom_move", { x, y }, what);
+    case "left_click_drag":
+      return await domFallback(ctx, tabId, "dom_drag", { sx: a.start[0], sy: a.start[1], ex: x, ey: y }, what);
+    case "scroll":
+      return await domFallback(ctx, tabId, "dom_wheel", { x: a.wheel.x, y: a.wheel.y, dx: a.wheel.deltaX, dy: a.wheel.deltaY }, what);
+    case "type":
+      return await domFallback(ctx, tabId, "dom_text", { text: String(a.params.text || "") }, what);
+    default:
+      return await domFallback(ctx, tabId, "dom_keys", { events: a.keyEvents || [] }, what);
+  }
 }
 
 // --- find (DOM query, read-only, no debugger) -------------------------------
@@ -2678,12 +3444,21 @@ function scaleOf(v) {
 // look (zoom). opts.scale in [0.1, 1] shrinks the returned image. Either way
 // the result reports the full viewport size: coordinates for clicks are always
 // in that frame, never in the returned image's own pixels.
+//
+// A hidden (background) tab renders no frames of its own: it is captured with
+// focus emulation and a screencast running (see "background tabs"), and fails
+// fast with the reason when Chrome still renders nothing. A capture that came
+// from a screencast frame (a zoom of it is only cropped, not re-rendered at the
+// magnification) is marked frame:true.
 async function captureTab(ctx, tabId, opts) {
   opts = opts || {};
   const scale = scaleOf(opts.scale);
-  await ensureAttached(ctx, tabId);
-  const info = await viewportInfo(ctx, tabId);
+  const prep = await prepareTab(ctx, tabId);
+  const info = prep.info;
+  const shoot = (params) =>
+    prep.hidden ? captureHidden(ctx, tabId, params) : cdp(ctx, tabId, "Page.captureScreenshot", params, SCREENSHOT_TIMEOUT_MS);
   const out = { width: info.w || undefined, height: info.h || undefined, devicePixelRatio: info.dpr };
+  if (prep.hidden) out.background = true;
   if (opts.region) {
     const reg = opts.region.map(Number);
     if (reg.length !== 4 || !reg.every(Number.isFinite)) throw new Error("zoom region must be [x0, y0, x1, y1] numbers");
@@ -2695,26 +3470,30 @@ async function captureTab(ctx, tabId, opts) {
     const fit = Math.min((info.w || rw) / rw, (info.h || rh) / rh);
     const zoom = Math.min(4, Math.max(1, fit));
     // The clip is in document coordinates: add the scroll offset.
-    const shot = await cdp(ctx, tabId, "Page.captureScreenshot", {
+    const shot = await shoot({
       format: "png",
       captureBeyondViewport: false,
       clip: { x: x0 + (info.sx || 0), y: y0 + (info.sy || 0), width: rw, height: rh, scale: zoom },
-    }, SCREENSHOT_TIMEOUT_MS);
+    });
     const iw = Math.max(1, Math.round(rw * zoom * scale));
     const ih = Math.max(1, Math.round(rh * zoom * scale));
-    out.dataUrl = await resizeImage("data:image/png;base64," + shot.data, iw, ih);
+    // A screencast frame is the whole viewport: crop the region out of it.
+    const crop = shot.frame ? { x: x0, y: y0, w: rw, h: rh, vw: info.w || rw } : undefined;
+    if (shot.frame) out.frame = true;
+    out.dataUrl = await resizeImage("data:image/png;base64," + shot.data, iw, ih, crop);
     out.region = [x0, y0, x1, y1];
     out.zoom = Math.round(zoom * scale * 100) / 100;
     out.imageWidth = iw;
     out.imageHeight = ih;
     return out;
   }
-  const shot = await cdp(ctx, tabId, "Page.captureScreenshot", {
+  const shot = await shoot({
     format: "png",
     captureBeyondViewport: false,
-  }, SCREENSHOT_TIMEOUT_MS);
+  });
   out.dataUrl = "data:image/png;base64," + shot.data;
-  if (info.w && info.h && ((info.dpr && info.dpr !== 1) || scale !== 1)) {
+  if (shot.frame) out.frame = true;
+  if (info.w && info.h && ((info.dpr && info.dpr !== 1) || scale !== 1 || shot.frame)) {
     const iw = Math.max(1, Math.round(info.w * scale));
     const ih = Math.max(1, Math.round(info.h * scale));
     out.dataUrl = await resizeImage(out.dataUrl, iw, ih);

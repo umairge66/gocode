@@ -534,7 +534,7 @@ const pol = { allowed: ["example.com"], denied: ["bank.example"], requireAllowed
   loadPage(pop.id, () => {}, "https://bank.example");
   await refused("about:blank written by a denied site", "computer", { action: "type", text: "x", tabId: pop.id }, /denied on bank\.example/);
   loadPage(pop.id, () => {}, "null");
-  await allowed("an empty about:blank", "computer", { action: "type", text: "x", tabId: pop.id });
+  await allowed("an empty about:blank", "computer", { action: "key", text: "x", tabId: pop.id });
   pages.delete(pop.id);
   tabs.get(pop.id).url = "blob:https://bank.example/1234";
   await refused("blob: of a denied site", "read_page", { tabId: pop.id }, /denied on bank\.example/);
@@ -586,4 +586,154 @@ const pol = { allowed: ["example.com"], denied: ["bank.example"], requireAllowed
 
 func TestExtensionRedirectAndPaging(t *testing.T) {
 	runExtensionHarness(t, redirectPagingHarness)
+}
+
+// backgroundHarness checks input and screenshots on a gocode tab the user is
+// not looking at (document hidden), the live failure where a click returned
+// "done" but the page got nothing: a visible tab takes real input and says so;
+// a hidden tab gets focus emulation and real input, staying in the
+// background; when Chrome still drops the input the click, keys and text go
+// in as DOM events and the result says so; what cannot be delivered is an
+// error; scrolling a hidden tab never sends a CDP wheel; screenshots of a
+// hidden tab come through a screencast or fail fast saying why; a tab a
+// background click opens comes up behind the user's tab.
+const backgroundHarness = `
+function cookiePage(body, E) {
+  body.appendChild(E("form", { id: "f", box: [0, 0, 400, 40] }, E("input", { id: "q", name: "q", box: [10, 10, 200, 20] })));
+  body.appendChild(E("div", { id: "cookie", "data-fixed": "", box: [0, 300, 800, 200] }, E("button", { id: "accept", box: [300, 350, 200, 60] }, "Accept all")));
+  body.appendChild(E("iframe", { id: "ad", box: [600, 0, 200, 100] })); // another site's frame
+}
+async function fresh(state) {
+  const tab = (await call("tabs_create", { url: "https://shop.example/" })).tabId;
+  const doc = loadPage(tab, cookiePage);
+  Object.assign(doc, state || {});
+  const el = (id) => allElements(doc).find((e) => e.attrs.id === id);
+  const p = { tab, doc, el, clicks: [], submitted: 0, onClick: null };
+  el("accept").addEventListener("click", (e) => {
+    p.clicks.push(e.isTrusted);
+    const c = el("cookie");
+    if (c && c.parentNode) c.parentNode.removeChild(c);
+    if (p.onClick) p.onClick();
+  });
+  el("f").requestSubmit = () => p.submitted++;
+  return p;
+}
+const sent = (m, type) => cdpLog.filter((c) => c.method === m && (!type || c.params.type === type));
+async function clickAccept(p) {
+  const ref = (await call("find", { query: "Accept all", tabId: p.tab })).matches[0].ref;
+  cdpLog.length = 0;
+  return await call("computer", { action: "left_click", ref, tabId: p.tab });
+}
+async function failsWith(what, m, params, re) {
+  try { await call(m, params); fails.push(what + ": no error"); }
+  catch (e) { if (!re.test(e.message)) fails.push(what + ": wrong error: " + e.message); }
+}
+
+(async () => {
+  // A visible tab: real input, reported as delivered; no emulation.
+  let p = await fresh();
+  let r = await clickAccept(p);
+  if (r.delivery !== "input" || r.background || p.el("cookie") || p.clicks.join() !== "true") fails.push("visible click: " + JSON.stringify(r) + " clicks " + p.clicks);
+  if (sent("Emulation.setFocusEmulationEnabled").length) fails.push("focus emulation on a visible tab");
+
+  // A hidden tab: focus emulation makes Chrome deliver real input, without
+  // bringing the tab to the front; detaching ends the emulation.
+  p = await fresh({ hidden: true });
+  r = await clickAccept(p);
+  if (r.delivery !== "input" || !r.background || p.el("cookie") || p.clicks.join() !== "true") fails.push("hidden click: " + JSON.stringify(r) + " clicks " + p.clicks);
+  if (sent("Emulation.setFocusEmulationEnabled").length !== 1) fails.push("no focus emulation on a hidden tab");
+  if (p.doc.visibilityState !== "hidden" || attached.size) fails.push("emulation or debugger left on: " + p.doc.visibilityState + " " + attached.size);
+  if (tabs.get(p.tab).active || !tabs.get(1).active) fails.push("the hidden tab was brought to the front");
+
+  // The live failure: Chrome takes the CDP click for a hidden tab and drops
+  // it. The click goes in as DOM events, and the result says so.
+  p = await fresh({ hidden: true, noFocusEmulation: true });
+  const accept = p.el("accept");
+  r = await clickAccept(p);
+  if (r.delivery !== "dom" || r.domReason !== "not-delivered" || !r.background) fails.push("dropped click: " + JSON.stringify(r));
+  if (p.el("cookie") || p.clicks.join() !== "false") fails.push("DOM click did not reach the button: clicks " + p.clicks);
+  if (!sent("Input.dispatchMouseEvent", "mousePressed").length) fails.push("CDP was not tried first");
+  if (!cdpLog.some((c) => c.method === "Runtime.evaluate" && c.params.userGesture === true)) fails.push("no user activation before the DOM click");
+  if (p.doc.activeElement !== accept) fails.push("the DOM click did not focus the button");
+  // Nothing can be delivered (another site's frame): an error, never "done".
+  await failsWith("click into another site's frame", "computer", { action: "left_click", coordinate: [650, 50], tabId: p.tab },
+    /left_click was not delivered: the tab is in the background \(hidden\).*frame from another site/);
+
+  // Keys on a hidden tab: real input with emulation; DOM key events without,
+  // with the default actions pages rely on (typing, Backspace, Enter submits).
+  p = await fresh({ hidden: true });
+  p.el("q").focus();
+  r = await call("computer", { action: "key", text: "a", tabId: p.tab });
+  if (r.delivery !== "input" || p.el("q").value !== "a") fails.push("hidden key: " + JSON.stringify(r) + " value " + p.el("q").value);
+  p = await fresh({ hidden: true, noFocusEmulation: true });
+  p.el("q").focus();
+  const keys = [];
+  p.el("q").addEventListener("keydown", (e) => keys.push(e.key + ":" + e.isTrusted));
+  r = await call("computer", { action: "key", text: "a b Backspace c Enter", tabId: p.tab });
+  if (r.delivery !== "dom" || p.el("q").value !== "ac" || p.submitted !== 1) fails.push("dropped keys: " + JSON.stringify(r) + " value " + p.el("q").value + " submitted " + p.submitted);
+  if (keys.join() !== "a:false,b:false,Backspace:false,c:false,Enter:false") fails.push("DOM keys: " + keys);
+
+  // Text: Chrome inserts it into a hidden page; with nothing focused it fails.
+  p.el("q").value = "";
+  r = await call("computer", { action: "type", text: "hi", tabId: p.tab });
+  if (r.delivery !== "input" || p.el("q").value !== "hi") fails.push("hidden type: " + JSON.stringify(r) + " value " + p.el("q").value);
+  p.doc.activeElement = null;
+  await failsWith("type with nothing focused", "computer", { action: "type", text: "zz", tabId: p.tab },
+    /type was not delivered: nothing on the page took the text.*no text field has focus/);
+
+  // Scrolling a hidden tab is done in the page: no CDP wheel, which could
+  // switch the user's tabs.
+  p = await fresh({ hidden: true });
+  cdpLog.length = 0;
+  r = await call("computer", { action: "scroll", coordinate: [100, 100], scroll_direction: "down", scroll_amount: 3, tabId: p.tab });
+  if (r.delivery !== "dom" || r.domReason !== "background-scroll" || p.doc.scrollY !== 300) fails.push("hidden scroll: " + JSON.stringify(r) + " scrollY " + p.doc.scrollY);
+  if (sent("Input.dispatchMouseEvent", "mouseWheel").length) fails.push("a CDP wheel was sent to a hidden tab");
+
+  // A page gocode cannot check (extension scripts blocked): sent, unconfirmed.
+  p = await fresh();
+  scriptHook = (t, f, args) => { if (f.name === "pageAgent" && (args[0] === "watch" || args[0] === "seen")) throw new Error("Cannot access contents of the page"); };
+  r = await call("computer", { action: "left_click", coordinate: [400, 380], tabId: p.tab });
+  scriptHook = null;
+  if (r.delivery !== "unconfirmed" || p.clicks.join() !== "true") fails.push("unchecked click: " + JSON.stringify(r));
+
+  // Screenshots of a hidden tab: with a screencast running, not a 20s hang.
+  p = await fresh({ hidden: true });
+  cdpLog.length = 0;
+  const s1 = await call("screenshot", { tabId: p.tab });
+  if (!s1.dataUrl || !s1.background || s1.frame) fails.push("hidden screenshot: " + JSON.stringify({ ...s1, dataUrl: !!s1.dataUrl }));
+  if (sent("Page.startScreencast").length !== 1 || sent("Page.stopScreencast").length !== 1) fails.push("screencast not started and stopped");
+  // The capture never answers, but frames come: the last frame is used.
+  p.doc.shotNeverAnswers = true;
+  const s2 = await call("computer", { action: "screenshot", tabId: p.tab });
+  if (!s2.dataUrl || !s2.frame) fails.push("screenshot from a frame: " + JSON.stringify({ ...s2, dataUrl: !!s2.dataUrl }));
+  resized.length = 0;
+  const z = await call("computer", { action: "zoom", region: [100, 50, 300, 150], tabId: p.tab });
+  if (!z.frame || JSON.stringify(resized) !== "[[800,400]]") fails.push("zoom from a frame: " + JSON.stringify(resized) + " " + z.frame);
+  // Nothing renders at all: it fails fast, saying why.
+  p.doc.noFrames = true;
+  await failsWith("hidden tab that renders nothing", "screenshot", { tabId: p.tab },
+    /tab \d+: the tab is in the background \(hidden\) and Chrome rendered no image of it/);
+  if (attached.size) fails.push("debugger left attached after screenshots");
+
+  // A link a background click follows opens its tab in front (and Chrome
+  // names the user's tab as its opener): the user's tab comes back to the
+  // front, and the new tab is gocode's.
+  p = await fresh({ hidden: true });
+  let opened = null;
+  p.onClick = () => {
+    opened = addTab({ id: nextTab++, url: "https://shop.example/popup", openerTabId: 1, groupId: tabs.get(p.tab).groupId, active: true });
+    tabs.get(1).active = false;
+    for (const f of listeners.created) f(opened);
+    for (const f of listeners.activated) f({ tabId: opened.id, windowId: 1 });
+  };
+  await clickAccept(p);
+  await sleepMs(30);
+  if (!opened || !tabs.get(1).active) fails.push("the user's tab was not brought back to the front");
+  if (opened && !(session.openedTabs || []).includes(opened.id)) fails.push("the tab the click opened is not recorded as gocode's");
+  finish();
+})().catch((e) => { console.error("harness error: " + e.stack); process.exit(2); });
+`
+
+func TestExtensionBackgroundTabs(t *testing.T) {
+	runExtensionHarness(t, backgroundHarness)
 }

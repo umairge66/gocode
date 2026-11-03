@@ -446,13 +446,13 @@ func (t ComputerTool) Execute(ctx context.Context, in ComputerInput) (Result, er
 		text = appendLines(text, saveImages(t.Saver, []Image{img}, saveToDisk, saveTo))
 		return Result{Text: text, Images: []Image{img}}, nil
 	}
-	var r struct {
-		Drag string `json:"drag"`
-	}
+	// How the input reached the page: real input reads "done."; DOM events
+	// or an unconfirmed send say so (see inputDelivery).
+	var r inputDelivery
 	_ = json.Unmarshal(raw, &r)
-	text := fmt.Sprintf("computer: %s done.", in.Action)
-	if r.Drag != "" {
-		text = fmt.Sprintf("computer: %s done (as a %s).", in.Action, r.Drag)
+	text := fmt.Sprintf("computer: %s %s.", in.Action, r.outcome())
+	if note := r.note(); note != "" {
+		text = fmt.Sprintf("computer: %s %s: %s", in.Action, r.outcome(), note)
 	}
 	return Result{Text: text + pageNotes(notes.Notes, true)}, nil
 }
