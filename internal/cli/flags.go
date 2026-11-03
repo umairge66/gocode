@@ -47,6 +47,7 @@ type DispatchDefaults struct {
 	SessionID            string // --session-id <uuid>: use this id for a fresh session
 	ForkSession          bool   // --fork-session: resume into a NEW session id (don't append to the original)
 	NoSessionPersistence bool   // --no-session-persistence: never write a transcript
+	ResumeSessionAt      string // --resume-session-at <uuid>: resume truncated at that message
 
 	// --max-turns <turns> (print mode): the raw value and whether the flag was
 	// given; MaxTurnsLimit is the validated limit dispatch hands to the print
@@ -93,7 +94,7 @@ func parseDispatchDefaults(args []string) (*DispatchDefaults, []string) {
 	var permMode, inheritMode, model, provider, effort, agent, fallbackModel string
 	var allowBypass bool
 	var cont, resume, fork, noPersist bool
-	var resumeVal, sessionID string
+	var resumeVal, sessionID, resumeAt string
 	var maxTurns string
 	var maxTurnsSet bool
 	var allowedTools, disallowedTools []string
@@ -168,6 +169,8 @@ func parseDispatchDefaults(args []string) (*DispatchDefaults, []string) {
 			}
 		case key == "--session-id" && avail:
 			sessionID = next()
+		case key == "--resume-session-at" && avail:
+			resumeAt = next()
 		case key == "--max-turns" && avail:
 			maxTurns, maxTurnsSet = next(), true
 		case key == "--fork-session":
@@ -184,7 +187,7 @@ func parseDispatchDefaults(args []string) (*DispatchDefaults, []string) {
 		mode = inheritMode
 	}
 	if mode == "" && model == "" && provider == "" && effort == "" && agent == "" && fallbackModel == "" &&
-		!allowBypass && !cont && !resume && !fork && !noPersist && sessionID == "" && !maxTurnsSet &&
+		!allowBypass && !cont && !resume && !fork && !noPersist && sessionID == "" && resumeAt == "" && !maxTurnsSet &&
 		len(allowedTools) == 0 && len(disallowedTools) == 0 {
 		return nil, rest
 	}
@@ -204,6 +207,7 @@ func parseDispatchDefaults(args []string) (*DispatchDefaults, []string) {
 		SessionID:            sessionID,
 		ForkSession:          fork,
 		NoSessionPersistence: noPersist,
+		ResumeSessionAt:      resumeAt,
 		MaxTurns:             maxTurns,
 		MaxTurnsSet:          maxTurnsSet,
 	}

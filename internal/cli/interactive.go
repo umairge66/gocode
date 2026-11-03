@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -402,13 +403,22 @@ func runInteractiveSession(env *Env, s *interactiveSession, initialPrompt string
 	dialogs.setAutoCompact = rt.setAutoCompact
 	// /resume picker: list and load this project's saved sessions. The load seam
 	// resumes into the live conversation (honoring --fork-session).
+	// --resume-session-at applies to the launch-time resume only.
 	dialogs.store = rt.store
 	dialogs.resumeCwd = rt.storeCwd
+	var launchAt atomic.Pointer[string]
+	if at := s.print.resume.at; at != "" {
+		launchAt.Store(&at)
+	}
 	dialogs.doResume = func(id string) (sessionstore.Meta, bool) {
 		// A `/resume <id>` runs on a goroutine spawned by its (local) turn:
 		// let that turn finish tearing down before the history is replaced.
 		drv.waitIdle(5 * time.Second)
-		return rt.resumeInto(id, s.print.resume.fork)
+		at := ""
+		if p := launchAt.Swap(nil); p != nil {
+			at = *p
+		}
+		return rt.resumeIntoAt(id, s.print.resume.fork, at)
 	}
 	drv.dialogs = dialogs
 	// /resume and a model switch change the history / window outside a turn:
@@ -666,6 +676,8 @@ func runInteractiveSession(env *Env, s *interactiveSession, initialPrompt string
 		// that prompt runs in the resumed session.
 		if s.print.resume.wants() {
 			applyInteractiveLaunchResume(dialogs, s.print.resume)
+		} else if s.print.resume.at != "" {
+			prog.Send(ui.AppendSystemMsg{Text: "--resume-session-at needs --resume <session> or --continue; starting a new conversation."})
 		}
 		if initialPrompt != "" {
 			prog.Send(ui.AppendSystemMsg{Text: "gocode interactive session — type a message, esc to interrupt, ctrl+c twice to exit."})
@@ -1923,6 +1935,14 @@ func (d *turnDriver) renderLocal(eff *builtincmds.Effect) {
 				go d.dialogs.resume(eff.Args)
 				return
 			}
+		case "rename":
+			// /rename <title>: name the session (sessionmeta.go).
+			d.showOutput(renameCommand(d.conv, eff.Args))
+			return
+		case "tag":
+			// /tag [<name>|--remove <name>|--clear] (sessionmeta.go).
+			d.showOutput(tagCommand(d.conv, eff.Args))
+			return
 		case "rewind":
 			// /rewind (/checkpoint, /undo): pick an earlier prompt and restore the
 			// code and/or conversation to before it (interactive_rewind.go).

@@ -53,6 +53,7 @@ var RootProgram = Command{
 		{Spec: "-n, --name <name>"},
 		{Spec: "--session-id <uuid>"},
 		{Spec: "--fork-session"},
+		{Spec: "--resume-session-at <message-uuid>", Help: "With --resume/--continue: resume the conversation truncated at this message (its uuid, from `gocode sessions show`); with --fork-session the truncated history starts a new session"},
 		{Spec: "--no-session-persistence", Help: "Disable session persistence - sessions will not be saved to disk and cannot be resumed (only works with --print)"},
 		{Spec: "-w, --worktree [name]"},
 		{Spec: "--tmux"},

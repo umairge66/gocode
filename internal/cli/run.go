@@ -910,6 +910,10 @@ func printLocalResultText(env *Env, s *printSession, rt *sessionRuntime, res con
 			// -p: no picker and no persistence (the level applies to this
 			// session only).
 			return effortState{conv: conv, print: s, env: env}.command(res.Effect.Args, false)
+		case "rename":
+			return renameCommand(conv, res.Effect.Args)
+		case "tag":
+			return tagCommand(conv, res.Effect.Args)
 		case "mcp":
 			// Pass the gathered set so pending/skipped project servers are
 			// listed (not hidden). -p never prompts; approval guidance is
