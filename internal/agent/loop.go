@@ -91,6 +91,12 @@ type Loop struct {
 	// is the user-facing notice.
 	Budget func() error
 
+	// RunAtBudget, when set, picks the tool calls of the response that
+	// reached the spend cap that still run (all others are answered as not
+	// run). A subagent uses it for its SubagentHandback call, so the report
+	// is not lost (see budget.go).
+	RunAtBudget func(call ToolUse) bool
+
 	// Done, when set, is asked after each tool round; true ends the turn as
 	// completed right there, without another model request. A subagent uses it
 	// so its SubagentHandback call ends its run, as the hand-back contract
@@ -190,7 +196,8 @@ func (l *Loop) observe(m Message, resp *ModelResponse) {
 //     once the turn's results are recorded.
 //  8. After every model response the spend cap is checked (Budget): once it
 //     is reached the response is kept, its tool calls are answered as not
-//     run, and the run ends with ReasonMaxBudget. It is checked again after
+//     run (except those RunAtBudget accepts), and the run ends with
+//     ReasonMaxBudget (ReasonCompleted when such a call ended it, Done). It is checked again after
 //     a tool round, whose tools (a subagent) may have spent, so no further
 //     request is made once the cap is reached.
 //
@@ -264,7 +271,7 @@ func (l *Loop) Run(ctx context.Context, initial []Message) Result {
 		// stops before any of its tools run or another request is made.
 		if l.Budget != nil {
 			if spent := l.Budget(); spent != nil {
-				return l.budgetStop(messages, assistant, &resp, turnCount, spent)
+				return l.budgetStop(ctx, messages, assistant, &resp, turnCount, spent, badInputs, deferred)
 			}
 		}
 		toolUses := assistant.ToolUseBlocks()

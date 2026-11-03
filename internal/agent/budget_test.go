@@ -97,3 +97,44 @@ func TestLoopBudgetNotReached(t *testing.T) {
 		t.Fatalf("reason = %s", res.Reason)
 	}
 }
+
+// A call RunAtBudget accepts still runs when its response reaches the cap;
+// the others are answered as not run. When it ends the run (Done) the run
+// completes.
+func TestLoopRunAtBudgetRunsAcceptedCall(t *testing.T) {
+	handback := ModelResponse{Message: AssistantMessage(
+		ToolUseBlock("r1", "Read", json.RawMessage(`{}`)),
+		ToolUseBlock("h1", "SubagentHandback", json.RawMessage(`{"message":"report"}`)),
+	), StopReason: StopToolUse}
+	model := &scriptedModel{responses: []ModelResponse{handback}}
+	var ran []string
+	done := false
+	tools := dispatchFunc(func(_ context.Context, c ToolUse) (ToolResult, error) {
+		ran = append(ran, c.Name)
+		done = c.Name == "SubagentHandback"
+		return ToolResult{Content: "queued"}, nil
+	})
+	loop := &Loop{
+		Model:       model,
+		Tools:       tools,
+		Budget:      budgetAfterResponses(model, 1),
+		RunAtBudget: func(c ToolUse) bool { return c.Name == "SubagentHandback" },
+		Done:        func() bool { return done },
+	}
+	res := loop.Run(context.Background(), []Message{UserMessage(TextBlock("go"))})
+	if res.Reason != ReasonCompleted || model.calls != 1 || strings.Join(ran, ",") != "SubagentHandback" {
+		t.Fatalf("reason = %s (%v), model calls = %d, ran %v", res.Reason, res.Err, model.calls, ran)
+	}
+	last := res.Messages[len(res.Messages)-1]
+	if len(last.Content) != 2 || !strings.Contains(last.Content[0].Content, budgetToolNotRun) || last.Content[1].Content != "queued" || last.Content[1].IsError {
+		t.Fatalf("results = %+v", last.Content)
+	}
+
+	// Without Done ending the run it still stops at the cap.
+	model = &scriptedModel{responses: []ModelResponse{handback}}
+	ran, done = nil, false
+	loop.Model, loop.Budget, loop.Done = model, budgetAfterResponses(model, 1), nil
+	if res := loop.Run(context.Background(), []Message{UserMessage(TextBlock("go"))}); res.Reason != ReasonMaxBudget || len(ran) != 1 {
+		t.Fatalf("reason = %s, ran %v", res.Reason, ran)
+	}
+}

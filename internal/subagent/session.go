@@ -9,6 +9,7 @@ import (
 
 	"github.com/umairge66/gocode/internal/agent"
 	"github.com/umairge66/gocode/internal/inbox"
+	"github.com/umairge66/gocode/internal/protocol"
 )
 
 // Interactive (resumable) subagent engine.
@@ -76,10 +77,13 @@ type Session struct {
 	budget      func() error
 	capture     bool
 	summarize   ActivitySummarizer
+	stopHook    StopHook
 
 	// slot is the concurrency slot the spawn reserved for the first turn
-	// (taken over by it, then nil); a resumed turn takes a fresh one.
-	slot func()
+	// (taken over by it, then nil); a resumed turn takes a fresh one under
+	// maxConcurrent, like a spawn.
+	slot          func()
+	maxConcurrent int
 }
 
 // TaskID returns the session's task id.
@@ -131,8 +135,24 @@ func (s *Session) runTurn(ctx context.Context, input []agent.ContentBlock) (Repo
 	reg := s.registry
 	taskID := s.taskID
 	budget := s.budget
+	stopHook := s.stopHook
 	slot := s.slot
 	s.slot = nil
+	if slot == nil {
+		// A resumed turn (Resume, a SendMessage revive) runs under the same
+		// concurrent-subagent cap as a spawn.
+		var ok bool
+		if slot, ok = reg.TryTakeConcurrencySlot(s.maxConcurrent); !ok {
+			s.running = false
+			s.cancel = nil
+			if len(input) > 0 {
+				s.history = s.history[:len(s.history)-1]
+			}
+			s.mu.Unlock()
+			cancel()
+			return Report{}, nil, ConcurrentLimitError(s.maxConcurrent)
+		}
+	}
 	s.mu.Unlock()
 
 	defer cancel()
@@ -154,9 +174,6 @@ func (s *Session) runTurn(ctx context.Context, input []agent.ContentBlock) (Repo
 		who.Name = started.Name
 	}
 	release := slot
-	if release == nil {
-		release = reg.TakeConcurrencySlot()
-	}
 
 	// Live capture (optional, UI-agnostic): wrap the dispatcher so every tool
 	// call records a transcript entry and refreshes Task.Activity, and wrap the
@@ -191,6 +208,9 @@ func (s *Session) runTurn(ctx context.Context, input []agent.ContentBlock) (Repo
 		// chatty model kept the task running (and listed as running) long
 		// after its work was delivered.
 		Done: func() bool { return hc.delivered },
+		// The response that reaches the spend cap may be the hand-back: it
+		// still runs, so the report reaches the caller.
+		RunAtBudget: func(call agent.ToolUse) bool { return call.Name == string(protocol.CmdSubagentHandback) },
 	}
 
 	// The turn scope carries the subagent's own model caller to the tools it
@@ -198,7 +218,10 @@ func (s *Session) runTurn(ctx context.Context, input []agent.ContentBlock) (Repo
 	// undoes whatever they scoped to the turn once the loop returns. The
 	// agent's identity rides along so SendMessage knows who is sending.
 	scope := NewTurnScope(model)
-	res := loop.Run(agent.WithIdentity(WithTurnScope(turnCtx, scope), who), history)
+	loopCtx := agent.WithIdentity(WithTurnScope(turnCtx, scope), who)
+	res := loop.Run(loopCtx, history)
+	// SubagentStop: a blocking hook keeps the agent going (stophook.go).
+	res = s.runStopHooks(loopCtx, stopHook, loop, hc, res)
 	scope.End()
 	report := finalReport(hc, res)
 
@@ -402,6 +425,10 @@ func (m *SessionManager) Revive(ctx context.Context, taskID string, msg inbox.Ag
 	if err != nil {
 		return err
 	}
+	if err := s.reserveSlot(); err != nil {
+		m.retire(s)
+		return err
+	}
 	canSend := hasTool(s.toolSchemas, inbox.SendMessageToolName)
 	input := framedBlocks(append([]inbox.AgentMessage{msg}, m.reg.TakeMessages(taskID)...), false, canSend)
 	go m.runResumed(context.WithoutCancel(ctx), s, input)
@@ -416,18 +443,60 @@ func (m *SessionManager) ReviveStranded(ctx context.Context, taskID string) {
 	if err != nil {
 		return
 	}
+	if !m.reg.HasMessages(taskID) {
+		m.retire(s)
+		return
+	}
+	// At the concurrency cap the messages stay queued for the next resume.
+	if err := s.reserveSlot(); err != nil {
+		m.retire(s)
+		return
+	}
 	msgs := m.reg.TakeMessages(taskID)
 	if len(msgs) == 0 {
+		s.releaseSlot()
 		m.retire(s)
 		return
 	}
 	m.runResumed(ctx, s, framedBlocks(msgs, false, hasTool(s.toolSchemas, inbox.SendMessageToolName)))
 }
 
+// reserveSlot takes the concurrency slot the session's next turn runs in,
+// refusing with the cap error when the session already runs MaxConcurrent
+// subagents.
+func (s *Session) reserveSlot() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.slot != nil {
+		return nil
+	}
+	slot, ok := s.registry.TryTakeConcurrencySlot(s.maxConcurrent)
+	if !ok {
+		return ConcurrentLimitError(s.maxConcurrent)
+	}
+	s.slot = slot
+	return nil
+}
+
+// releaseSlot frees a reserved slot no turn took over.
+func (s *Session) releaseSlot() {
+	s.mu.Lock()
+	slot := s.slot
+	s.slot = nil
+	s.mu.Unlock()
+	if slot != nil {
+		slot()
+	}
+}
+
 // runResumed runs one resumed turn and reports it through OnResumeDone.
 func (m *SessionManager) runResumed(ctx context.Context, s *Session, input []agent.ContentBlock) {
 	_, task, err := s.runTurn(ctx, input)
 	if err != nil || task == nil {
+		s.releaseSlot()
+		if !s.Running() {
+			m.retire(s)
+		}
 		return
 	}
 	if m.OnResumeDone != nil {

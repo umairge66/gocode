@@ -150,11 +150,11 @@ func TestSubagentStartPayloadAndContext(t *testing.T) {
 func TestUnfiredEventWarning(t *testing.T) {
 	h := New(Options{Settings: []SettingsLayer{
 		layer(settingspolicy.SourceProject, hooksMap("PostToolBatch", "", "a.sh")),
-		layer(settingspolicy.SourceUser, hooksMap("SubagentStop", "", "b.sh")),
+		layer(settingspolicy.SourceUser, hooksMap("Elicitation", "", "b.sh")),
 		layer(settingspolicy.SourceLocal, hooksMap("PreToolUse", "", "c.sh")),
 	}})
 	w := h.LoadWarnings()
-	if len(w) != 1 || !strings.Contains(w[0], "PostToolBatch, SubagentStop") || strings.Contains(w[0], "PreToolUse") {
+	if len(w) != 1 || !strings.Contains(w[0], "Elicitation, PostToolBatch") || strings.Contains(w[0], "PreToolUse") {
 		t.Fatalf("warnings = %q", w)
 	}
 	if len(h.LoadErrors()) != 0 {

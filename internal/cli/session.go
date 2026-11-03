@@ -763,6 +763,7 @@ func (r *sessionRuntime) wireAgentTools(env *Env, s *printSession, caller agent.
 	// SubagentStart hooks run last, for a spawn no check refused.
 	if r.hooks != nil {
 		at.SpawnHooks = append(at.SpawnHooks, subagentStartHook(r.hooks))
+		at.StopHook = subagentStopHook(r.hooks)
 	}
 	wts := agenttool.NewGitWorktrees()
 	wts.Cwd = func() string { return paths.cwd }
@@ -995,17 +996,23 @@ func (r *sessionRuntime) childDispatcherFrom(scopes []toolrun.InheritedScope, ro
 // subagentHooks returns the Agent tool's ChildHooks: each subagent gets its
 // own path-scoped rules / nested-memory tracker (rooted at its cwd, seeded with
 // the startup memory it carries), so a rule is injected into the subagent when
-// IT reads, edits or writes a matching file — once per agent.
+// IT reads, edits or writes a matching file — once per agent. Its file touches
+// also activate the session's conditional (`paths:`) skills, whose registry
+// the main agent shares.
 func (r *sessionRuntime) subagentHooks(sessionCwd string) func(subagent.AgentType, string) agent.PermissionHook {
 	return func(a subagent.AgentType, cwd string) agent.PermissionHook {
 		n := r.memory.nested.ForAgent(cwd, !a.OmitProjectMemory)
-		if n == nil {
+		var reg *skills.Registry
+		if r.conv != nil {
+			reg = r.conv.Skills
+		}
+		if n == nil && reg == nil {
 			return nil
 		}
 		if cwd == "" {
 			cwd = sessionCwd
 		}
-		return withNestedMemory(nil, n, cwd)
+		return withFileContext(nil, n, reg, cwd)
 	}
 }
 

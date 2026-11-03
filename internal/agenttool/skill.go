@@ -261,6 +261,10 @@ func (s *SkillTool) Execute(ctx context.Context, input json.RawMessage) (string,
 // of a skill typed as a slash command.
 var ErrNotUserInvocable = errors.New("skill not user-invocable")
 
+// ErrSkillDenied matches (errors.Is) the refusal of a skill typed as a slash
+// command while a Skill(<name>) deny rule covers it.
+var ErrSkillDenied = errors.New("skill denied by a permission rule")
+
 // Invoke validates and loads a skill as the model would invoke it.
 func (s *SkillTool) Invoke(ctx context.Context, name, args string) (SkillInvocation, error) {
 	return s.invoke(ctx, name, args, false)
@@ -270,6 +274,12 @@ func (s *SkillTool) Invoke(ctx context.Context, name, args string) (SkillInvocat
 // loading, scoping and inline-or-fork execution as the model's Skill call, but
 // disable-model-invocation does not apply (it only hides the skill from the
 // model) and a `user-invocable: false` skill is refused.
+//
+// A Skill(<name>) deny rule (Registry.Denied) refuses the typed skill too.
+// Deny rules are the settings' (often managed policy's) word that a skill
+// must not run, and Claude Code applies them to the skill, not only to the
+// model's tool call: a typed inline skill's content still becomes a model
+// turn that acts on it, so letting `/name` through would bypass the rule.
 func (s *SkillTool) InvokeAsUser(ctx context.Context, name, args string) (SkillInvocation, error) {
 	return s.invoke(ctx, name, args, true)
 }
@@ -296,6 +306,12 @@ func (s *SkillTool) invoke(ctx context.Context, name, args string, byUser bool) 
 		return SkillInvocation{}, &toolError{
 			msg:  fmt.Sprintf("Skill %s can only be invoked by the model (user-invocable: false).", cmd),
 			kind: ErrNotUserInvocable,
+		}
+	}
+	if byUser && s.Registry.Denied != nil && (s.Registry.Denied(d.Name) || s.Registry.Denied(cmd)) {
+		return SkillInvocation{}, &toolError{
+			msg:  fmt.Sprintf("Skill /%s is blocked by a permission deny rule (Skill(%s)). Deny rules apply to skills you type as well as to the model's Skill calls.", cmd, d.Name),
+			kind: ErrSkillDenied,
 		}
 	}
 	if d.DisableModelInvocation && !byUser {

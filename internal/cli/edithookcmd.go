@@ -41,7 +41,7 @@ const editHookSessionRefusal = "This setting cannot be changed from an editor st
 // (hooks.FiredEvents, in lifecycle order) first, then the events a settings
 // file may name that gocode never fires. An edit for one of the latter is
 // applied with a warning (hookEventWarning).
-var hookEvents = append(firedHookEventNames(), "PostToolBatch", "UserPromptExpansion", "StopFailure", "SubagentStop", "PostCompact", "PreModelSwitch", "PostModelSwitch", "PermissionRequest", "Setup", "TeammateIdle", "TaskCreated", "TaskCompleted", "Elicitation", "ElicitationResult", "ConfigChange", "WorktreeCreate", "WorktreeRemove", "InstructionsLoaded", "CwdChanged", "FileChanged", "DirectoryAdded", "MessageDisplay")
+var hookEvents = append(firedHookEventNames(), "PostToolBatch", "UserPromptExpansion", "StopFailure", "PostCompact", "PreModelSwitch", "PostModelSwitch", "PermissionRequest", "Setup", "TeammateIdle", "TaskCreated", "TaskCompleted", "Elicitation", "ElicitationResult", "ConfigChange", "WorktreeCreate", "WorktreeRemove", "InstructionsLoaded", "CwdChanged", "FileChanged", "DirectoryAdded", "MessageDisplay")
 
 func firedHookEventNames() []string {
 	var out []string

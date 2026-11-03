@@ -187,6 +187,11 @@ type Spawner struct {
 	Capture   bool
 	Summarize ActivitySummarizer
 
+	// StopHook runs when a subagent's turn finishes normally (the SubagentStop
+	// hooks); a block with a reason keeps the subagent going with the reason
+	// as its feedback (stophook.go). Optional.
+	StopHook StopHook
+
 	// Sessions is the live-session manager that keeps each spawned subagent's
 	// runtime alive while it remains ACTIVE (running or Stopped) so it can be
 	// Resumed/Stopped/Closed out of band by task id. Optional: when nil a
@@ -301,8 +306,11 @@ func (s *Spawner) Spawn(ctx context.Context, req SpawnRequest, model agent.Model
 		budget:      s.Budget,
 		capture:     s.Capture,
 		summarize:   s.Summarize,
+		stopHook:    s.StopHook,
 		history:     []agent.Message{firstMessage(req)},
 		slot:        slot,
+		// Resumed turns take their slot under the same cap.
+		maxConcurrent: s.maxConcurrent(),
 	}
 	mgr.add(sess)
 

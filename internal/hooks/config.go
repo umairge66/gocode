@@ -28,7 +28,7 @@ const (
 
 // firedEvents are the events gocode actually runs hooks for, in lifecycle
 // order. A hook configured for any other event name is loaded but never runs
-// (SubagentStop included: a subagent's loop runs no turn-end hooks).
+// (PostToolBatch, PermissionRequest, Elicitation, ...).
 var firedEvents = []Event{
 	EventSessionStart,
 	EventUserPromptSubmit,
@@ -38,6 +38,7 @@ var firedEvents = []Event{
 	EventPostToolUseFailure,
 	EventNotification,
 	EventSubagentStart,
+	EventSubagentStop,
 	EventPreCompact,
 	EventStop,
 	EventSessionEnd,

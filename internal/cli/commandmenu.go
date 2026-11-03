@@ -85,9 +85,12 @@ func commandSuggestions(conv *conversation.Conversation) []ui.Suggestion {
 	}
 
 	// User-invocable skills (typed as /name; disable-model-invocation does
-	// not hide them from the person).
+	// not hide them from the person, a Skill(<name>) deny rule does).
 	if conv.Skills != nil && conv.UserSkills != nil {
 		for _, d := range conv.Skills.List() {
+			if conv.Skills.Denied != nil && conv.Skills.Denied(d.Name) {
+				continue
+			}
 			if _, ok := conv.UserSkill(d.Name); ok {
 				add(d.Name, d.Description, "skill")
 			}

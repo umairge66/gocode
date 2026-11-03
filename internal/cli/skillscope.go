@@ -317,6 +317,10 @@ func (r *sessionRuntime) bindSpawnScopes(at *agenttool.AgentTool, d *toolrun.Dis
 		return r.scopedChildDispatcherFrom(d.ScopesForChild(), root, depth, a, sc, toolrun.WithWorkingDir(cwd))
 	}
 	at.ToolNames = withoutDeniedTools(at.ToolNames, d.ScopesForChild())
+	// The live MCP tools a spawn's roster takes in go through the same filter.
+	if live := at.MCPToolNames; live != nil {
+		at.MCPToolNames = func() []string { return withoutDeniedTools(live(), d.ScopesForChild()) }
+	}
 }
 
 // withoutDeniedTools drops from names every tool a deny rule in scopes names

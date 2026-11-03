@@ -42,8 +42,8 @@
 // shape, tool-name matching, hook execution and the exit-code + JSON decision
 // model, for the lifecycle event set (PreToolUse, PostToolUse,
 // PostToolUseFailure, PermissionDenied, UserPromptSubmit, Notification, Stop,
-// SubagentStop, SubagentStart, SessionStart, SessionEnd, PreCompact; all but
-// SubagentStop are fired, see FiredEvents). All four
+// SubagentStop, SubagentStart, SessionStart, SessionEnd, PreCompact; all are
+// fired, see FiredEvents). All four
 // user-configurable hook types are modelled:
 //
 //   - command — a shell command: stdin JSON in, stdout JSON out, context

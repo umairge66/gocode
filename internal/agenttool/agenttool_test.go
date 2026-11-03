@@ -111,7 +111,7 @@ func TestAgentBuiltinGeneralPurpose(t *testing.T) {
 	if !strings.Contains(out, "[Subagent hand-back]") || !strings.Contains(out, "  the report") {
 		t.Fatalf("missing framed report: %q", out)
 	}
-	if !strings.Contains(out, "agentId: task_1") || !strings.Contains(out, "<usage>tool_uses: 0") {
+	if !strings.Contains(out, "agentId: task_1") || !strings.Contains(out, "<usage>total_tokens: 0\ntool_uses: 0") {
 		t.Fatalf("missing agentId/usage trailer: %q", out)
 	}
 	if h.models[0] != "parent-model" {
