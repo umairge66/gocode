@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/umairge66/gocode/internal/agent"
 	"github.com/umairge66/gocode/internal/pathguard"
 	"github.com/umairge66/gocode/internal/protocol"
 	"github.com/umairge66/gocode/internal/toolreg"
@@ -149,9 +150,15 @@ func TestPlanModeBlocksEditsAndBash(t *testing.T) {
 	}
 	// Read-only Bash runs in plan mode (the per-command
 	// isReadOnly lets plan mode explore); anything that could write is held.
+	// The decision is observed through OnPermissionDenied rather than the
+	// output text: git status lists whatever files the working tree holds,
+	// and a file name may well contain "permission".
+	var held int
+	d.OnPermissionDenied = func(agent.ToolUse) { held++ }
 	for _, cmd := range []string{"ls " + shProj, "git status", "grep -r needle " + shProj, "cat " + shTarget} {
+		held = 0
 		res := dispatch(t, d, string(protocol.ToolBash), map[string]any{"command": cmd})
-		if strings.Contains(res.Content, "plan mode") || strings.Contains(res.Content, "permission") {
+		if held > 0 {
 			t.Errorf("plan mode held read-only %q: %+v", cmd, res)
 		}
 		if cmd != "git status" && res.IsError { // git status may fail outside a repository
@@ -167,8 +174,9 @@ func TestPlanModeBlocksEditsAndBash(t *testing.T) {
 		"ls $(rm -f " + shTarget + ")",
 		"cat `rm -f " + shTarget + "`",
 	} {
+		held = 0
 		res := dispatch(t, d, string(protocol.ToolBash), map[string]any{"command": cmd})
-		if !res.IsError || !strings.Contains(res.Content, "plan mode") {
+		if !res.IsError || held == 0 || !strings.Contains(res.Content, "plan mode") {
 			t.Errorf("plan mode did not hold %q: %+v", cmd, res)
 		}
 	}

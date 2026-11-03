@@ -285,7 +285,7 @@ func runHeadless(env *Env, s *printSession, o printOutputOptions, schema map[str
 		// Background commands still running after the last turn are awaited;
 		// each completion notification runs one more turn, whose result
 		// becomes the final one.
-		if last != nil && !last.IsError && ctx.Err() == nil {
+		if last != nil && !last.IsError && last.DeferredToolUse == nil && ctx.Err() == nil {
 			rt.awaitBackgroundShells(ctx, env, func(ctx context.Context) bool {
 				ran := false
 				r := h.turnWith(ctx, func(ctx context.Context) (conversation.Result, error) {
@@ -510,6 +510,10 @@ func (h *headlessRun) turnWith(ctx context.Context, submit func(context.Context)
 		// The repeated-tool-call guard ended the run: an error naming the
 		// tool and the count.
 		r.SetError(headless.SubtypeErrorDuringExecution, repeatedCallsReason(res.Err))
+	case res.Reason == agent.ReasonToolDeferred || res.Reason == agent.ReasonToolDeferredUnavailable:
+		// A PreToolUse hook deferred a tool call: the turn ended without
+		// it, and a resume runs it (deferred.go in internal/conversation).
+		deferredResult(&r, res)
 	case res.Err != nil:
 		// A failed model request still ends the turn normally: the error text
 		// is the result, flagged as an error.

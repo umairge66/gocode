@@ -75,6 +75,15 @@ func TestSettingSources_GatesSessionInputs(t *testing.T) {
 			_, ok = rt.conv.Agents.Lookup("pagent")
 			check("project agent", ok, c.project)
 
+			// /memory offers the memory files the session reads.
+			offered := map[string]bool{}
+			for _, f := range memoryFiles(env) {
+				offered[filepath.Clean(f.path)] = true
+			}
+			check("/memory user file", offered[filepath.Join(cfgDir, "gocode.md")], c.user)
+			check("/memory project file", offered[filepath.Join(cwd, "gocode.md")], c.project)
+			check("/memory local file", offered[filepath.Join(cwd, "gocode.local.md")], c.local)
+
 			// The settings files follow the same selection; --settings and
 			// policy always load.
 			got := map[settingspolicy.Source]bool{}

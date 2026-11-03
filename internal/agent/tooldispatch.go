@@ -32,6 +32,9 @@ type ToolResult struct {
 	// PermissionDenied marks an is_error result for a call the permission
 	// check refused: the tool never ran, so it is not a tool failure.
 	PermissionDenied bool
+	// Deferred reports that a PreToolUse hook deferred the call: it did not
+	// run and has no result yet. A dispatcher sets it only when CanDefer.
+	Deferred bool
 }
 
 // ToolDispatcher runs one tool by name with the given JSON input and returns
@@ -212,6 +215,14 @@ func (l *Loop) runOne(ctx context.Context, call ToolUse) ContentBlock {
 			fh.PostToolUseFailure(ctx, call, ToolResult{Content: msg, IsError: true})
 		}
 		return ToolResultBlock(call.ID, msg, true)
+	}
+
+	if result.Deferred {
+		if CanDefer(ctx) {
+			l.hold(call)
+			return ContentBlock{}
+		}
+		return ToolResultBlock(call.ID, deferredNotPossible, true)
 	}
 
 	if l.Hooks != nil && !result.IsError {

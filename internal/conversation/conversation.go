@@ -339,6 +339,9 @@ type Conversation struct {
 	pendingBoundary *compaction.BoundaryMarker
 	// persistedCost marks the ledger totals last written to Store (cost.go).
 	persistedCost costMark
+	// deferred is the tool call a PreToolUse hook deferred, still unanswered
+	// at the end of History (deferred.go).
+	deferred *agent.ToolUse
 
 	// OnToolResultsCleared, when set, is told the file paths of Read results a
 	// microcompaction just cleared, so the host can forget their read state (the
@@ -645,6 +648,10 @@ type Result struct {
 	// Notices are user-facing hook messages (systemMessage, hook failures)
 	// produced while handling this input.
 	Notices []string
+	// Deferred is the tool call a PreToolUse hook deferred (Reason
+	// agent.ReasonToolDeferred or agent.ReasonToolDeferredUnavailable); it is
+	// still pending (deferred.go).
+	Deferred *agent.ToolUse
 }
 
 // ErrUnknownCommand is returned when a slash command does not resolve to any
@@ -661,6 +668,13 @@ func (e *ErrUnknownCommand) Error() string {
 // compaction check, inject the skills listing into the turn's context, append
 // the user turn, and drive the agent loop.
 func (c *Conversation) Submit(ctx context.Context, userInput string) (Result, error) {
+	// A resume with no prompt runs the call a hook deferred (deferred.go).
+	if strings.TrimSpace(userInput) == "" {
+		if _, ok := c.DeferredToolUse(); ok {
+			res, _, err := c.ResumeDeferred(ctx)
+			return res, err
+		}
+	}
 	// --- (0) builtin slash command (BEFORE expansion) ------------------------
 	if c.Builtins != nil && commands.IsSlashCommand(userInput) {
 		if eff, ok := c.Builtins.Dispatch(userInput); ok {
@@ -751,17 +765,35 @@ func (c *Conversation) runModelTurnBlocks(ctx context.Context, content []agent.C
 	// Compaction tracking is per query.
 	c.tracking = compactTracking{}
 	c.beginFallbackTurn()
-	// --- (b) compaction check (BEFORE the turn) ------------------------------
-	compacted, err := c.maybeCompact(ctx)
-	if err != nil {
-		return Result{History: c.History}, err
+	// --- (a2) a tool call a hook deferred is settled first: its result leads
+	//     this user turn. The history ends with that call unanswered until
+	//     then, so the pre-turn compaction is skipped this once.
+	var lead []agent.ContentBlock
+	compacted := false
+	if r, ok := c.settleDeferred(ctx, false); ok {
+		lead = r.Blocks()
+		if r.Aborted != nil {
+			// The call's prompt was rejected: that ends the turn, as it
+			// would mid-turn; the prompt is not sent.
+			c.History = append(c.History, agent.UserMessage(lead...))
+			c.persistHistory()
+			return Result{Kind: ResultModel, Reason: agent.ReasonAborted, History: c.History, Err: r.Aborted,
+				Notices: c.takeTurnNotices()}, nil
+		}
+	} else {
+		// --- (b) compaction check (BEFORE the turn) --------------------------
+		var err error
+		compacted, err = c.maybeCompact(ctx)
+		if err != nil {
+			return Result{History: c.History}, err
+		}
 	}
 
 	// --- (c) inject the skills listing into the turn context -----------------
 	system, systemContext := c.turnSystem()
 
 	// --- (d) append the user turn and run the agent loop ---------------------
-	blocks := append([]agent.ContentBlock(nil), content...)
+	blocks := append(lead, content...)
 	for _, extra := range append(append(c.takeContext(), extraContext...), c.turnReminders()...) {
 		blocks = append(blocks, agent.TextBlock(extra))
 	}
@@ -789,6 +821,7 @@ func (c *Conversation) runModelTurnBlocks(ctx context.Context, content []agent.C
 		Budget:        c.BudgetExceeded,
 		OnMessage:     c.OnMessage,
 		Done:          c.TurnDone,
+		AllowDefer:    true,
 	}
 	// Thread the optional streaming callbacks into the loop. Nil callbacks leave
 	// the loop's StreamHandler nil, so the turn behaves exactly as before.
@@ -798,6 +831,7 @@ func (c *Conversation) runModelTurnBlocks(ctx context.Context, content []agent.C
 	c.History = res.Messages
 	// Persist the assistant + tool-result turns the loop produced.
 	c.persistHistory()
+	deferNotice := c.noteDeferred(res)
 
 	assistant := turnAssistant(res.Messages, turnStart, emergency)
 	return Result{
@@ -809,7 +843,8 @@ func (c *Conversation) runModelTurnBlocks(ctx context.Context, content []agent.C
 		TurnCount:     res.TurnCount,
 		Compacted:     compacted,
 		Err:           res.Err,
-		Notices:       c.takeTurnNotices(),
+		Notices:       withNotice(c.takeTurnNotices(), deferNotice),
+		Deferred:      res.Deferred,
 	}, nil
 }
 
@@ -912,6 +947,11 @@ func (c *Conversation) ResumeWithQueuedContext(ctx context.Context) (res Result,
 	if !c.hasPendingContext() {
 		return Result{History: c.History}, false, nil
 	}
+	// A deferred tool call waits for the user (or a resume): the queued
+	// context stays queued and rides the turn that settles it.
+	if _, ok := c.DeferredToolUse(); ok {
+		return Result{History: c.History}, false, nil
+	}
 	defer c.endTurn()
 	c.tracking = compactTracking{}
 	c.beginFallbackTurn()
@@ -956,11 +996,13 @@ func (c *Conversation) ResumeWithQueuedContext(ctx context.Context) (res Result,
 		Budget:        c.BudgetExceeded,
 		OnMessage:     c.OnMessage,
 		Done:          c.TurnDone,
+		AllowDefer:    true,
 	}
 	loop.StreamHandler = c.streamHandler()
 	r, emergency := c.runLoopRecovering(ctx, &loop)
 	c.History = r.Messages
 	c.persistHistory()
+	deferNotice := c.noteDeferred(r)
 
 	assistant := turnAssistant(r.Messages, turnStart, emergency)
 	return Result{
@@ -972,7 +1014,8 @@ func (c *Conversation) ResumeWithQueuedContext(ctx context.Context) (res Result,
 		TurnCount:     r.TurnCount,
 		Compacted:     compacted,
 		Err:           r.Err,
-		Notices:       c.takeTurnNotices(),
+		Notices:       withNotice(c.takeTurnNotices(), deferNotice),
+		Deferred:      r.Deferred,
 	}, true, nil
 }
 

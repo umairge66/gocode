@@ -215,6 +215,9 @@ type printSession struct {
 	// threaded from the dispatch defaults. It drives session persistence and
 	// startup resume for both -p and the interactive REPL.
 	resume resumeIntent
+	// deferredOnly: the -p run has no prompt; it resumes a session to run
+	// the tool call a hook deferred there (deferredcall.go).
+	deferredOnly bool
 
 	// mcpTransport, when set, builds every MCP server transport (tests inject
 	// in-memory servers); nil uses the real stdio/HTTP transports.
@@ -696,9 +699,15 @@ func runPrint(env *Env, d *DispatchDefaults, rest []string) int {
 		return runHeadlessStream(env, newPrintSession(env, d), o, schema, env.Stdin)
 	}
 	prompt := promptFromArgs(env, rest)
+	s := newPrintSession(env, d)
 	if prompt == "" {
-		fmt.Fprintln(env.Stderr, "gocode -p: no prompt provided (pass a prompt argument or pipe one on stdin).")
-		return 1
+		// A resume needs no prompt when the session holds a deferred tool
+		// call to run (checked once the session is loaded).
+		if !s.resume.wants() {
+			fmt.Fprintln(env.Stderr, "gocode -p: no prompt provided (pass a prompt argument or pipe one on stdin).")
+			return 1
+		}
+		s.deferredOnly = true
 	}
 	switch o.format() {
 	case headless.FormatStreamJSON:
@@ -706,14 +715,14 @@ func runPrint(env *Env, d *DispatchDefaults, rest []string) int {
 			fmt.Fprintln(env.Stderr, headless.ErrStreamJSONNeedsVerbose)
 			return 1
 		}
-		return runHeadlessPrint(env, newPrintSession(env, d), o, schema, singlePrompt(prompt))
+		return runHeadlessPrint(env, s, o, schema, singlePrompt(prompt))
 	case headless.FormatJSON:
-		return runHeadlessPrint(env, newPrintSession(env, d), o, schema, singlePrompt(prompt))
+		return runHeadlessPrint(env, s, o, schema, singlePrompt(prompt))
 	}
 	if schema != nil {
-		return runHeadlessPrint(env, newPrintSession(env, d), o, schema, singlePrompt(prompt))
+		return runHeadlessPrint(env, s, o, schema, singlePrompt(prompt))
 	}
-	return runPrintSession(env, newPrintSession(env, d), prompt)
+	return runPrintSession(env, s, prompt)
 }
 
 // promptFromArgs returns the print prompt: the first positional token, or, when
@@ -782,6 +791,12 @@ func runPrintSession(env *Env, s *printSession, prompt string) int {
 			// each completion notification runs one more turn, and the last
 			// turn's reply is the one printed.
 			final, code := res.AssistantText, 0
+			if turnDeferred(res) {
+				// The turn ended on a deferred tool call: nothing more runs
+				// until the session is resumed.
+				fmt.Fprintln(env.Stdout, final)
+				return 0
+			}
 			rt.awaitBackgroundShells(ctx, env, func(ctx context.Context) bool {
 				r2, ran, err := conv.ResumeWithQueuedContext(ctx)
 				for _, n := range r2.Notices {
@@ -895,6 +910,10 @@ func withPrintSession(env *Env, s *printSession, safeStdout bool, body func(ctx 
 	// so the prompt runs in its context (and appends to it).
 	if n := rt.applyPrintResume(s.resume); n != "" {
 		fmt.Fprintln(env.Stderr, "gocode -p: "+n)
+	}
+	if _, ok := rt.conv.DeferredToolUse(); s.deferredOnly && !ok {
+		fmt.Fprintln(env.Stderr, noPromptToResume)
+		return 1
 	}
 	return body(ctx, env, rt)
 }

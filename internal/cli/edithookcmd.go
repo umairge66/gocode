@@ -24,8 +24,12 @@ import (
 //	 "event":"<hook event>", "matcher":"<matcher>", "hook":{…},
 //	 "target":{"event":…, "matcher":…, "hook":{…}}}   // replace / remove
 //
-// Every settings source is read (there is no --setting-sources gate), and
-// there is one local settings file per project.
+// The edit goes to the named source's file whatever --setting-sources
+// selects: the selection decides which sources' hooks a session loads
+// (settingsload.EffectiveSources skips the others), not which settings file
+// an editor may change. A source with no file in this context (a diskless
+// config, no project directory) is refused as source_disabled. There is one
+// local settings file per project.
 
 const (
 	editHookMaxStdin   = 524288
@@ -178,7 +182,7 @@ func runHookEdit(env *Env, edit any) editHookReply {
 	}
 	path, ok := ctx.PathForSource(settingspolicy.Source(req.Source))
 	if !ok {
-		return editHookFail("source_disabled", fmt.Sprintf("edit_hook: the %s source is disabled for this session (--setting-sources)", req.Source), nil)
+		return editHookFail("source_disabled", fmt.Sprintf("edit_hook: the %s source has no settings file here (no config or project directory)", req.Source), nil)
 	}
 	current := settingsload.LoadFile(fsys, path)
 	switch current.LoadState {

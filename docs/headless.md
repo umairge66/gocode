@@ -40,7 +40,7 @@ Every record is one line of JSON with a `type`; every record except
 | `{"type":"system","subtype":"api_retry","attempt":1,"max_retries":10,"retry_delay_ms":1200,"error_status":529,"error":"…"}` | A model request failed with a transient error and is retried after the delay. `error_status` is null for a connection error. |
 | `{"type":"system","subtype":"task_started","task_id":"…","task_type":"local_bash"\|"local_agent","description":"…","tool_use_id":"…","is_backgrounded":true}` | A background command (`run_in_background`) or a subagent started. A subagent also carries `spawn_depth` and `parent_task_id` when nested. |
 | `{"type":"system","subtype":"task_notification","task_id":"…","status":"completed"\|"failed"\|"stopped","output_file":"…","summary":"…"}` | That task ended. |
-| `{"type":"result","subtype":"success"\|"error_max_turns"\|"error_during_execution"\|"error_max_structured_output_retries",…}` | The end of each turn: `result` (or `errors`), `is_error`, `num_turns`, `duration_ms`, `usage`, `modelUsage`, `total_cost_usd`, `permission_denials`, `stop_reason`. |
+| `{"type":"result","subtype":"success"\|"error_max_turns"\|"error_max_budget_usd"\|"error_during_execution"\|"error_max_structured_output_retries",…}` | The end of each turn: `result` (or `errors`), `is_error`, `num_turns`, `duration_ms`, `usage`, `modelUsage`, `total_cost_usd`, `permission_denials`, `stop_reason`. |
 
 A subagent's own messages (its `assistant` records and the `user` records of
 its tool results) are forwarded too, as they happen, with
@@ -49,6 +49,16 @@ nested subagent's records name the nested Agent call). A subagent resumed by
 a SendMessage keeps the id of its original Agent call. The session's own
 records carry `parent_tool_use_id: null`. The subagent's prompt itself is
 not repeated as a record; it is the Agent call's input.
+
+When a PreToolUse hook returns `permissionDecision: "defer"`, the turn ends
+without running the call: the result is a `success` with `stop_reason` and
+`terminal_reason` `"tool_deferred"` and the call in
+`deferred_tool_use: {"id","name","input"}`. `gocode -p --resume <session>`
+(or `-c`), with no prompt, asks the hooks and permissions again and runs the
+call; the conversation continues from its result. A resume with a prompt
+settles the call first (a hook that defers again then gets an ask). If the
+tool is gone, the result has `stop_reason` `"tool_deferred_unavailable"`,
+`is_error: true`, and the call stays pending.
 
 ### Partial messages
 
