@@ -71,6 +71,15 @@ type Config struct {
 	// <ManagedDir>/gocode.md is loaded first, as the Managed tier. Empty skips it.
 	ManagedDir string
 
+	// SkipUser / SkipProject / SkipLocal leave a tier out (the
+	// --setting-sources selection): SkipUser the <ConfigDir> memory and rules,
+	// SkipProject the gocode.md, .gocode/gocode.md and .gocode/rules files of
+	// the project walk and of nested directories, SkipLocal the gocode.local.md
+	// files. The zero value loads every tier.
+	SkipUser    bool
+	SkipProject bool
+	SkipLocal   bool
+
 	// FS is the injected filesystem. When nil, fsfacade.OSFS{} is used.
 	FS fsfacade.FS
 
@@ -181,17 +190,21 @@ func Load(cfg Config) Result {
 	}
 
 	// 2. User.
-	if cfg.ConfigDir != "" {
+	if cfg.ConfigDir != "" && !cfg.SkipUser {
 		l.loadTop(join(cfg.ConfigDir, userFileName), KindUser)
 		l.keep(l.loadRulesDir(userRulesDir(cfg.ConfigDir), KindUser, false))
 	}
 
 	// 3. Project walk: outermost ancestor first, cwd last.
 	for _, dir := range ancestorsOutermostFirst(cfg.Cwd) {
-		l.loadTop(join(dir, projectFileName), KindProject)
-		l.loadTop(join(dir, nestedFileName), KindProject)
-		l.keep(l.loadRulesDir(projectRulesDir(dir), KindProject, false))
-		l.loadTop(join(dir, localFileName), KindLocal)
+		if !cfg.SkipProject {
+			l.loadTop(join(dir, projectFileName), KindProject)
+			l.loadTop(join(dir, nestedFileName), KindProject)
+			l.keep(l.loadRulesDir(projectRulesDir(dir), KindProject, false))
+		}
+		if !cfg.SkipLocal {
+			l.loadTop(join(dir, localFileName), KindLocal)
+		}
 	}
 
 	maxTotal := cfg.MaxTotalBytes

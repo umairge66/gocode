@@ -558,7 +558,17 @@ func buildSession(ctx context.Context, env *Env, s *printSession, caller agent.M
 	if s != nil && s.MaxTurns > 0 {
 		conv.MaxTurns = s.MaxTurns
 	}
-	conv.Skills = skills.Load(fsys, skills.LoadConfig{UserDir: paths.configDir, Home: paths.home, Cwd: paths.cwd, ManagedRoot: managedSkillsRoot(env)})
+	// --setting-sources gates the user and project skills, commands and
+	// agents (settingsources.go).
+	scoped := sourceScopedPaths(env, paths)
+	// Project skills come from cwd up to the git root.
+	skillRoot := ""
+	if scoped.projectCwd != "" {
+		skillRoot = findGitRoot(scoped.projectCwd)
+	}
+	conv.Skills = skills.Load(fsys, skills.LoadConfig{UserDir: scoped.configDir, Home: scoped.home, Cwd: scoped.projectCwd, ProjectRoot: skillRoot, WalkStop: paths.home, ManagedRoot: managedSkillsRoot(env)})
+	// A skill the Skill(<name>) deny rules refuse is not listed.
+	conv.Skills.Denied = skillDeniedFunc(r.dispatcher)
 	// Skill/command allowed-tools under allowManagedPermissionRulesOnly
 	// (toolgrants.go); the -p path prints a stderr line.
 	if s.grants == nil {
@@ -571,13 +581,16 @@ func buildSession(ctx context.Context, env *Env, s *printSession, caller agent.M
 	s.grants.untrustedProject = sctx.UntrustedProject
 	// Custom slash commands from the user's and the project's commands dirs
 	// (plugin commands are merged in later by LoadPlugins).
-	conv.Commands = loadCustomCommands(conv.Commands, paths.configDir, paths.home, paths.cwd)
+	conv.Commands = loadCustomCommands(conv.Commands, scoped.configDir, scoped.home, scoped.commandsCwd(paths))
 	conv.Agents = agentsdef.Load(fsys, agentsdef.LoadOptions{
-		UserAgentsDir: userAgentsDir(paths.configDir),
-		ProjectDir:    paths.cwd,
+		UserAgentsDir: userAgentsDir(scoped.configDir),
+		ProjectDir:    scoped.projectCwd,
+		// --agents (promptflags.go), at the flag tier.
+		AgentsJSON: agentsFlagJSON(s),
 		// An untrusted folder's agents cannot loosen the permission mode.
 		IgnoreProjectPermissionMode: sctx.UntrustedProject,
 	})
+	r.notices = append(r.notices, agentsFlagProblems(s)...)
 	// System prompt: the identity + behavior guidance + runtime env block, with
 	// the loaded gocode.md project memory appended. It flows through turnSystem
 	// (which still appends the skills listing after) to the loop and
@@ -599,6 +612,8 @@ func buildSession(ctx context.Context, env *Env, s *printSession, caller agent.M
 	if sec := scratchpadPromptSection(r.scratchpad); sec != "" {
 		baseSystem += "\n\n" + sec
 	}
+	// --append-system-prompt goes last (promptflags.go).
+	baseSystem = appendSystemPrompt(s, baseSystem)
 	conv.System = baseSystem
 	r.projectMemory = mem.block
 	r.memory = mem
@@ -619,7 +634,7 @@ func buildSession(ctx context.Context, env *Env, s *printSession, caller agent.M
 	conv.HookHost = r.hooks
 	// Files the agent reads/edits/writes bring in their conditional rules and
 	// nested-directory memory (see nestedMemoryHooks).
-	conv.Hooks = withNestedMemory(&hookhost.LoopHooks{Host: r.hooks, SkipPreToolUse: true}, mem.nested, paths.cwd)
+	conv.Hooks = withFileContext(&hookhost.LoopHooks{Host: r.hooks, SkipPreToolUse: true}, mem.nested, conv.Skills, paths.cwd)
 	conv.RunLoop = r.hooks.RunLoop
 	conv.OnModeChange = func(m toolreg.Mode) { r.dispatcher.SetMode(m) }
 	if r.chromeTabs != nil {
@@ -799,6 +814,8 @@ func (r *sessionRuntime) wireAgentTools(env *Env, s *printSession, caller agent.
 	}
 
 	r.agentTool, r.skillTool = at, st
+	// `/name args` for a user-invocable skill runs through the same tool.
+	r.conv.UserSkills = userSkillRunner{tool: st}
 
 	// The full roster a subagent type's tool list is filtered from.
 	r.dispatcher.SetSkillTool(st)

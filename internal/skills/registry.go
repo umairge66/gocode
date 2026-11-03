@@ -1,10 +1,14 @@
 package skills
 
 import (
+	"path"
+	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/umairge66/gocode/internal/fsfacade"
+	"github.com/umairge66/gocode/internal/projectmemory"
 )
 
 // Registry holds the resolved set of skills, one per canonical name, after
@@ -14,6 +18,14 @@ type Registry struct {
 	// Conflicts records names that lost a precedence collision, in the order
 	// they were rejected (useful for the loader's warning output).
 	Conflicts []Conflict
+	// Denied, when set, hides a skill from the listing (the session's
+	// Skill(<name>) deny rules): the model would be refused anyway.
+	Denied func(name string) bool
+
+	// mu guards activated: the conditional (`paths:`) skills a touched file
+	// has matched, by name.
+	mu        sync.Mutex
+	activated map[string]bool
 }
 
 // Conflict describes a skill that was not loaded because a higher-precedence
@@ -95,27 +107,121 @@ func (r *Registry) List() []Descriptor {
 	return out
 }
 
-// listableLine returns the "- name: description (scope)" line for the listing,
-// or ("", false) when the skill must not appear (model invocation disabled).
+// listableLine returns the "- name: description - when_to_use (scope)" line
+// for the listing, or ("", false) when the skill must not appear (model
+// invocation disabled).
 func (d *Descriptor) listableLine() (string, bool) {
 	if d.DisableModelInvocation {
 		return "", false
 	}
-	return "- " + d.Name + ": " + d.Description + d.Scope.listingSuffix(), true
+	desc := d.Description
+	if w := strings.TrimSpace(d.WhenToUse); w != "" {
+		if desc == "" {
+			desc = w
+		} else {
+			desc += " - " + w
+		}
+	}
+	return "- " + d.Name + ": " + desc + d.Scope.listingSuffix(), true
 }
 
 // Listing renders the "available skills" block the model sees: one
 // "- name: description (scope)" line per model-invocable skill, newline-joined.
-// The returned string is the content placed after the fixed header
+// A conditional (`paths:`) skill is listed only once ActivateForPath matched
+// it, and a Denied skill not at all. The returned string is the content
+// placed after the fixed header
 // "The following skills are available for use with the Skill tool:".
 func (r *Registry) Listing() string {
 	var lines []string
 	for _, d := range r.List() {
+		if len(d.Paths) > 0 && !r.isActivated(d.Name) {
+			continue
+		}
+		if r.Denied != nil && r.Denied(d.Name) {
+			continue
+		}
 		if line, ok := d.listableLine(); ok {
 			lines = append(lines, line)
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+func (r *Registry) isActivated(name string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.activated[name]
+}
+
+// ActivateForPath activates the conditional skills whose `paths:` globs match
+// target (an absolute path the agent read, edited or wrote) and returns the
+// names newly activated. A project skill's globs are relative to the directory
+// that holds its .gocode/.claude folder; any other skill's to cwd. Safe for
+// concurrent use.
+func (r *Registry) ActivateForPath(target, cwd string) []string {
+	if r == nil || target == "" {
+		return nil
+	}
+	target = path.Clean(strings.ReplaceAll(target, "\\", "/"))
+	cwd = strings.ReplaceAll(cwd, "\\", "/")
+	var out []string
+	for _, d := range r.List() {
+		if len(d.Paths) == 0 {
+			continue
+		}
+		base := cwd
+		if d.Scope == ScopeProject || d.Scope == ScopeClaudeProject {
+			// <dir>/.gocode/skills/<name> → <dir>
+			base = path.Dir(path.Dir(path.Dir(strings.ReplaceAll(d.BaseDir, "\\", "/"))))
+		}
+		if base == "" || !projectmemory.PathsMatch(d.Paths, base, target) {
+			continue
+		}
+		r.mu.Lock()
+		if !r.activated[d.Name] {
+			if r.activated == nil {
+				r.activated = map[string]bool{}
+			}
+			r.activated[d.Name] = true
+			out = append(out, d.Name)
+		}
+		r.mu.Unlock()
+	}
+	return out
+}
+
+// projectSkillDirs lists the directories project skills are read from,
+// nearest first: cwd, then each parent up to and including root when cwd is
+// inside root; otherwise up to the filesystem root. The home directory is
+// never a parent project (its ~/.claude/skills is the user tier), though a
+// cwd that is home still reads its own skills.
+func projectSkillDirs(cwd, root, home string) []string {
+	if cwd == "" {
+		return nil
+	}
+	cwd = filepath.Clean(cwd)
+	if root != "" {
+		root = filepath.Clean(root)
+		if rel, err := filepath.Rel(root, cwd); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			root = ""
+		}
+	}
+	if home != "" {
+		home = filepath.Clean(home)
+	}
+	dirs := []string{cwd}
+	if cwd == home {
+		return dirs
+	}
+	for d := cwd; d != root; {
+		parent := filepath.Dir(d)
+		if parent == d || parent == home {
+			break
+		}
+		dirs = append(dirs, parent)
+		d = parent
+	}
+	return dirs
 }
 
 // ListingHeader is the fixed preamble the content is appended to.
@@ -129,8 +235,18 @@ type LoadConfig struct {
 	// Home is the user's home directory, for the ~/.claude/skills scope.
 	// Empty disables it.
 	Home string
-	// Cwd is the project root (project scope). Empty disables it.
+	// Cwd is the working directory (project scope). Empty disables it.
 	Cwd string
+	// ProjectRoot bounds the project-scope walk: project skills are read from
+	// Cwd and each parent directory up to and including ProjectRoot (the git
+	// root). When empty, or when Cwd is not inside it, the walk climbs to the
+	// filesystem root, stopping below WalkStop (or Home when WalkStop is
+	// empty). The nearest directory wins a name collision within a scope.
+	ProjectRoot string
+	// WalkStop is the directory the project walk never climbs into, normally
+	// the home directory (its ~/.claude/skills is the user tier). Empty uses
+	// Home.
+	WalkStop string
 	// PluginRoots maps a plugin ID to its root directory; each contributes
 	// <root>/skills discovered under ScopePlugin, namespaced "<id>:<name>".
 	PluginRoots map[string]string
@@ -170,9 +286,20 @@ func Load(fsys fsfacade.FS, cfg LoadConfig) *Registry {
 	// installed, loaded through the exact same DiscoverScope directory loader
 	// and per-skill SKILL.md parsing as the native dirs. A missing .claude
 	// dir is skipped like any other absent root (DiscoverScope returns nil).
-	if cfg.Cwd != "" {
-		reg.AddAll(DiscoverScope(fsys, ProjectSkillsDir(cfg.Cwd), ScopeProject, ""))
-		reg.AddAll(DiscoverScope(fsys, ClaudeProjectSkillsDir(cfg.Cwd), ScopeClaudeProject, ""))
+	//
+	// The project tier is read from cwd and its parents (projectSkillDirs),
+	// nearest first, so a nearer skill wins over a same-named one further up
+	// (equal scope rank: the first registered wins).
+	stop := cfg.WalkStop
+	if stop == "" {
+		stop = cfg.Home
+	}
+	dirs := projectSkillDirs(cfg.Cwd, cfg.ProjectRoot, stop)
+	for _, dir := range dirs {
+		reg.AddAll(DiscoverScope(fsys, ProjectSkillsDir(dir), ScopeProject, ""))
+	}
+	for _, dir := range dirs {
+		reg.AddAll(DiscoverScope(fsys, ClaudeProjectSkillsDir(dir), ScopeClaudeProject, ""))
 	}
 	if cfg.UserDir != "" {
 		reg.AddAll(DiscoverScope(fsys, PersonalSkillsDir(cfg.UserDir), ScopePersonal, ""))

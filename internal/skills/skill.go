@@ -206,6 +206,10 @@ type Descriptor struct {
 	WhenToUse    string
 	Version      string
 	Model        string
+	// Paths are the frontmatter `paths:` globs: a skill with paths is
+	// conditional and is only listed once a matching file was touched
+	// (Registry.ActivateForPath). nil for an unconditional skill.
+	Paths []string
 	// DisableModelInvocation / UserInvocable gating.
 	DisableModelInvocation bool
 	UserInvocable          bool

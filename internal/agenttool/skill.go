@@ -257,8 +257,24 @@ func (s *SkillTool) Execute(ctx context.Context, input json.RawMessage) (string,
 	return truncateResult(inv.ToolResult() + "\n\n" + inv.Content), nil
 }
 
+// ErrNotUserInvocable matches (errors.Is) the user-invocable: false refusal
+// of a skill typed as a slash command.
+var ErrNotUserInvocable = errors.New("skill not user-invocable")
+
 // Invoke validates and loads a skill as the model would invoke it.
 func (s *SkillTool) Invoke(ctx context.Context, name, args string) (SkillInvocation, error) {
+	return s.invoke(ctx, name, args, false)
+}
+
+// InvokeAsUser runs a skill the person typed as `/name args`: the same
+// loading, scoping and inline-or-fork execution as the model's Skill call, but
+// disable-model-invocation does not apply (it only hides the skill from the
+// model) and a `user-invocable: false` skill is refused.
+func (s *SkillTool) InvokeAsUser(ctx context.Context, name, args string) (SkillInvocation, error) {
+	return s.invoke(ctx, name, args, true)
+}
+
+func (s *SkillTool) invoke(ctx context.Context, name, args string, byUser bool) (SkillInvocation, error) {
 	if s.Registry == nil || s.FS == nil {
 		return SkillInvocation{}, errors.New("Skill tool is not configured (missing registry or filesystem)")
 	}
@@ -276,7 +292,13 @@ func (s *SkillTool) Invoke(ctx context.Context, name, args string) (SkillInvocat
 		}
 		return SkillInvocation{}, &toolError{msg: msg, kind: ErrUnknownSkill}
 	}
-	if d.DisableModelInvocation {
+	if byUser && !d.UserInvocable {
+		return SkillInvocation{}, &toolError{
+			msg:  fmt.Sprintf("Skill %s can only be invoked by the model (user-invocable: false).", cmd),
+			kind: ErrNotUserInvocable,
+		}
+	}
+	if d.DisableModelInvocation && !byUser {
 		return SkillInvocation{}, &toolError{
 			msg: fmt.Sprintf("Skill %s cannot be used with %s tool due to disable-model-invocation. Ask the user to run /%s themselves — it cannot be invoked via the %s tool. Do not replicate this skill's workflow by other means — it is reserved for explicit user invocation.",
 				cmd, SkillToolName, cmd, SkillToolName),

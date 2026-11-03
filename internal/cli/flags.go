@@ -55,6 +55,12 @@ type DispatchDefaults struct {
 	MaxTurns      string
 	MaxTurnsSet   bool
 	MaxTurnsLimit int
+
+	// The prompt flags, resolved by applyPromptFlags (promptflags.go):
+	// --system-prompt[-file], --append-system-prompt[-file] and --agents.
+	SystemPrompt       string
+	AppendSystemPrompt string
+	AgentsJSON         string
 }
 
 // stripDebugFlags removes the debug options (--debug[=filter], -d,
@@ -231,6 +237,11 @@ type RootConfig struct {
 	// Chrome is "on" for --chrome, "off" for --no-chrome, "" when neither
 	// was given (the last one wins).
 	Chrome string
+
+	// SettingSources is the raw --setting-sources value (SettingSourcesSet
+	// when given, even empty).
+	SettingSources    string
+	SettingSourcesSet bool
 }
 
 // RootParse is the result of the root pre-parse.
@@ -252,7 +263,7 @@ func parseRootConfig(args []string) RootParse {
 		"--cwd":               func(v string) { r.CwdFilter, r.CwdFilterSet = v, true },
 		"--settings":          func(v string) { cfg.Settings = v },
 		"--managed-settings":  func(v string) { cfg.ManagedSettings = v },
-		"--setting-sources":   func(string) {},
+		"--setting-sources":   func(v string) { cfg.SettingSources, cfg.SettingSourcesSet = v, true },
 		"--add-dir":           func(v string) { cfg.AddDir = append(cfg.AddDir, v) },
 		"--plugin-dir":        func(v string) { cfg.PluginDir = append(cfg.PluginDir, v) },
 		"--plugin-dir-no-mcp": func(v string) { cfg.PluginDirNoMcp = append(cfg.PluginDirNoMcp, v) },

@@ -98,6 +98,31 @@ type Context struct {
 	// mcpServers are treated as project servers (approval needed) and its
 	// .mcp.json approvals are ignored. See trust.go.
 	LocalSettingsTracked bool
+
+	// SourcesSet restricts the opt-in sources (user, project, local) to
+	// Sources: the --setting-sources selection. A source left out loads as
+	// absent everywhere (LoadSource). flagSettings and policySettings always
+	// load. False means every source is active.
+	SourcesSet bool
+	Sources    []settingspolicy.Source
+}
+
+// SourceEnabled reports whether src may be read under the --setting-sources
+// selection (always true for the flag and policy sources).
+func (c *Context) SourceEnabled(src settingspolicy.Source) bool {
+	if c == nil || !c.SourcesSet {
+		return true
+	}
+	switch src {
+	case settingspolicy.SourceFlag, settingspolicy.SourcePolicy, settingspolicy.SourceManaged:
+		return true
+	}
+	for _, s := range c.Sources {
+		if s == src {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Context) env(key string) string {

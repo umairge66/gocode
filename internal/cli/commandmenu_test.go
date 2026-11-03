@@ -6,6 +6,7 @@ import (
 
 	"github.com/umairge66/gocode/internal/commands"
 	"github.com/umairge66/gocode/internal/conversation"
+	"github.com/umairge66/gocode/internal/skills"
 )
 
 // buildTestConv returns a conversation whose Builtins are the default table and
@@ -99,5 +100,37 @@ func TestHelpText_ListsCommands(t *testing.T) {
 	// Descriptions are shown alongside the command names.
 	if !strings.Contains(txt, "Deploy the app") {
 		t.Fatalf("help text missing custom description:\n%s", txt)
+	}
+}
+
+// TestCommandSuggestions_Skills: user-invocable skills join the menu (a
+// model-hidden one too) and are recognized commands; a model-only skill and a
+// name a command owns are not offered as skills.
+func TestCommandSuggestions_Skills(t *testing.T) {
+	conv := buildTestConv()
+	reg := skills.NewRegistry()
+	reg.Add(skills.Descriptor{Name: "review", Description: "Review the diff", UserInvocable: true, Scope: skills.ScopeProject})
+	reg.Add(skills.Descriptor{Name: "userish", Description: "u", UserInvocable: true, DisableModelInvocation: true, Scope: skills.ScopeProject})
+	reg.Add(skills.Descriptor{Name: "modelish", Description: "m", Scope: skills.ScopeProject})
+	reg.Add(skills.Descriptor{Name: "deploy", Description: "skill deploy", UserInvocable: true, Scope: skills.ScopeProject})
+	conv.Skills = reg
+	conv.UserSkills = userSkillRunner{}
+
+	kinds := map[string]string{}
+	descs := map[string]string{}
+	for _, s := range commandSuggestions(conv) {
+		kinds[s.Name], descs[s.Name] = s.Kind, s.Description
+	}
+	if kinds["review"] != "skill" || kinds["userish"] != "skill" {
+		t.Fatalf("skills missing from the menu: %v", kinds)
+	}
+	if _, ok := kinds["modelish"]; ok {
+		t.Error("a user-invocable: false skill was offered")
+	}
+	if descs["deploy"] != "Deploy the app" {
+		t.Errorf("/deploy = %q, want the command's entry", descs["deploy"])
+	}
+	if !isRecognizedCommand(conv, "/review now") || isRecognizedCommand(conv, "/modelish") {
+		t.Error("isRecognizedCommand mismatch for skills")
 	}
 }

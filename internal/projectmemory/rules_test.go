@@ -278,3 +278,58 @@ func TestNestedForAgent(t *testing.T) {
 		t.Fatal("nil tracker must stay nil")
 	}
 }
+
+// TestSkipTiers: the setting-source gates leave the User tier, the Project
+// files and rules, and the Local files out, at startup and in Nested; the
+// Managed tier always loads.
+func TestSkipTiers(t *testing.T) {
+	fs := newFS("/w", map[string]string{
+		"/etc/gocode/gocode.md":     "managed memory",
+		"/home/u/cfg/gocode.md":     "user memory",
+		"/home/u/cfg/rules/u.md":    "---\npaths: \"*.go\"\n---\nuser go rule",
+		"/w/gocode.md":              "project memory",
+		"/w/.gocode/rules/plain.md": "project rule",
+		"/w/.gocode/rules/go.md":    "---\npaths: \"**/*.go\"\n---\nproject go rule",
+		"/w/gocode.local.md":        "local memory",
+		"/w/pkg/gocode.md":          "pkg memory",
+		"/w/pkg/gocode.local.md":    "pkg local",
+	})
+	base := Config{Cwd: "/w", ConfigDir: "/home/u/cfg", ManagedDir: "/etc/gocode", FS: fs}
+	has := func(es []Entry, content string) bool {
+		for _, e := range es {
+			if strings.TrimSpace(e.Content) == content {
+				return true
+			}
+		}
+		return false
+	}
+
+	cfg := base
+	cfg.SkipUser, cfg.SkipProject = true, true
+	start := Load(cfg)
+	for _, c := range []string{"user memory", "project memory", "project rule"} {
+		if has(start.Entries, c) {
+			t.Errorf("startup kept %q", c)
+		}
+	}
+	for _, c := range []string{"managed memory", "local memory"} {
+		if !has(start.Entries, c) {
+			t.Errorf("startup dropped %q", c)
+		}
+	}
+	nested := NewNested(cfg, start.Sources).ForFile("/w/pkg/x.go")
+	if has(nested, "pkg memory") || has(nested, "project go rule") || has(nested, "user go rule") || !has(nested, "pkg local") {
+		t.Errorf("nested = %+v", nested)
+	}
+
+	cfg = base
+	cfg.SkipLocal = true
+	start = Load(cfg)
+	if has(start.Entries, "local memory") || !has(start.Entries, "project memory") || !has(start.Entries, "user memory") {
+		t.Errorf("SkipLocal startup = %+v", start.Entries)
+	}
+	nested = NewNested(cfg, start.Sources).ForFile("/w/pkg/x.go")
+	if has(nested, "pkg local") || !has(nested, "pkg memory") || !has(nested, "project go rule") {
+		t.Errorf("SkipLocal nested = %+v", nested)
+	}
+}

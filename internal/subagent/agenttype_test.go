@@ -2,6 +2,42 @@ package subagent
 
 import "testing"
 
+// TestToolPatternMatches: tools / disallowedTools entries may name MCP tools
+// by server or wildcard.
+func TestToolPatternMatches(t *testing.T) {
+	cases := []struct {
+		pattern, tool string
+		want          bool
+	}{
+		{"Read", "Read", true},
+		{"Read", "Write", false},
+		{"mcp__github", "mcp__github__create_issue", true},
+		{"mcp__github", "mcp__githubx__create_issue", false},
+		{"mcp__github", "mcp__github", true},
+		{"mcp__github__*", "mcp__github__create_issue", true},
+		{"mcp__github__*", "mcp__gitlab__create_issue", false},
+		{"mcp__*", "mcp__gitlab__x", true},
+		{"mcp__*", "Read", false},
+		{"mcp__github__create_issue", "mcp__github__create_issue", true},
+		{"mcp__github__create_issue", "mcp__github__list_issues", false},
+		{"mcp__git*", "mcp__github__x", false},
+	}
+	for _, c := range cases {
+		if got := ToolPatternMatches(c.pattern, c.tool); got != c.want {
+			t.Errorf("ToolPatternMatches(%q, %q) = %v, want %v", c.pattern, c.tool, got, c.want)
+		}
+	}
+
+	a := AgentType{Tools: []string{"Read", "mcp__github"}, DisallowedTools: []string{"mcp__github__delete_repo"}}
+	if !a.ToolAllowed("mcp__github__create_issue") || a.ToolAllowed("mcp__github__delete_repo") || a.ToolAllowed("mcp__slack__post") {
+		t.Error("server pattern allow/deny mismatch")
+	}
+	all := AgentType{Tools: []string{"*"}, DisallowedTools: []string{"mcp__*"}}
+	if all.ToolAllowed("mcp__github__x") || !all.ToolAllowed("Bash") {
+		t.Error("mcp__* deny mismatch")
+	}
+}
+
 func TestResolveDefault(t *testing.T) {
 	r := NewAgentTypeRegistry()
 	a, ok := r.Resolve("")

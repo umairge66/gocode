@@ -8,6 +8,7 @@ import (
 
 	"github.com/umairge66/gocode/internal/frontmatter"
 	"github.com/umairge66/gocode/internal/fsfacade"
+	"github.com/umairge66/gocode/internal/projectmemory"
 	"github.com/umairge66/gocode/internal/settingspolicy"
 )
 
@@ -103,7 +104,8 @@ func normalizeFrontmatter(raw map[string]any) Frontmatter {
 	fm.Shell = asString(first(raw, "shell"))
 	fm.Version = asString(first(raw, "version"))
 	fm.WhenToUse = asString(first(raw, "when_to_use", "whenToUse"))
-	fm.Paths = parseToolList(first(raw, "paths"))
+	// `paths:` reads like a rule file's (comma lists, brace expansion).
+	fm.Paths = projectmemory.PathPatterns(first(raw, "paths"))
 	fm.Context = strings.ToLower(asString(first(raw, "context")))
 	fm.Agent = asString(first(raw, "agent"))
 	fm.License = asString(first(raw, "license"))
@@ -289,6 +291,7 @@ func BuildDescriptor(pr ParseResult, identifier string, scope Scope, pluginID, s
 		DisallowedTools:             fm.DisallowedTools,
 		ArgumentHint:                fm.ArgumentHint,
 		WhenToUse:                   fm.WhenToUse,
+		Paths:                       fm.Paths,
 		Version:                     fm.Version,
 		Model:                       fm.Model,
 		DisableModelInvocation:      fm.DisableModelInvocation,

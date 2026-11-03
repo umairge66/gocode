@@ -510,6 +510,25 @@ func TestSkillDisableModelInvocation(t *testing.T) {
 	}
 }
 
+// TestSkillInvokeAsUser: the person may run a disable-model-invocation skill,
+// but not a user-invocable: false one.
+func TestSkillInvokeAsUser(t *testing.T) {
+	s, fsys := skillFixture(t)
+	inv, err := s.InvokeAsUser(context.Background(), "secret", "")
+	if err != nil || !strings.Contains(inv.Content, "Do the secret thing.") || inv.Forked {
+		t.Fatalf("InvokeAsUser(secret) = %+v, %v", inv, err)
+	}
+	root := skills.PersonalSkillsDir("/home/u/.config/gocode")
+	fsys.WriteFile(root+"/auto/SKILL.md", []byte("---\ndescription: Model only\nuser-invocable: false\n---\nx\n"))
+	s.Registry.AddAll(skills.DiscoverScope(fsys, root, skills.ScopePersonal, ""))
+	if _, err := s.InvokeAsUser(context.Background(), "auto", ""); !errors.Is(err, ErrNotUserInvocable) {
+		t.Fatalf("err = %v, want ErrNotUserInvocable", err)
+	}
+	if _, err := s.Invoke(context.Background(), "auto", ""); err != nil {
+		t.Fatalf("the model may still invoke it: %v", err)
+	}
+}
+
 func TestSkillDescriptionListsSkills(t *testing.T) {
 	s, _ := skillFixture(t)
 	desc := s.Description()

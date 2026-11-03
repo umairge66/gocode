@@ -4,6 +4,8 @@ import (
 	"github.com/umairge66/gocode/internal/envutil"
 	"github.com/umairge66/gocode/internal/headless"
 	"github.com/umairge66/gocode/internal/platform"
+	"github.com/umairge66/gocode/internal/settingsload"
+	"github.com/umairge66/gocode/internal/settingspolicy"
 	"golang.org/x/term"
 
 	"fmt"
@@ -35,6 +37,12 @@ type Env struct {
 	// FlagSettings is the --settings value: a settings file path or an inline
 	// JSON object. It is the flagSettings source for every settings read.
 	FlagSettings string
+	// SettingSources is the parsed --setting-sources selection when
+	// SettingSourcesSet: the opt-in sources (user, project, local) whose
+	// settings files, memory, skills, agents and commands load. Unset means
+	// all of them.
+	SettingSources    []settingspolicy.Source
+	SettingSourcesSet bool
 
 	// trustSession marks the working folder trusted for this process only (the
 	// trust dialog accepted in the home directory, which is never remembered).
@@ -232,6 +240,14 @@ func runMain(env *Env, t []string) int {
 		defaults = &DispatchDefaults{}
 	}
 	env.FlagSettings = root.Config.Settings
+	if root.Config.SettingSourcesSet {
+		srcs, err := settingsload.ParseSettingSources(root.Config.SettingSources)
+		if err != nil {
+			fmt.Fprintf(env.Stderr, "Error: %v\n", err)
+			return 1
+		}
+		env.SettingSources, env.SettingSourcesSet = srcs, true
+	}
 	defaults.MCPConfig = root.Config.McpConfig
 	defaults.StrictMCPConfig = root.Config.StrictMcpConfig
 	defaults.Chrome = root.Config.Chrome
@@ -243,6 +259,14 @@ func runMain(env *Env, t []string) int {
 	// GOCODE_CODE_EVAL_CONFINED=1).
 	if hasPrintFlag(rest) && isEvalChildInvocation(env, rest) {
 		return runEvalChild(env, defaults, rest)
+	}
+
+	// --system-prompt[-file], --append-system-prompt[-file], --agents
+	// (promptflags.go).
+	rest, promptVals := extractPromptFlags(rest)
+	if err := applyPromptFlags(defaults, promptVals); err != nil {
+		fmt.Fprintln(env.Stderr, err)
+		return 1
 	}
 
 	// `gocode mcp list`: connect to the configured MCP servers and print their

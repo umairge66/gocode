@@ -1,6 +1,7 @@
 package settingsload
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
@@ -62,6 +63,33 @@ func EffectiveSources(fsys fsfacade.FS, ctx *Context, allowed []settingspolicy.S
 	// settings.local.json is MCP-gated like project settings.
 	applyTrust(ctx, out)
 	return out
+}
+
+// settingSourceNames maps the --setting-sources names to their sources.
+var settingSourceNames = map[string]settingspolicy.Source{
+	"user":    settingspolicy.SourceUser,
+	"project": settingspolicy.SourceProject,
+	"local":   settingspolicy.SourceLocal,
+}
+
+// ParseSettingSources parses a --setting-sources value: a comma-separated list
+// of user, project and local. Blank entries are ignored, so "" selects no
+// opt-in source (an isolated run: only --settings and managed settings
+// apply). An unknown name is an error.
+func ParseSettingSources(v string) ([]settingspolicy.Source, error) {
+	out := []settingspolicy.Source{}
+	for _, s := range strings.Split(v, ",") {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		src, ok := settingSourceNames[s]
+		if !ok {
+			return nil, fmt.Errorf("Invalid setting source: %s. Valid options are: user, project, local", s)
+		}
+		out = append(out, src)
+	}
+	return out, nil
 }
 
 // dropInFiles lists the managed-settings.d drop-in filenames in sorted order,

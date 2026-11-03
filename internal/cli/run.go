@@ -136,6 +136,12 @@ type printSession struct {
 	// is built (cliPermissionRules).
 	AllowedTools    []string
 	DisallowedTools []string
+	// SystemPrompt / AppendSystemPrompt are the --system-prompt and
+	// --append-system-prompt texts (the -file forms already read); AgentsJSON
+	// is the --agents object. See promptflags.go.
+	SystemPrompt       string
+	AppendSystemPrompt string
+	AgentsJSON         string
 
 	// grants decides whether skill/command allowed-tools may pre-approve
 	// tools under allowManagedPermissionRulesOnly (toolgrants.go); set by
@@ -313,6 +319,7 @@ func newPrintSession(env *Env, d *DispatchDefaults) *printSession {
 		s.AllowedTools = d.AllowedTools
 		s.DisallowedTools = d.DisallowedTools
 		s.MaxTurns = d.MaxTurnsLimit
+		s.SystemPrompt, s.AppendSystemPrompt, s.AgentsJSON = d.SystemPrompt, d.AppendSystemPrompt, d.AgentsJSON
 	}
 	if perr == nil {
 		s.resolveAuth(env)
