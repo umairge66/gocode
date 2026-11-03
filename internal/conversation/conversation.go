@@ -12,7 +12,8 @@
 //  1. Slash-command detection + expansion FIRST. If the raw input is a
 //     `/command`, it is parsed, resolved against the command registry, and its
 //     prompt template is expanded with the typed arguments before the model
-//     ever sees it. A bare (non-slash) input is passed through unchanged.
+//     ever sees it. A `/name` no command claims runs a user-invocable skill
+//     (skillcommand.go). A bare (non-slash) input is passed through unchanged.
 //  2. A compaction check runs around the turn. The live token count is
 //     classified and, when it is at/over the autocompact threshold, the
 //     conversation is summarized and rebuilt BEFORE the user turn is appended,
@@ -125,6 +126,10 @@ type Conversation struct {
 	// Skills supplies the "available skills" listing injected into context
 	// (optional; nil injects nothing).
 	Skills *skills.Registry
+	// UserSkills runs a user-invocable skill the person typed as `/name args`
+	// (the cli wires the Skill tool's InvokeAsUser); nil disables skill slash
+	// commands. See skillcommand.go.
+	UserSkills UserSkillInvoker
 	// Agents is the resolved agent-definition registry (built-ins + plugin/
 	// project/user agents). Plugin-contributed agents are merged in by
 	// LoadPlugins. It is conversation-level state the subagent dispatcher reads:
@@ -648,7 +653,7 @@ func (c *Conversation) Submit(ctx context.Context, userInput string) (Result, er
 	if commands.IsSlashCommand(userInput) {
 		// A custom, plugin or MCP prompt command's expansion is recorded as
 		// the command, not as the expanded text.
-		if p, ok := commands.ParseInput(userInput); ok && (c.knownMCPPrompt(p.Name) || c.knownCustomCommand(p.Name)) {
+		if p, ok := commands.ParseInput(userInput); ok && (c.knownMCPPrompt(p.Name) || c.knownCustomCommand(p.Name) || c.knownUserSkill(p.Name)) {
 			c.setCommandTurn(userInput, false)
 			defer c.setCommandTurn("", false)
 		}
@@ -676,6 +681,11 @@ func (c *Conversation) Submit(ctx context.Context, userInput string) (Result, er
 		res, err := c.runModelTurnBlocks(ctx, blocks, append(extra, cmdExtra...)...)
 		res.Notices = append(notices, res.Notices...)
 		return res, err
+	}
+	// A user-invocable skill typed as /name (a custom command of the same
+	// name wins; skillcommand.go).
+	if p, ok := commands.ParseInput(userInput); ok && commands.IsSlashCommand(userInput) && c.knownUserSkill(p.Name) {
+		return c.submitUserSkill(ctx, userInput)
 	}
 	var prompt string
 	answered, cmdExtra, err = c.runCommand(ctx, userInput, c.knownCustomCommand, func(ctx context.Context, input string) error {

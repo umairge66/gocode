@@ -799,6 +799,8 @@ func (r *sessionRuntime) wireAgentTools(env *Env, s *printSession, caller agent.
 	}
 
 	r.agentTool, r.skillTool = at, st
+	// `/name args` for a user-invocable skill runs through the same tool.
+	r.conv.UserSkills = userSkillRunner{tool: st}
 
 	// The full roster a subagent type's tool list is filtered from.
 	r.dispatcher.SetSkillTool(st)

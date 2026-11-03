@@ -10,6 +10,28 @@ import (
 	"github.com/umairge66/gocode/internal/agent"
 )
 
+// TestSessionSkillSlashCommand: in a built session, `/name args` runs a
+// user-invocable skill through the Skill tool, even a model-hidden one.
+func TestSessionSkillSlashCommand(t *testing.T) {
+	env, _, _, cwd := sessionEnv(t, "")
+	writeTestFile(t, filepath.Join(cwd, ".gocode", "skills", "ship", "SKILL.md"), "---\ndescription: ship it\ndisable-model-invocation: true\n---\nShip to $ARGUMENTS now.\n")
+
+	s := &printSession{Model: "parent-model", Provider: providerOpenRouter}
+	rt := buildSession(context.Background(), env, s, fakeCaller{reply: "ok"}, sessionConfig{})
+	defer rt.Close("other")
+
+	if _, err := rt.conv.Submit(context.Background(), "/ship staging"); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	var first string
+	for _, b := range rt.conv.History[0].Content {
+		first += b.Text
+	}
+	if !strings.Contains(first, "<command-name>/ship</command-name>") || !strings.Contains(first, "Ship to staging now.") {
+		t.Fatalf("user turn = %q", first)
+	}
+}
+
 // TestSessionSkillListing_DeniedAndConditional: a Skill(<name>) deny rule
 // keeps that skill out of the listing, and a `paths:` skill joins it once the
 // agent reads a matching file.

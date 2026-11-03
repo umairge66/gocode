@@ -18,21 +18,18 @@ import (
 //     registry): name + description;
 //   - the loaded custom commands (conversation.Commands — markdown/plugin
 //     commands): name + description;
+//   - the user-invocable skills (conversation.Skills, dispatched by
+//     conversation.UserSkill / skillcommand.go): name + description, Kind
+//     "skill" — a skill whose name a command already has is not repeated;
+//   - the MCP prompt commands.
 //
 // Hidden / non-user-invocable entries are skipped (they still resolve when typed
 // explicitly, but they are not offered in the menu). Each Suggestion carries
 // Name (bare, for prefix filtering), Display ("/name"), Description and Value
 // ("/name", what the composer is completed to).
 //
-// Skills live in a separate registry (conversation.Skills) surfaced to the
-// model through the Skill tool listing (skills.Registry.Listing); there is no
-// "/skill" dispatch path — conversation.expandInput resolves only
-// conversation.Commands and returns ErrUnknownCommand otherwise. Listing
-// skills here would therefore complete to a dead-end "/name", so they are
-// intentionally left OUT until a later round wires skill slash-dispatch (which
-// lives in the conversation package, not owned here). The "@" (file-mention)
-// and "!" (bash-mode) composer triggers are likewise left as a seam; "!"
-// already maps to ui.ModeBash.
+// The "@" (file-mention) and "!" (bash-mode) composer triggers are left as a
+// seam; "!" already maps to ui.ModeBash.
 
 // commandSuggestions builds the ordered, de-duplicated slash-command suggestion
 // list for a conversation. Builtins come first (in registration order), then the
@@ -84,6 +81,16 @@ func commandSuggestions(conv *conversation.Conversation) []ui.Suggestion {
 				kind = "skill"
 			}
 			add(c.Name, c.Description, kind)
+		}
+	}
+
+	// User-invocable skills (typed as /name; disable-model-invocation does
+	// not hide them from the person).
+	if conv.Skills != nil && conv.UserSkills != nil {
+		for _, d := range conv.Skills.List() {
+			if _, ok := conv.UserSkill(d.Name); ok {
+				add(d.Name, d.Description, "skill")
+			}
 		}
 	}
 
@@ -172,6 +179,9 @@ func isRecognizedCommand(conv *conversation.Conversation, input string) bool {
 		if p.Name == parsed.Name {
 			return true
 		}
+	}
+	if _, ok := conv.UserSkill(parsed.Name); ok {
+		return true
 	}
 	return false
 }
