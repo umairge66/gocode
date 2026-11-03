@@ -15,6 +15,7 @@ import (
 	"github.com/umairge66/gocode/internal/commands"
 	"github.com/umairge66/gocode/internal/compaction"
 	"github.com/umairge66/gocode/internal/headless"
+	"github.com/umairge66/gocode/internal/mcp"
 	"github.com/umairge66/gocode/internal/mcphost"
 	"github.com/umairge66/gocode/internal/provider"
 	"github.com/umairge66/gocode/internal/toolreg"
@@ -490,24 +491,96 @@ func (h *headlessRun) permissionModeChoice(name string) (toolreg.Mode, string) {
 	return "", fmt.Sprintf("Invalid permission mode %q", name)
 }
 
-// mcpStatus is mcp_status's server list (McpServerStatus: name, status,
-// serverInfo, error).
+// mcpStatus is mcp_status's server list, the Agent SDK's McpServerStatus[]:
+// {name, status, serverInfo?, error?, config?, scope?, source?, tools?} for
+// each server the session runs, then each one the user disabled
+// (disabledMcpServers) as "disabled". A connected server lists its tools
+// with their annotations, so a host that saw a server "pending" in
+// system/init learns its tools once it connects.
 func (h *headlessRun) mcpStatus() []map[string]any {
 	out := []map[string]any{}
 	if h.rt.mcp == nil {
 		return out
 	}
+	g := h.rt.gathered
 	for _, st := range h.rt.mcp.Status() {
-		e := map[string]any{"name": st.Name, "status": mcpStatusName(st.State)}
+		status := mcpStatusName(st.State)
+		e := map[string]any{"name": st.Name, "status": status}
 		if st.ServerInfo.Name != "" {
 			e["serverInfo"] = map[string]any{"name": st.ServerInfo.Name, "version": st.ServerInfo.Version}
 		}
 		if st.Error != "" {
 			e["error"] = st.Error
 		}
+		if cfg, ok := g.Servers[st.Name]; ok {
+			e["config"] = mcpStatusConfig(cfg)
+		}
+		if sc := g.Scopes[st.Name]; sc != "" {
+			e["scope"], e["source"] = string(sc), string(sc)
+		}
+		if status == "connected" {
+			tools := []map[string]any{}
+			for _, t := range h.rt.mcp.ServerTools(st.Name) {
+				tools = append(tools, mcpStatusTool(t))
+			}
+			e["tools"] = tools
+		}
+		out = append(out, e)
+	}
+	for _, sk := range g.Skipped {
+		if sk.Reason != mcphost.ReasonDisabled {
+			continue
+		}
+		e := map[string]any{"name": sk.Name, "status": "disabled"}
+		if cfg, ok := g.SkippedConfigs[sk.Name]; ok {
+			e["config"] = mcpStatusConfig(cfg)
+		}
+		if sk.Scope != "" {
+			e["scope"], e["source"] = string(sk.Scope), string(sk.Scope)
+		}
 		out = append(out, e)
 	}
 	return out
+}
+
+// mcpStatusConfig is a server's McpServerStatusConfig: its transport and
+// where it runs (command and args, or url). Env values and headers are left
+// out, as they commonly hold credentials.
+func mcpStatusConfig(cfg mcp.ServerConfig) map[string]any {
+	switch cfg.Type {
+	case mcp.TransportStdio, "":
+		c := map[string]any{"type": "stdio", "command": cfg.Command}
+		if len(cfg.Args) > 0 {
+			c["args"] = cfg.Args
+		}
+		return c
+	}
+	if cfg.Type == "streamable-http" {
+		cfg.Type = mcp.TransportHTTP
+	}
+	return map[string]any{"type": string(cfg.Type), "url": cfg.URL}
+}
+
+// mcpStatusTool is one entry of McpServerStatus.tools: the server's name
+// for the tool, its description, and the readOnly / destructive / openWorld
+// hints it declares.
+func mcpStatusTool(t mcp.Tool) map[string]any {
+	e := map[string]any{"name": t.Name}
+	if t.Description != "" {
+		e["description"] = t.Description
+	}
+	if a := t.Annotations; a != nil {
+		ann := map[string]any{}
+		for k, v := range map[string]*bool{"readOnly": a.ReadOnlyHint, "destructive": a.DestructiveHint, "openWorld": a.OpenWorldHint} {
+			if v != nil {
+				ann[k] = *v
+			}
+		}
+		if len(ann) > 0 {
+			e["annotations"] = ann
+		}
+	}
+	return e
 }
 
 // mcpStatusName maps a server state to the protocol's connection status

@@ -61,6 +61,11 @@ type jobStatus struct {
 	hasPending      bool
 	block           string // the open permission prompt / question ("" none)
 	lastBridgeNeeds string
+
+	// remoteOpen is set while a prompt is offered to daemon clients
+	// (bgpermission.go): one at a time, as there is one permission.json.
+	remoteMu   sync.Mutex
+	remoteOpen bool
 }
 
 // newJobStatus returns the reporter for a background worker, or nil.

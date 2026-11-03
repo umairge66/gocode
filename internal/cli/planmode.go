@@ -139,6 +139,10 @@ func (p *dialogPrompter) approvePlan(ctx context.Context, req toolrun.PlanApprov
 
 	p.status.setBlock(permissionBlockText("ExitPlanMode", nil))
 	defer p.status.clearBlock()
+	// A background worker's approval can also be given through the daemon
+	// (bgpermission.go); remote is nil otherwise.
+	remote, withdraw := p.status.openPlan(ctx, req)
+	defer withdraw()
 
 	send(ui.OpenDialogMsg{Dialog: dlg})
 
@@ -149,6 +153,12 @@ func (p *dialogPrompter) approvePlan(ctx context.Context, req toolrun.PlanApprov
 		p.mu.Unlock()
 		send(ui.CloseDialogMsg{})
 		return toolrun.PlanApprovalResponse{}, ctx.Err()
+	case res := <-remote:
+		p.mu.Lock()
+		p.pending = nil
+		p.mu.Unlock()
+		send(ui.CloseDialogMsg{})
+		return remotePlanResponse(req, res), nil
 	case r := <-ch:
 		if r.cancelled {
 			return toolrun.PlanApprovalResponse{}, nil

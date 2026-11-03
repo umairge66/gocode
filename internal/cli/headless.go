@@ -418,7 +418,10 @@ func (h *headlessRun) systemInit() headless.SystemInit {
 	}
 	if h.rt.mcp != nil {
 		for _, st := range h.rt.mcp.Status() {
-			init.MCPServers = append(init.MCPServers, headless.MCPServerStatus{Name: st.Name, Status: string(st.State)})
+			// mcp_status's vocabulary: a server still connecting in the
+			// background is "pending" and its tools are not in Tools yet.
+			init.MCPServers = append(init.MCPServers, headless.MCPServerStatus{Name: st.Name, Status: mcpStatusName(st.State),
+				Source: string(h.rt.gathered.Scopes[st.Name])})
 		}
 	}
 	for _, sg := range commandSuggestions(conv) {

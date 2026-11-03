@@ -180,6 +180,25 @@ var RootProgram = Command{
 				{Spec: "--definitions", Help: "List agent definitions (built-in, plugin, user and project) and which ones are shadowed"},
 				{Spec: "--setting-sources <sources>", Help: "With --definitions: comma-separated list of setting sources to load (user, project, local)."},
 			},
+			Subcommands: []Command{
+				{
+					Name:        "pending",
+					Description: "List background sessions waiting on a permission prompt, a question or a plan approval (job, kind, tool, summary, reason, request id)",
+					Flags:       []Flag{{Spec: "--json", Help: "Print the prompts as a JSON array, with each one's full input"}},
+				},
+				{
+					Name:        "respond",
+					Args:        "<job> [allow|deny]",
+					Description: "Answer the prompt a background session is waiting on; the dialog in its terminal closes",
+					Flags: []Flag{
+						{Spec: "--message <text>", Help: "With deny: the feedback the session is given (for a plan: what to change)"},
+						{Spec: "--always", Help: "With allow: also add the rule the prompt suggests (e.g. Bash(make:*)), for this session"},
+						{Spec: "--mode <mode>", Help: "With allow on a plan approval: the permission mode to continue in (one the dialog offers)"},
+						{Spec: "--answer <label>", Help: "Answer a question with one of its option labels; once per question, comma-separated labels for a multi-select question"},
+						{Spec: "--request-id <id>", Help: "Answer only while this is still the open prompt"},
+					},
+				},
+			},
 		},
 		{
 			Name:        "auto-mode",

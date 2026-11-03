@@ -100,6 +100,10 @@ func (a *dialogAsker) Ask(ctx context.Context, req interact.AskRequest) (interac
 		a.status.setBlock(questionBlockText(q.Question, labels))
 		defer a.status.clearBlock()
 	}
+	// A background worker's questions can also be answered through the
+	// daemon (bgpermission.go), all at once; remote is nil otherwise.
+	remote, withdraw := a.status.openQuestion(ctx, req)
+	defer withdraw()
 	for _, q := range req.Questions {
 		dlg, labelFor := buildAskDialog(q)
 
@@ -119,6 +123,16 @@ func (a *dialogAsker) Ask(ctx context.Context, req interact.AskRequest) (interac
 			a.mu.Unlock()
 			send(ui.CloseDialogMsg{})
 			return interact.AskUserQuestionResult{}, ctx.Err()
+		case res := <-remote:
+			a.mu.Lock()
+			a.pending = nil
+			a.mu.Unlock()
+			send(ui.CloseDialogMsg{})
+			all, ok := remoteQuestionAnswers(req, res, answers)
+			if !ok {
+				return interact.AskUserQuestionResult{}, errAskCancelled
+			}
+			return interact.AskUserQuestionResult{Answers: all}, nil
 		case r := <-ch:
 			if r.cancelled {
 				return interact.AskUserQuestionResult{}, errAskCancelled

@@ -43,10 +43,13 @@ func Marshal(v any) ([]byte, error) {
 	return bytes.TrimRight(buf.Bytes(), "\n"), nil
 }
 
-// MCPServerStatus is one entry of system/init's mcp_servers.
+// MCPServerStatus is one entry of system/init's mcp_servers: status is
+// mcp_status's vocabulary (connected, failed, needs-auth, pending), source
+// where the server's definition came from (a config scope or "plugin").
 type MCPServerStatus struct {
 	Name   string `json:"name"`
 	Status string `json:"status"`
+	Source string `json:"source,omitempty"`
 }
 
 // PluginInfo is one entry of system/init's plugins.

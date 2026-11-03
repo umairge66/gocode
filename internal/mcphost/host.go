@@ -777,6 +777,20 @@ func (h *Host) Tools() []agent.ToolSchema {
 	return out
 }
 
+// ServerTools returns the tools of server name that are in the tool table
+// (none until it connects), as the server listed them, in its listing order.
+func (h *Host) ServerTools(name string) []mcp.Tool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	var out []mcp.Tool
+	for _, n := range h.toolSeq {
+		if rt := h.tools[n]; rt.server == name {
+			out = append(out, rt.tool)
+		}
+	}
+	return out
+}
+
 // ToolsVersion changes whenever the tool table is rebuilt (a server
 // connected, dropped or announced tools/list_changed), so a caller holding a
 // copy of Tools can tell cheaply whether to re-read it.
