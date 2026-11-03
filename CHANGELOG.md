@@ -38,7 +38,7 @@ it refuses to publish a version that has no section here.
   restored on resume.
 - Large MCP output is saved to a file in full instead of being cut at about
   100,000 characters.
-- MCP tool text and subagent reports have harness tags and fake turn
+- MCP tool results, MCP prompts and subagent reports have harness tags and fake turn
   markers neutralized before the model reads them.
 
 ### Fixed

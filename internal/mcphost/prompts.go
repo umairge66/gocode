@@ -10,6 +10,7 @@ import (
 
 	"github.com/umairge66/gocode/internal/agent"
 	"github.com/umairge66/gocode/internal/mcp"
+	"github.com/umairge66/gocode/internal/textutil"
 )
 
 // MCP prompts as slash commands: every prompt a connected server lists
@@ -187,10 +188,37 @@ func (h *Host) GetPrompt(ctx context.Context, cmd PromptCommand, rawArgs string)
 		return nil, fmt.Errorf("Error running command '%s': %w", cmd.Prompt, err)
 	}
 	var out []agent.ContentBlock
+	var hits []string
 	for _, m := range res.Messages {
-		out = append(out, promptContentBlocks(m.Content, cmd.Server)...)
+		for _, b := range promptContentBlocks(m.Content, cmd.Server) {
+			if b.Type == agent.BlockText {
+				var h []string
+				b.Text, h = textutil.NeutralizeHarnessText(b.Text)
+				hits = append(hits, h...)
+			}
+			out = append(out, b)
+		}
+	}
+	if len(hits) > 0 {
+		// The prompt's text comes from the server, not the user: it must not
+		// pose as a system reminder or a new turn. Say what was neutralized.
+		note := "[harness: MCP prompt from " + cmd.Server + " matched instruction-shaped pattern(s): " + strings.Join(dedupe(hits), ", ") + "]"
+		out = append([]agent.ContentBlock{agent.TextBlock(note)}, out...)
 	}
 	return out, nil
+}
+
+// dedupe drops repeated names, keeping first-seen order.
+func dedupe(names []string) []string {
+	seen := make(map[string]bool, len(names))
+	out := names[:0:0]
+	for _, n := range names {
+		if !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // promptContentBlocks converts one MCP content block of a prompt message to
