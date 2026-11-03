@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/umairge66/gocode/internal/agent"
+	"github.com/umairge66/gocode/internal/automode"
 	"github.com/umairge66/gocode/internal/hooks"
 	pathguard "github.com/umairge66/gocode/internal/pathguard"
 	"github.com/umairge66/gocode/internal/protocol"
@@ -64,11 +65,28 @@ type ReadOnlyExternalTools interface {
 	ReadOnly(name string) bool
 }
 
+// DestructiveExternalTools is optionally implemented by an ExternalTools
+// provider that knows which of its tools declare themselves destructive (for
+// MCP, annotations.destructiveHint). The auto-mode classifier is told.
+type DestructiveExternalTools interface {
+	Destructive(name string) bool
+}
+
 // AlwaysLoadExternalTools is optionally implemented by an ExternalTools
 // provider whose tools can opt out of deferred loading (an MCP server's
 // "alwaysLoad"): their definitions are always sent in full.
 type AlwaysLoadExternalTools interface {
 	AlwaysLoad(name string) bool
+}
+
+// ConnectingExternalTools is optionally implemented by an ExternalTools
+// provider whose tools can arrive after startup (MCP servers connecting in the
+// background). ToolSearch waits for them before reporting a miss.
+type ConnectingExternalTools interface {
+	// WaitConnecting blocks until nothing is connecting any more, ctx ends
+	// or a provider-defined bound passes, and reports whether anything was
+	// connecting.
+	WaitConnecting(ctx context.Context) bool
 }
 
 // WithExternalTools routes calls for the provider's tools to it and advertises
@@ -357,6 +375,29 @@ func (d *Dispatcher) externalReadOnly(name string) bool {
 	}
 	ro, ok := d.External.(ReadOnlyExternalTools)
 	return ok && ro.ReadOnly(name)
+}
+
+// externalHints returns the annotations an external tool declares for itself
+// (read-only, destructive) for the auto-mode classifier, or nil when name is
+// not an external tool or declares neither.
+func (d *Dispatcher) externalHints(name string) *automode.ToolHints {
+	if d.External == nil {
+		return nil
+	}
+	if _, builtin := d.adapters[protocol.Tool(name)]; builtin || !d.External.Has(name) {
+		return nil
+	}
+	var h automode.ToolHints
+	if ro, ok := d.External.(ReadOnlyExternalTools); ok {
+		h.ReadOnly = ro.ReadOnly(name)
+	}
+	if de, ok := d.External.(DestructiveExternalTools); ok {
+		h.Destructive = de.Destructive(name)
+	}
+	if !h.ReadOnly && !h.Destructive {
+		return nil
+	}
+	return &h
 }
 
 // externalSchemas returns the external provider's schemas that pass the

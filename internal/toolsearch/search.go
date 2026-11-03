@@ -79,6 +79,26 @@ func Search(query string, tools []Tool, maxResults int) []string {
 	return keywordSearch(q, tools, maxResults)
 }
 
+// Incomplete reports whether Search's result for query may be missing a tool
+// that is not in the catalog yet: nothing matched, or a "select:" query named
+// more tools than it returned.
+func Incomplete(query string, names []string) bool {
+	if len(names) == 0 {
+		return true
+	}
+	m := selectRe.FindStringSubmatch(normalizeQuery(query))
+	if m == nil {
+		return false
+	}
+	want := 0
+	for _, raw := range strings.Split(m[1], ",") {
+		if strings.TrimSpace(raw) != "" {
+			want++
+		}
+	}
+	return len(names) < want
+}
+
 func selectNames(list string, tools []Tool) []string {
 	var out []string
 	seen := map[string]bool{}

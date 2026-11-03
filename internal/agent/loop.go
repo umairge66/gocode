@@ -67,6 +67,11 @@ type Loop struct {
 	SystemContext string
 	// ToolSchemas advertises the available tools to the model.
 	ToolSchemas []ToolSchema
+	// RefreshTools, when set, is called before each model request with the
+	// current tool list and returns the list to use from then on (the
+	// argument itself when nothing changed), so tools that arrive mid-run (an
+	// MCP server that finished connecting) can be loaded in the same run.
+	RefreshTools func([]ToolSchema) []ToolSchema
 	// MaxTokens caps each response (0 → caller/model default).
 	MaxTokens int
 
@@ -254,6 +259,9 @@ func (l *Loop) Run(ctx context.Context, initial []Message) Result {
 
 		// Deferred tools: announce any change in the deferred set, then send
 		// the always-loaded tools plus those loaded so far.
+		if l.RefreshTools != nil {
+			l.ToolSchemas = l.RefreshTools(l.ToolSchemas)
+		}
 		messages = AnnounceDeferredTools(messages, l.ToolSchemas)
 		tools, deferred := SelectTools(l.ToolSchemas, messages)
 		// Prompt caching: tools + System form a stable prefix, and the

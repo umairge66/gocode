@@ -34,6 +34,8 @@ type memMCPServer struct {
 	tools    []mcp.Tool
 	startErr error
 	closed   atomic.Int32
+	// initGate, when set, holds the initialize reply until it is closed.
+	initGate chan struct{}
 }
 
 type memMCPTransport struct {
@@ -84,11 +86,16 @@ func (f *memMCPTransport) Send(_ context.Context, msg any) error {
 	req := m.Request
 	switch req.Method {
 	case mcp.MethodInitialize:
-		go f.reply(req.ID, mcp.InitializeResult{
-			ProtocolVersion: mcp.LatestProtocolVersion,
-			Capabilities:    mcp.ServerCapabilities{Tools: &mcp.ListChangedCapability{}},
-			ServerInfo:      mcp.Implementation{Name: "mem", Version: "1"},
-		})
+		go func() {
+			if g := f.srv.initGate; g != nil {
+				<-g
+			}
+			f.reply(req.ID, mcp.InitializeResult{
+				ProtocolVersion: mcp.LatestProtocolVersion,
+				Capabilities:    mcp.ServerCapabilities{Tools: &mcp.ListChangedCapability{}},
+				ServerInfo:      mcp.Implementation{Name: "mem", Version: "1"},
+			})
+		}()
 	case mcp.MethodToolsList:
 		go f.reply(req.ID, mcp.ListToolsResult{Tools: f.srv.tools})
 	case mcp.MethodToolsCall:
@@ -205,9 +212,13 @@ func fakeHookRunner(run func(cmd string, payload hooks.Payload) (exit int, stdou
 func TestPrint_MCPToolEndToEnd(t *testing.T) {
 	env, out, errb, _ := sessionEnv(t, `{"permissions":{"allow":["mcp__mem"]}}`)
 	mem := echoServer()
+	// The server is still connecting (in the background: its tools are
+	// deferred) when the first request goes out; ToolSearch waits for it.
+	mem.initGate = make(chan struct{})
 	sp := &scriptedProvider{respond: func(n int, _ string) string {
 		switch n {
 		case 0:
+			close(mem.initGate)
 			return toolReply("s1", "ToolSearch", map[string]string{"query": "select:mcp__mem__echo"})
 		case 1:
 			return toolReply("c1", "mcp__mem__echo", map[string]string{"msg": "hi"})
@@ -228,9 +239,9 @@ func TestPrint_MCPToolEndToEnd(t *testing.T) {
 	if len(reqs) != 3 {
 		t.Fatalf("requests = %d, want 3", len(reqs))
 	}
-	// The MCP tool is deferred: only its name is announced at first.
-	if strings.Contains(reqs[0], `$defs`) || !strings.Contains(reqs[0], `mcp__mem__echo`) {
-		t.Fatalf("first request should announce the deferred MCP tool by name only: %s", reqs[0])
+	// The first request did not wait for the server.
+	if strings.Contains(reqs[0], `mcp__mem__echo`) {
+		t.Fatalf("first request waited for the background MCP server: %s", reqs[0])
 	}
 	if !strings.Contains(reqs[1], `"mcp__mem__echo"`) || !strings.Contains(reqs[1], `$defs`) || !strings.Contains(reqs[1], `additionalProperties`) {
 		t.Fatalf("request after ToolSearch lacks the MCP tool with its full schema: %s", reqs[1])

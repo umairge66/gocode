@@ -115,9 +115,10 @@ type ChatRequest struct {
 	SystemCacheSplit int
 	// CacheMessages asks for rolling prompt-cache breakpoints on the latest
 	// messages (agent.ModelRequest.CacheMessages): Anthropic marks the last
-	// block of the last message and of the previous user turn; OpenRouter
-	// does the same for an Anthropic model when the last message is a user
-	// text turn. Every other provider ignores it.
+	// block of the last message and of the previous user turn; Bedrock
+	// Converse adds cachePoint blocks in the same two places (models with
+	// prompt caching); OpenRouter marks the text of the trailing user or tool
+	// message for an Anthropic model. Every other provider ignores it.
 	CacheMessages bool
 	// DeferredTools are the deferred tools the conversation has not loaded
 	// (agent.ModelRequest.DeferredTools). Only a provider with native

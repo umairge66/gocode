@@ -14,6 +14,8 @@ import (
 //
 //   - system messages      -> top-level "system": [{text}] (+ {cachePoint}
 //     when CacheSystem is set and the model supports prompt caching)
+//   - CacheMessages        -> rolling {cachePoint} blocks closing the last
+//     message and the user turn before it (markCachePoints)
 //   - assistant ToolCalls  -> {toolUse:{toolUseId,name,input}} after any text
 //   - role:"tool" messages -> a user turn of {toolResult:{toolUseId,content}}
 //     blocks (text, plus {image} blocks for tool-produced images)
@@ -65,6 +67,8 @@ type cvBlock struct {
 	ToolResult *cvToolResult `json:"toolResult,omitempty"`
 	// ReasoningContent appears only in responses (requests never echo it).
 	ReasoningContent *cvReasoning `json:"reasoningContent,omitempty"`
+	// CachePoint is a prompt-cache checkpoint closing the content before it.
+	CachePoint *cvCachePoint `json:"cachePoint,omitempty"`
 }
 
 type cvImage struct {
@@ -285,10 +289,11 @@ func buildConverseBody(req provider.ChatRequest, modelID string) ([]byte, error)
 	if body.Messages == nil {
 		body.Messages = []cvMessage{}
 	}
+	caching := supportsPromptCache(modelID)
 
 	if sys := strings.Join(system, "\n\n"); sys != "" {
 		body.System = []cvSystemBlock{{Text: sys}}
-		if req.CacheSystem && supportsPromptCache(modelID) {
+		if req.CacheSystem && caching {
 			// The cache point closes the stable prefix; text that may change
 			// between calls (SystemCacheSplit) follows it.
 			head, tail := sys, ""
@@ -300,6 +305,10 @@ func buildConverseBody(req provider.ChatRequest, modelID string) ([]byte, error)
 				body.System = append(body.System, cvSystemBlock{Text: tail})
 			}
 		}
+	}
+
+	if req.CacheMessages && caching {
+		markCachePoints(body.Messages, maxCachePoints-countSystemCachePoints(body.System))
 	}
 
 	declared := map[string]bool{}
@@ -344,6 +353,47 @@ func buildConverseBody(req provider.ChatRequest, modelID string) ([]byte, error)
 		}
 	}
 	return json.Marshal(body)
+}
+
+// maxCachePoints is the most cachePoint blocks Converse accepts in one
+// request (system, messages and tools together).
+const maxCachePoints = 4
+
+func countSystemCachePoints(sys []cvSystemBlock) int {
+	n := 0
+	for _, b := range sys {
+		if b.CachePoint != nil {
+			n++
+		}
+	}
+	return n
+}
+
+// markCachePoints puts the rolling prompt-cache checkpoints on the
+// conversation, as the Anthropic provider does with cache_control: one
+// closing the last message, which the next round reads back, and one closing
+// the user turn before it, so a round that appended more blocks than the
+// cache looks back over still finds the previous round's entry. At most
+// budget checkpoints are added (with the system one, the request stays
+// within maxCachePoints).
+func markCachePoints(msgs []cvMessage, budget int) {
+	n := len(msgs)
+	if n == 0 || budget <= 0 {
+		return
+	}
+	mark := func(m *cvMessage) {
+		m.Content = append(m.Content, cvBlock{CachePoint: &cvCachePoint{Type: "default"}})
+	}
+	mark(&msgs[n-1])
+	if budget < 2 {
+		return
+	}
+	for i := n - 2; i >= 0; i-- {
+		if msgs[i].Role == "user" {
+			mark(&msgs[i])
+			return
+		}
+	}
 }
 
 func hasToolBlocks(msgs []cvMessage) bool {

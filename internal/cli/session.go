@@ -480,6 +480,9 @@ func buildSession(ctx context.Context, env *Env, s *printSession, caller agent.M
 		Transport: s.mcpTransport,
 		Getenv:    envGetenv(env),
 		Auth:      mcpAuthStore(env),
+		// Servers whose tools tool search defers connect in the background
+		// (mcpbackground.go).
+		Background: mcpBackgroundConnect(env, s),
 	})
 	r.notices = append(r.notices, mcpNotices(gathered, r.mcp, cfg.interactive)...)
 
@@ -672,6 +675,9 @@ func buildSession(ctx context.Context, env *Env, s *printSession, caller agent.M
 
 	// (7) Agent + Skill tools.
 	r.wireAgentTools(env, s, caller, paths, sessionID, cfg)
+	// MCP tools that arrive later (a background connect, list_changed) join
+	// the list between requests (mcpbackground.go).
+	conv.RefreshTools = mcpToolRefresher(r.mcp, func() []agent.ToolSchema { return r.dispatcher.Schemas() })
 	conv.ToolSchemas = r.dispatcher.Schemas()
 
 	// (8) LOCAL-ONLY session persistence (resume support). Builds the per-cwd
@@ -1338,15 +1344,10 @@ func mcpNotices(g mcphost.Gathered, h *mcphost.Host, interactive bool) []string 
 	}
 	if h != nil {
 		for _, st := range h.Status() {
-			if st.State == mcphost.StateFailed {
-				out = append(out, fmt.Sprintf("MCP server %q failed to connect: %s", st.Name, st.Error))
-			}
-			if st.State == mcphost.StateNeedsAuth {
-				if interactive {
-					out = append(out, fmt.Sprintf("MCP server %q needs authentication — run /mcp to authenticate", st.Name))
-				} else {
-					out = append(out, fmt.Sprintf("MCP server %q needs authentication — %s", st.Name, mcpNeedsAuthHint))
-				}
+			// A server still connecting in the background reports through
+			// reportBackgroundMCP once it settles.
+			if n := mcpStatusNotice(st, interactive); n != "" {
+				out = append(out, n)
 			}
 		}
 	}
@@ -1386,6 +1387,9 @@ func renderMCPStatus(g *mcphost.Gathered, h *mcphost.Host) string {
 			}
 		case mcphost.StateNeedsAuth:
 			line = fmt.Sprintf("%s: needs authentication - %s", st.Name, mcpNeedsAuthHint)
+		case mcphost.StatePending:
+			// Still connecting in the background (mcpbackground.go).
+			line = st.Name + ": " + mcphost.StateLabel(st)
 		}
 		b.WriteString(line + "\n")
 	}

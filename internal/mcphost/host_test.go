@@ -26,8 +26,13 @@ type fakeServer struct {
 	callDelay time.Duration
 	startErr  error
 	hangInit  bool
-	noTools   bool
-	pageSize  int // >0 paginates tools/list
+	// initGate, when set, holds the initialize response until it is closed.
+	initGate chan struct{}
+	// onList, when set, runs before each tools/list response is sent (with
+	// the catalog that response carries).
+	onList   func(f *fakeTransport)
+	noTools  bool
+	pageSize int // >0 paginates tools/list
 	// prompts, when non-nil, advertises the prompts capability.
 	prompts    []mcp.Prompt
 	getPrompt  func(p mcp.GetPromptParams) (*mcp.GetPromptResult, error)
@@ -128,12 +133,22 @@ func (f *fakeTransport) Send(_ context.Context, msg any) error {
 		if f.srv.prompts != nil {
 			caps.Prompts = &mcp.ListChangedCapability{}
 		}
-		go f.deliver(req.ID, mcp.InitializeResult{
+		init := mcp.InitializeResult{
 			ProtocolVersion: mcp.LatestProtocolVersion,
 			Capabilities:    caps,
 			ServerInfo:      mcp.Implementation{Name: "fake", Version: "1"},
 			Instructions:    "use me",
-		}, nil)
+		}
+		go func() {
+			if g := f.srv.initGate; g != nil {
+				select {
+				case <-g:
+				case <-f.done:
+					return
+				}
+			}
+			f.deliver(req.ID, init, nil)
+		}()
 	case mcp.MethodToolsList:
 		var p mcp.ListToolsParams
 		_ = json.Unmarshal(req.Params, &p)
@@ -150,7 +165,12 @@ func (f *fakeTransport) Send(_ context.Context, msg any) error {
 				res.NextCursor = fmt.Sprint(end)
 			}
 		}
-		go f.deliver(req.ID, res, nil)
+		go func() {
+			if f.srv.onList != nil {
+				f.srv.onList(f)
+			}
+			f.deliver(req.ID, res, nil)
+		}()
 	case mcp.MethodPromptsList:
 		go f.deliver(req.ID, mcp.ListPromptsResult{Prompts: f.srv.prompts}, nil)
 	case mcp.MethodPromptsGet:

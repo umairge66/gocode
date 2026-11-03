@@ -57,6 +57,13 @@ type Options struct {
 	// is the number of attempts already made). Default: 1s·2^(n-1), capped at
 	// 30s.
 	ReconnectBackoff func(n int) time.Duration
+	// Background selects the servers Start connects in the background instead
+	// of waiting for them: in practice those whose tools are deferred behind
+	// tool search, which the first model request does not need in full. Their
+	// status stays StatePending ("connecting…") until they settle;
+	// WaitConnecting waits for them and OnBackgroundSettled reports each
+	// outcome. Nil connects every server in the foreground.
+	Background func(name string, cfg mcp.ServerConfig) bool
 }
 
 // DefaultReconnectAttempts is the host-level reconnect budget.
@@ -151,6 +158,10 @@ type server struct {
 	// listGen numbers tools/list refreshes after list_changed, so a slower,
 	// older listing never overwrites a newer one.
 	listGen uint64
+	// relist records a tools/list_changed that arrived while a connect was in
+	// flight (its client not yet live): the catalog that connect listed may
+	// be stale, so it is listed again once the connect settles.
+	relist bool
 }
 
 // Host owns the connections to a set of MCP servers and exposes their tools.
@@ -167,6 +178,17 @@ type Host struct {
 	tools   map[string]remoteTool // model-facing name → tool
 	toolSeq []string
 	closed  bool
+	// toolsVer counts tool table rebuilds (ToolsVersion).
+	toolsVer uint64
+
+	// bgCount counts background connects in flight; bgIdle is closed while
+	// it is zero.
+	bgCount int
+	bgIdle  chan struct{}
+	// onBg receives each settled background connect (OnBackgroundSettled);
+	// bgUnreported holds those that settled before it was set.
+	onBg         func(ServerStatus)
+	bgUnreported []ServerStatus
 
 	lifeCtx context.Context
 	cancel  context.CancelFunc
@@ -190,7 +212,9 @@ func New(servers map[string]mcp.ServerConfig, opts Options) *Host {
 		connectTO: opts.ConnectTimeout,
 		servers:   map[string]*server{},
 		tools:     map[string]remoteTool{},
+		bgIdle:    make(chan struct{}),
 	}
+	close(h.bgIdle)
 	if h.toolTO <= 0 {
 		h.toolTO = ToolTimeoutFromEnv(opts.Getenv)
 	}
@@ -210,10 +234,12 @@ func New(servers map[string]mcp.ServerConfig, opts Options) *Host {
 	return h
 }
 
-// Start is New followed by Connect.
+// Start is New followed by Connect, except that the servers
+// Options.Background selects connect in the background: Start returns once
+// the others have connected or failed.
 func Start(ctx context.Context, servers map[string]mcp.ServerConfig, opts Options) *Host {
 	h := New(servers, opts)
-	h.Connect(ctx)
+	h.connect(ctx, true)
 	return h
 }
 
@@ -246,30 +272,126 @@ func (h *Host) AddServers(ctx context.Context, servers map[string]mcp.ServerConf
 // connected or failed (each bounded by the connect timeout). A server that
 // fails is recorded in Status and does not affect the others.
 func (h *Host) Connect(ctx context.Context) {
+	h.connect(ctx, false)
+}
+
+// connect is Connect; with background set, the servers Options.Background
+// selects are connected without waiting for them.
+func (h *Host) connect(ctx context.Context, background bool) {
 	h.mu.Lock()
-	var pending []*server
+	var pending, bg []*server
 	for _, name := range h.order {
 		if s := h.servers[name]; s.status.State == StatePending && !s.starting && !h.closed {
 			s.starting = true
-			pending = append(pending, s)
+			s.relist = false
+			if background && h.opts.Background != nil && h.opts.Background(name, s.cfg) {
+				bg = append(bg, s)
+			} else {
+				pending = append(pending, s)
+			}
 		}
+	}
+	if len(bg) > 0 {
+		if h.bgCount == 0 {
+			h.bgIdle = make(chan struct{})
+		}
+		h.bgCount += len(bg)
 	}
 	h.mu.Unlock()
 
+	for _, s := range bg {
+		go h.connectBackground(s)
+	}
 	var wg sync.WaitGroup
 	for _, s := range pending {
 		wg.Add(1)
 		go func(s *server) {
 			defer wg.Done()
-			client, tr, init, cat, err := h.connectOne(ctx, s.name, s.cfg)
-			h.mu.Lock()
-			defer h.mu.Unlock()
-			s.starting = false
-			h.settle(s, client, tr, init, cat, err)
+			h.connectServer(ctx, s)
 		}(s)
 	}
 	wg.Wait()
 	h.rebuildTools()
+}
+
+// connectServer runs one connect attempt for a server this call owns
+// (s.starting) and records its outcome.
+func (h *Host) connectServer(ctx context.Context, s *server) {
+	client, tr, init, cat, err := h.connectOne(ctx, s.name, s.cfg)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	s.starting = false
+	h.settle(s, client, tr, init, cat, err)
+}
+
+// connectBackground connects one background server, rebuilds the tool table,
+// wakes WaitConnecting and reports the outcome to OnBackgroundSettled. It is
+// bounded by the connect timeout and ended by Close, not by the context Start
+// was given (which may end as soon as Start returns).
+func (h *Host) connectBackground(s *server) {
+	h.connectServer(h.lifeCtx, s)
+	h.rebuildTools()
+	h.mu.Lock()
+	st := s.status
+	h.bgCount--
+	if h.bgCount == 0 {
+		close(h.bgIdle)
+	}
+	f := h.onBg
+	if f == nil {
+		h.bgUnreported = append(h.bgUnreported, st)
+	}
+	h.mu.Unlock()
+	if f != nil {
+		f(st)
+	}
+}
+
+// Connecting reports whether a background connect is still in flight.
+func (h *Host) Connecting() bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.bgCount > 0
+}
+
+// WaitConnecting waits until no background connect is in flight (their tools
+// are then in the tool table), ctx ends or the Host closes, and reports
+// whether there was anything to wait for. The wait is bounded by the connect
+// timeout, as each background connect is.
+func (h *Host) WaitConnecting(ctx context.Context) bool {
+	h.mu.RLock()
+	idle, waiting := h.bgIdle, h.bgCount > 0
+	h.mu.RUnlock()
+	if !waiting {
+		return false
+	}
+	t := time.NewTimer(h.connectTO)
+	defer t.Stop()
+	select {
+	case <-idle:
+	case <-ctx.Done():
+	case <-h.lifeCtx.Done():
+	case <-t.C:
+	}
+	return true
+}
+
+// OnBackgroundSettled sets the function that receives the status of each
+// background connect as it settles (connected, failed, needing sign-in).
+// Connects that settled before it was set are reported to it at once, so a
+// caller can install it after startup without missing an early failure. It
+// is called from the connecting goroutine; nil stops the reports.
+func (h *Host) OnBackgroundSettled(f func(ServerStatus)) {
+	h.mu.Lock()
+	h.onBg = f
+	var early []ServerStatus
+	if f != nil {
+		early, h.bgUnreported = h.bgUnreported, nil
+	}
+	h.mu.Unlock()
+	for _, st := range early {
+		f(st)
+	}
 }
 
 // settle records a connect attempt's outcome. Caller holds h.mu.
@@ -303,6 +425,12 @@ func (h *Host) settle(s *server, client *mcp.Client, tr mcp.Transport, init *mcp
 	s.status.ServerInfo = init.ServerInfo
 	s.status.Instructions = init.Instructions
 	go h.supervise(s.name, client)
+	if s.relist {
+		// tools/list_changed arrived during the connect, so the catalog it
+		// listed may be stale: list again.
+		s.relist = false
+		go h.refreshTools(s.name, client)
+	}
 }
 
 // isRemote reports whether a server is reached over the network (and so is
@@ -525,7 +653,8 @@ func (h *Host) connectOne(ctx context.Context, name string, cfg mcp.ServerConfig
 }
 
 // listTools fetches a server's whole tool catalog, following tools/list
-// pagination (at most maxToolPages pages).
+// pagination (at most maxToolPages pages), with harness text in the
+// definitions neutralized (neutralizeTool).
 func listTools(ctx context.Context, client *mcp.Client) ([]mcp.Tool, error) {
 	var tools []mcp.Tool
 	cursor := ""
@@ -538,7 +667,9 @@ func listTools(ctx context.Context, client *mcp.Client) ([]mcp.Tool, error) {
 		if err != nil {
 			return nil, err
 		}
-		tools = append(tools, page.Tools...)
+		for _, t := range page.Tools {
+			tools = append(tools, neutralizeTool(t))
+		}
 		if page.NextCursor == "" || page.NextCursor == cursor {
 			break
 		}
@@ -550,11 +681,16 @@ func listTools(ctx context.Context, client *mcp.Client) ([]mcp.Tool, error) {
 // refreshTools re-lists a connected server's tools after it sent
 // notifications/tools/list_changed and rebuilds the tool table. A failed
 // listing keeps the catalog the server had; a client that is no longer the
-// server's live one is ignored.
+// server's live one is ignored. A notification that arrives while the server
+// is still connecting (its client not live yet) is remembered, and the
+// connect lists again once it settles (settle).
 func (h *Host) refreshTools(name string, client *mcp.Client) {
 	h.mu.Lock()
 	s := h.servers[name]
 	if h.closed || s == nil || s.client != client {
+		if s != nil && s.starting && s.client == nil {
+			s.relist = true
+		}
 		h.mu.Unlock()
 		return
 	}
@@ -592,6 +728,7 @@ func (h *Host) rebuildTools() {
 	defer h.mu.Unlock()
 	h.tools = map[string]remoteTool{}
 	h.toolSeq = nil
+	h.toolsVer++
 	for _, name := range h.order {
 		s := h.servers[name]
 		switch s.status.State {
@@ -638,6 +775,15 @@ func (h *Host) Tools() []agent.ToolSchema {
 		out = append(out, h.tools[n].schema)
 	}
 	return out
+}
+
+// ToolsVersion changes whenever the tool table is rebuilt (a server
+// connected, dropped or announced tools/list_changed), so a caller holding a
+// copy of Tools can tell cheaply whether to re-read it.
+func (h *Host) ToolsVersion() uint64 {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.toolsVer
 }
 
 // Has reports whether modelToolName is one of this host's tools.
@@ -923,6 +1069,7 @@ func (h *Host) Close() error {
 	}
 	h.tools = map[string]remoteTool{}
 	h.toolSeq = nil
+	h.toolsVer++
 	h.mu.Unlock()
 
 	// Servers shut down in parallel: each stdio server gets a short grace

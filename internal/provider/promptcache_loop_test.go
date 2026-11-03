@@ -183,3 +183,54 @@ func TestOpenRouterAnthropicMainLoopCache(t *testing.T) {
 		t.Errorf("user parts = %v", user)
 	}
 }
+
+// OpenRouter with an Anthropic model, mid tool round: the trailing tool
+// message carries the rolling breakpoint on its text part; an image follow-up
+// after it is skipped for the tool message. Other models get none.
+func TestOpenRouterAnthropicToolResultBreakpoint(t *testing.T) {
+	srv, bodies := cacheServer(t)
+	mc := &ModelCaller{Provider: &OpenRouter{APIKey: "k", BaseURL: srv.URL}, Model: "anthropic/claude-sonnet-4.5"}
+	if _, err := mc.CallModel(context.Background(), loopReq()); err != nil {
+		t.Fatal(err)
+	}
+	marked := func(body map[string]any) []string {
+		var out []string
+		for i, m := range body["messages"].([]any) {
+			mm := m.(map[string]any)
+			parts, _ := mm["content"].([]any)
+			for j, p := range parts {
+				if hasCacheControl(p) {
+					out = append(out, fmt.Sprintf("%v[%d][%d]", mm["role"], i, j))
+				}
+			}
+		}
+		return out
+	}
+	msgs := bodies()[0]["messages"].([]any)
+	last := msgs[len(msgs)-1].(map[string]any)
+	parts, _ := last["content"].([]any)
+	if last["role"] != "tool" || len(parts) != 1 || parts[0].(map[string]any)["text"] != "file body" || !hasCacheControl(parts[0]) {
+		t.Fatalf("tool message = %v", last)
+	}
+	if got := strings.Join(marked(bodies()[0]), " "); got != "system[0][0] tool[3][0]" {
+		t.Errorf("breakpoints = %s", got)
+	}
+
+	// A tool result with an image: the follow-up user message has no text.
+	req := loopReq()
+	req.Messages[2] = agent.UserMessage(agent.ToolResultBlockWithImages("toolu_1", "screenshot", false, []agent.ToolResultImage{{Base64: "iVBORw0KGgo=", MediaType: "image/png"}}))
+	if _, err := mc.CallModel(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(marked(bodies()[1]), " "); got != "system[0][0] tool[3][0]" {
+		t.Errorf("image round breakpoints = %s", got)
+	}
+
+	mc.Model = "openai/gpt-4o"
+	if _, err := mc.CallModel(context.Background(), loopReq()); err != nil {
+		t.Fatal(err)
+	}
+	if got := marked(bodies()[2]); len(got) != 0 {
+		t.Errorf("non-Anthropic model breakpoints = %v", got)
+	}
+}
