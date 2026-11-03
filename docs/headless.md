@@ -42,6 +42,16 @@ Every record is one line of JSON with a `type`; every record except
 | `{"type":"system","subtype":"task_notification","task_id":"…","status":"completed"\|"failed"\|"stopped","output_file":"…","summary":"…"}` | That task ended. |
 | `{"type":"result","subtype":"success"\|"error_max_turns"\|"error_during_execution"\|"error_max_structured_output_retries",…}` | The end of each turn: `result` (or `errors`), `is_error`, `num_turns`, `duration_ms`, `usage`, `modelUsage`, `total_cost_usd`, `permission_denials`, `stop_reason`. |
 
+When a PreToolUse hook returns `permissionDecision: "defer"`, the turn ends
+without running the call: the result is a `success` with `stop_reason` and
+`terminal_reason` `"tool_deferred"` and the call in
+`deferred_tool_use: {"id","name","input"}`. `gocode -p --resume <session>`
+(or `-c`), with no prompt, asks the hooks and permissions again and runs the
+call; the conversation continues from its result. A resume with a prompt
+settles the call first (a hook that defers again then gets an ask). If the
+tool is gone, the result has `stop_reason` `"tool_deferred_unavailable"`,
+`is_error: true`, and the call stays pending.
+
 Subagents' own messages are not forwarded: their work shows as the Agent tool
 call and its result, plus the task events. `parent_tool_use_id` is therefore
 always null.

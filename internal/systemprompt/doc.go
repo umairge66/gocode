@@ -53,5 +53,7 @@
 // Not included: a "lean" prompt variant, output-style variants
 // (Proactive/Concise/…), model-identity lines, focus mode, background-session,
 // surface, brief, autonomy-append, and a session-context (userEmail /
-// attachedProject / gitStatus) attachment block.
+// attachedProject / gitStatus) attachment block. --system-prompt and
+// --append-system-prompt are applied by the caller (internal/cli
+// promptflags.go), which replaces or extends what Build returns.
 package systemprompt

@@ -69,9 +69,9 @@
 //   - command.run (hookhost.Host.CommandRun, conversation commandrun.go):
 //     every builtin, custom, plugin and MCP prompt command the person types;
 //     a hook may rewrite its args, answer { text } in its place (shown as
-//     "<plugin>: <text>"), or pass it on. Skills are invoked through
-//     the Skill tool only (it has no /skill command path), so no skill
-//     raises command.run here.
+//     "<plugin>: <text>"), or pass it on. A skill typed as /name
+//     (conversation skillcommand.go) raises it too; a skill the model runs
+//     through the Skill tool does not.
 //
 // Every other event (ui.*, the prompt.* editor events, session.append and
 // the rest, see NoOpEvents) is accepted by on() and kept, but nothing
