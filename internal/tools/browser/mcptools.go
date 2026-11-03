@@ -17,7 +17,7 @@ import (
 type JavascriptInput struct {
 	Action string `json:"action,omitempty"`
 	Text   string `json:"text"`
-	TabID  *int   `json:"tabId,omitempty"`
+	TabID  *Num   `json:"tabId,omitempty"`
 }
 
 // JavascriptTool evaluates JavaScript in a gocode tab (REPL semantics: the value
@@ -61,7 +61,7 @@ func (t JavascriptTool) Execute(ctx context.Context, in JavascriptInput) (Result
 type ResizeWindowInput struct {
 	Width  int  `json:"width"`
 	Height int  `json:"height"`
-	TabID  *int `json:"tabId,omitempty"`
+	TabID  *Num `json:"tabId,omitempty"`
 }
 
 // ResizeWindowTool resizes the browser window holding a gocode tab.

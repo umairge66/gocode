@@ -82,6 +82,8 @@ it refuses to publish a version that has no section here.
   costing a round trip that weaker models often fumbled. It now runs (through
   the usual permission and input checks) and loads the tool's definition for
   the next request.
+- Browser tools accept a tab id sent as a string (`"tabId":"123"`), which
+  some models do, instead of failing the call.
 - `read_page` and `get_page_text` read long pages in parts (`offset`,
   `max_chars`) instead of stopping at 500,000 characters.
 - A navigation that a redirect lands on a denied site clears the tab instead

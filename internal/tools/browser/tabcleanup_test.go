@@ -531,7 +531,7 @@ func TestNavigateListsTabsWithCleanupNote(t *testing.T) {
 	if !strings.Contains(res.Text, "[12] Go") || !strings.Contains(res.Text, TabCleanupNote("tabs_close")) {
 		t.Fatalf("text = %q", res.Text)
 	}
-	tab := 12
+	tab := Num(12)
 	res, err = NavigateTool{Client: c, ListTabs: true}.Execute(context.Background(), NavigateInput{URL: "https://go.dev", TabID: &tab})
 	if err != nil {
 		t.Fatal(err)

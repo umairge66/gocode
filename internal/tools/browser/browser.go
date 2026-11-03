@@ -72,7 +72,7 @@ func resolve(c Client) (Client, error) {
 // that mark (false); nil leaves the mark as it is.
 type NavigateInput struct {
 	URL      string `json:"url"`
-	TabID    *int   `json:"tabId,omitempty"`
+	TabID    *Num   `json:"tabId,omitempty"`
 	KeepOpen *bool  `json:"keep_open,omitempty"`
 }
 
@@ -118,7 +118,7 @@ func (t NavigateTool) Execute(ctx context.Context, in NavigateInput) (Result, er
 // ReadPageInput is the read_page / get_page_text parameters. tabId is optional:
 // when omitted the host reads the active tab.
 type ReadPageInput struct {
-	TabID *int `json:"tabId,omitempty"`
+	TabID *Num `json:"tabId,omitempty"`
 	// Offset is the character to start from (0 = the start), for reading a
 	// long page in parts; MaxChars caps one reply (default PageTextChunk).
 	Offset   *Num `json:"offset,omitempty"`
@@ -264,7 +264,7 @@ func (t TabsCreateTool) Execute(ctx context.Context, in TabsCreateInput) (Result
 
 // TabsCloseInput is the tabs_close parameters.
 type TabsCloseInput struct {
-	TabID int `json:"tabId"`
+	TabID Num `json:"tabId"`
 }
 
 // TabsCloseTool closes a tab by id. It is an ACTION and is gated like Bash.
@@ -285,7 +285,7 @@ func (t TabsCloseTool) Execute(ctx context.Context, in TabsCloseInput) (Result, 
 	_ = json.Unmarshal(raw, &r)
 	id := r.Closed
 	if id == 0 {
-		id = in.TabID
+		id = int(in.TabID)
 	}
 	return Result{Text: fmt.Sprintf("Closed tab %d", id)}, nil
 }
@@ -296,7 +296,7 @@ func (t TabsCloseTool) Execute(ctx context.Context, in TabsCloseInput) (Result, 
 // captures the active window when omitted).
 type ScreenshotInput struct {
 	WindowID *int `json:"windowId,omitempty"`
-	TabID    *int `json:"tabId,omitempty"`
+	TabID    *Num `json:"tabId,omitempty"`
 	// SaveToDisk also saves the capture into the session's private screenshot
 	// directory and reports the path (see ScreenshotSaver). Not sent to the
 	// extension.
@@ -386,7 +386,7 @@ type ComputerInput struct {
 	Modifiers string  `json:"modifiers,omitempty"`
 	// Repeat presses the key sequence of a key action this many times (1-100).
 	Repeat Num  `json:"repeat,omitempty"`
-	TabID  *int `json:"tabId,omitempty"`
+	TabID  *Num `json:"tabId,omitempty"`
 	// SaveToDisk / SaveTo: see ScreenshotInput. Only screenshot / zoom use them;
 	// neither is sent to the extension.
 	SaveToDisk bool   `json:"save_to_disk,omitempty"`
@@ -465,7 +465,7 @@ func (t ComputerTool) Execute(ctx context.Context, in ComputerInput) (Result, er
 // visible.
 type FindInput struct {
 	Query         string `json:"query"`
-	TabID         *int   `json:"tabId,omitempty"`
+	TabID         *Num   `json:"tabId,omitempty"`
 	Limit         Num    `json:"limit,omitempty"`
 	IncludeHidden bool   `json:"includeHidden,omitempty"`
 }
@@ -513,7 +513,7 @@ func (t FindTool) Execute(ctx context.Context, in FindInput) (Result, error) {
 type FormInputInput struct {
 	Ref   string          `json:"ref"`
 	Value json.RawMessage `json:"value"`
-	TabID *int            `json:"tabId,omitempty"`
+	TabID *Num            `json:"tabId,omitempty"`
 }
 
 // FormInputTool sets the value of a form field (by ref) and fires input/change

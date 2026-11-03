@@ -177,3 +177,25 @@ func TestReadPage_Paging(t *testing.T) {
 		t.Fatalf("past the end = %q", res.Text)
 	}
 }
+
+// Models sometimes send a tab id as a string; it is read as the number.
+func TestTabIDAcceptsNumericString(t *testing.T) {
+	var in FindInput
+	if err := json.Unmarshal([]byte(`{"query":"x","tabId":"1527560224"}`), &in); err != nil || in.TabID == nil || *in.TabID != 1527560224 {
+		t.Fatalf("string tab id: %v %v", in.TabID, err)
+	}
+	var cl TabsCloseInput
+	if err := json.Unmarshal([]byte(`{"tabId":"42"}`), &cl); err != nil || cl.TabID != 42 {
+		t.Fatalf("tabs_close: %v %v", cl.TabID, err)
+	}
+	for _, bad := range []string{`"abc"`, `"12px"`, `""`} {
+		if err := json.Unmarshal([]byte(`{"query":"x","tabId":`+bad+`}`), &in); err == nil {
+			t.Fatalf("%s accepted", bad)
+		}
+	}
+	// It goes to the extension as a JSON number.
+	b, _ := json.Marshal(in)
+	if !strings.Contains(string(b), `"tabId":1527560224`) {
+		t.Fatalf("marshalled = %s", b)
+	}
+}

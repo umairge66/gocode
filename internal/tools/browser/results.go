@@ -9,9 +9,11 @@ import (
 	"unicode/utf8"
 )
 
-// Num is a whole-number tool parameter (a pixel coordinate, a count) that the
-// schema declares as a JSON number: a fractional value such as 120.5 is
-// accepted and rounded to the nearest integer instead of failing the call.
+// Num is a whole-number tool parameter (a pixel coordinate, a count, a tab
+// id) that the schema declares as a JSON number. Models do not always send
+// one: a fractional value such as 120.5 is rounded to the nearest integer,
+// and a number sent as a string ("1527560224") is read as that number,
+// instead of failing the call.
 type Num int
 
 func (n *Num) UnmarshalJSON(b []byte) error {
@@ -19,8 +21,15 @@ func (n *Num) UnmarshalJSON(b []byte) error {
 	if s == "null" {
 		return nil
 	}
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		var str string
+		if err := json.Unmarshal([]byte(s), &str); err != nil {
+			return fmt.Errorf("browser: %s is not a number", s)
+		}
+		s = strings.TrimSpace(str)
+	}
 	f, err := strconv.ParseFloat(s, 64)
-	if err != nil || math.IsNaN(f) || math.IsInf(f, 0) || math.Abs(f) > math.MaxInt32 {
+	if err != nil || math.IsNaN(f) || math.IsInf(f, 0) || math.Abs(f) > 1<<53 {
 		return fmt.Errorf("browser: %s is not a number", s)
 	}
 	*n = Num(math.Round(f))
