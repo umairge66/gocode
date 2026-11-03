@@ -261,7 +261,9 @@ type AgentTool struct {
 
 	// MCPToolNames returns the names of the tools currently available, read at
 	// spawn time for an agent's RequiredMcpServers check ("mcp__<server>__…"
-	// names identify the servers with tools). nil falls back to ToolNames.
+	// names identify the servers with tools) and for the MCP part of the
+	// child's tool roster, so servers that connected after ToolNames was
+	// captured count. nil falls back to ToolNames.
 	MCPToolNames func() []string
 
 	// Worktrees creates and cleans up `isolation: "worktree"` worktrees. nil
@@ -337,9 +339,9 @@ func NewAgentTool(tasks *subagent.TaskRegistry, defs *agentsdef.Registry, newMod
 }
 
 // notifyResumeDone formats a resumed turn's result the same way a foreground
-// spawn would and hands it to the resume/background notifier. Per-turn tool
-// uses and duration are not metered for a resumed turn, so the usage trailer
-// carries zeroes.
+// spawn would and hands it to the resume/background notifier. Per-turn
+// tokens, tool uses and duration are not metered for a resumed turn, so the
+// usage trailer carries zeroes.
 func (t *AgentTool) notifyResumeDone(_ string, task *subagent.Task, report subagent.Report) {
 	notify := t.OnSubagentUpdate
 	if notify == nil {
@@ -348,7 +350,7 @@ func (t *AgentTool) notifyResumeDone(_ string, task *subagent.Task, report subag
 	if notify == nil || task == nil {
 		return
 	}
-	notify(task, formatCompleted(task.AgentType, report, task, 0, 0))
+	notify(task, formatCompleted(task.AgentType, report, task, spawnUsage{}))
 }
 
 // sessionManager returns the shared live-session manager, creating one bound to
@@ -1002,13 +1004,39 @@ func (t *AgentTool) resolveModel(override string, a subagent.AgentType) string {
 	return t.ParentModel
 }
 
+// rosterNames is the session tool roster a spawn filters: ToolNames, with
+// its MCP tools replaced by the ones live now (MCPToolNames), since MCP
+// servers connect and disconnect after the roster is captured. Only MCP
+// names are taken from the live list: it also carries main-agent-only tools
+// (AmendAgent, Workflow) that no subagent gets.
+func (t *AgentTool) rosterNames() []string {
+	if t.MCPToolNames == nil || len(t.ToolNames) == 0 {
+		return t.ToolNames
+	}
+	out := make([]string, 0, len(t.ToolNames))
+	seen := map[string]bool{}
+	for _, n := range t.ToolNames {
+		if subagent.MCPServerOfTool(n) == "" {
+			out = append(out, n)
+			seen[n] = true
+		}
+	}
+	for _, n := range t.MCPToolNames() {
+		if subagent.MCPServerOfTool(n) != "" && !seen[n] {
+			out = append(out, n)
+			seen[n] = true
+		}
+	}
+	return out
+}
+
 // allowedTools computes the child's concrete tool list. The Agent tool is
 // dropped when the child would be refused by the depth cap anyway.
 func (t *AgentTool) allowedTools(a subagent.AgentType, childDepth int) []string {
 	canNest := childDepth < t.maxDepth()
 	var out []string
-	if len(t.ToolNames) > 0 {
-		for _, n := range t.ToolNames {
+	if roster := t.rosterNames(); len(roster) > 0 {
+		for _, n := range roster {
 			if n == string(protocol.CmdSubagentHandback) {
 				continue
 			}
@@ -1173,8 +1201,9 @@ func (t *AgentTool) spawnWith(ctx context.Context, sp *subagent.Spawner, req sub
 		inner = t.NewDispatcher(allowed)
 	}
 	counter := &countingDispatcher{inner: inner}
+	tokens := &usageCaller{inner: mc}
 	start := time.Now()
-	report, task, err := sp.Spawn(ctx, req, mc, counter)
+	report, task, err := sp.Spawn(ctx, req, tokens, counter)
 	if wt != nil {
 		// A stopped (resumable) agent keeps its worktree for the resume.
 		path, branch := wt.Path, wt.Branch
@@ -1203,15 +1232,24 @@ func (t *AgentTool) spawnWith(ctx context.Context, sp *subagent.Spawner, req sub
 	if task != nil && task.Status == subagent.StatusKilled && !report.Delivered {
 		return spawnOutcome{report: report, task: task}, fmt.Errorf("the %s agent was stopped before it delivered a report", req.SubagentType)
 	}
-	text := formatCompleted(req.SubagentType, report, task, counter.count.Load(), time.Since(start))
+	text := formatCompleted(req.SubagentType, report, task, spawnUsage{totalTokens: tokens.total(), toolUses: counter.count.Load(), elapsed: time.Since(start)})
 	return spawnOutcome{text: text, report: report, task: task}, nil
 }
 
+// spawnUsage is what a finished spawn's <usage> block reports.
+type spawnUsage struct {
+	// totalTokens is the subagent's context at its last model response:
+	// that response's input (cached and cache-written included) plus output
+	// tokens, as Claude Code reports it. Its spend is in the session ledger.
+	totalTokens int
+	toolUses    int64
+	elapsed     time.Duration
+}
+
 // formatCompleted renders the completed-status tool result: the report, then —
-// except for Explore/Plan — the agentId line and the <usage> block. Subagent
-// tokens are not metered, so the usage block carries tool_uses and
-// duration_ms only.
-func formatCompleted(agentType string, report subagent.Report, task *subagent.Task, toolUses int64, elapsed time.Duration) string {
+// except for Explore/Plan — the agentId line and the <usage> block
+// (total_tokens, tool_uses, duration_ms).
+func formatCompleted(agentType string, report subagent.Report, task *subagent.Task, u spawnUsage) string {
 	var body string
 	switch {
 	case report.Delivered && strings.TrimSpace(report.Text) != "":
@@ -1234,7 +1272,7 @@ func formatCompleted(agentType string, report subagent.Report, task *subagent.Ta
 		}
 	}
 	if task != nil && (!subagent.IsSpecialBuiltIn(agentType) || wtInfo != "") {
-		body += fmt.Sprintf("\nagentId: %s%s\n<usage>tool_uses: %d\nduration_ms: %d</usage>", task.ID, wtInfo, toolUses, elapsed.Milliseconds())
+		body += fmt.Sprintf("\nagentId: %s%s\n<usage>total_tokens: %d\ntool_uses: %d\nduration_ms: %d</usage>", task.ID, wtInfo, u.totalTokens, u.toolUses, u.elapsed.Milliseconds())
 	}
 	return truncateResult(body)
 }
@@ -1349,6 +1387,31 @@ func (c *countingDispatcher) IsConcurrencySafe(call agent.ToolUse) bool {
 	}
 	return false
 }
+
+// usageCaller records the token usage of the last response a subagent's
+// model returned (total_tokens in the <usage> block).
+type usageCaller struct {
+	inner agent.ModelCaller
+	last  atomic.Int64
+}
+
+// Unwrap returns the wrapped caller (so an inline skill the agent invokes can
+// switch that caller's model/effort).
+func (u *usageCaller) Unwrap() agent.ModelCaller { return u.inner }
+
+func (u *usageCaller) CallModel(ctx context.Context, req agent.ModelRequest) (agent.ModelResponse, error) {
+	resp, err := u.inner.CallModel(ctx, req)
+	if err == nil {
+		us := resp.Usage
+		if n := us.InputTokens + us.CachedInputTokens + us.CacheWriteTokens + us.OutputTokens; n > 0 {
+			u.last.Store(int64(n))
+		}
+	}
+	return resp, err
+}
+
+// total is the last response's token count (0 when none was reported).
+func (u *usageCaller) total() int { return int(u.last.Load()) }
 
 // signalingCaller calls onCall before every model request; used to learn that
 // a background spawn has registered its task and started its loop.

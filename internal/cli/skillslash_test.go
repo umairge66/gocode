@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/umairge66/gocode/internal/agent"
+	"github.com/umairge66/gocode/internal/subagent"
 )
 
 // TestSessionSkillSlashCommand: in a built session, `/name args` runs a
@@ -53,5 +54,29 @@ func TestSessionSkillListing_DeniedAndConditional(t *testing.T) {
 	rt.conv.Hooks.PostToolUse(context.Background(), agent.ToolUse{Name: "Read", Input: in}, agent.ToolResult{})
 	if l := rt.conv.Skills.Listing(); !strings.Contains(l, "- gostyle: go style") {
 		t.Fatalf("conditional skill not listed after the read: %q", l)
+	}
+}
+
+// A subagent's file touches activate `paths:` skills too: the registry is
+// the session's, shared with the main agent.
+func TestSubagentFileTouchActivatesConditionalSkill(t *testing.T) {
+	env, _, _, cwd := sessionEnv(t, "")
+	writeTestFile(t, filepath.Join(cwd, ".gocode", "skills", "gostyle", "SKILL.md"), "---\ndescription: go style\npaths: \"*.go\"\n---\nb\n")
+
+	s := &printSession{Model: "parent-model", Provider: providerOpenRouter}
+	rt := buildSession(context.Background(), env, s, fakeCaller{reply: "ok"}, sessionConfig{})
+	defer rt.Close("other")
+
+	if l := rt.conv.Skills.Listing(); strings.Contains(l, "gostyle") {
+		t.Fatalf("listing = %q", l)
+	}
+	hooks := rt.agentTool.ChildHooks(subagent.AgentType{Name: "general-purpose"}, "")
+	if hooks == nil {
+		t.Fatal("no subagent hooks")
+	}
+	in, _ := json.Marshal(map[string]string{"file_path": filepath.Join("pkg", "main.go")})
+	hooks.PostToolUse(context.Background(), agent.ToolUse{Name: "Edit", Input: in}, agent.ToolResult{})
+	if l := rt.conv.Skills.Listing(); !strings.Contains(l, "- gostyle: go style") {
+		t.Fatalf("conditional skill not listed after the subagent's edit: %q", l)
 	}
 }
