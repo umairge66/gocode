@@ -63,8 +63,9 @@ type PermissionRequest struct {
 	Tool protocol.Tool
 	// ToolName is the model-facing tool name (== string(Tool)).
 	ToolName string
-	// Input is the raw model JSON input, for the prompt's per-tool detail
-	// rendering (Bash command, Edit/Write path + diff, WebFetch domain, …).
+	// Input is the JSON input that will run — the model's, or a PreToolUse
+	// hook's rewrite of it — for the prompt's per-tool detail rendering (Bash
+	// command, Edit/Write path + diff, WebFetch domain, …).
 	Input json.RawMessage
 	// RuleContent is the permission rule content for this call: the Bash
 	// command, the file path, "domain:<host>" for WebFetch, "" for a whole-tool
@@ -324,6 +325,9 @@ func (d *Dispatcher) resolveAskFrom(ctx context.Context, pc toolreg.Call, input 
 		req.Suggested = nil
 	}
 
+	if d.OnPermissionPrompt != nil {
+		d.OnPermissionPrompt(ctx, req)
+	}
 	resp, err := prompter.Prompt(ctx, req)
 	if err != nil {
 		// Cancelled turn or a prompter failure: a denial with the rejection
@@ -485,6 +489,9 @@ func dedupeStrings(in []string) []string {
 // allow rule granted meanwhile would have prevented: not a safety check, not a
 // plan-mode hold and not an ask rule.
 func askSatisfiableByAllowRule(decision toolreg.Decision) bool {
+	if decision.SafetyAsk {
+		return false
+	}
 	switch decision.ReasonType {
 	case toolreg.ReasonSafetyCheck, toolreg.ReasonRule, ReasonSandboxOverride:
 		// A run outside the sandbox is approved per run (sandbox.go).
