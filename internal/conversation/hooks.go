@@ -183,6 +183,13 @@ type MidTurnFeed interface {
 	TakeMidTurn() []string
 }
 
+// MidTurnBlockFeed is the optional capability of a ContextFeed whose
+// mid-turn items are whole content blocks (a queued user message with
+// images) rather than text. TakeMidTurnBlocks is asked after TakeMidTurn.
+type MidTurnBlockFeed interface {
+	TakeMidTurnBlocks() []agent.ContentBlock
+}
+
 // AddContextFeed registers an external context feed. Safe to call from any
 // goroutine.
 func (c *Conversation) AddContextFeed(f ContextFeed) {
@@ -232,14 +239,15 @@ func (c *Conversation) takeMidTurnContext(context.Context) []agent.ContentBlock 
 	c.ctxMu.Unlock()
 	var out []agent.ContentBlock
 	for _, f := range feeds {
-		mf, ok := f.(MidTurnFeed)
-		if !ok {
-			continue
-		}
-		for _, text := range mf.TakeMidTurn() {
-			if strings.TrimSpace(text) != "" {
-				out = append(out, agent.TextBlock(text))
+		if mf, ok := f.(MidTurnFeed); ok {
+			for _, text := range mf.TakeMidTurn() {
+				if strings.TrimSpace(text) != "" {
+					out = append(out, agent.TextBlock(text))
+				}
 			}
+		}
+		if bf, ok := f.(MidTurnBlockFeed); ok {
+			out = append(out, bf.TakeMidTurnBlocks()...)
 		}
 	}
 	return out

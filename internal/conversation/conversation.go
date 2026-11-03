@@ -200,6 +200,11 @@ type Conversation struct {
 	// OnThinkingDelta optionally receives the incremental extended-thinking text
 	// the same way. Default nil.
 	OnThinkingDelta func(textDelta string)
+	// OnToolUseStart and OnToolInputDelta optionally follow each tool_use
+	// block as it streams: its start (id, tool name), then each partial-JSON
+	// fragment of its input (agent.StreamHandler). Default nil.
+	OnToolUseStart   func(id, name string)
+	OnToolInputDelta func(id, partialJSON string)
 
 	// OnToolEvent, when non-nil, is notified of each tool dispatch as the agent
 	// loop runs it: a ToolStart before the dispatcher runs the tool and a ToolEnd
@@ -231,6 +236,12 @@ type Conversation struct {
 	// the user knows an automatic compaction happened. It runs on the turn
 	// goroutine; the cli handler only forwards to program.Send / stdout.
 	OnAutoCompact func(messagesSummarized, beforeTokens, afterTokens int)
+	// OnCompactBoundary, when non-nil, is told about every compaction that
+	// rebuilt the history (auto, manual /compact, or the emergency
+	// context-window recovery), with its trigger and the context size before
+	// it, once the compact boundary is recorded. It runs on the turn
+	// goroutine.
+	OnCompactBoundary func(trigger compaction.CompactTrigger, preTokens int)
 
 	// autoCompactFailures counts consecutive failed autocompactions; at
 	// autoCompactMaxFailures the breaker trips and
@@ -759,12 +770,7 @@ func (c *Conversation) runModelTurnBlocks(ctx context.Context, content []agent.C
 	}
 	// Thread the optional streaming callbacks into the loop. Nil callbacks leave
 	// the loop's StreamHandler nil, so the turn behaves exactly as before.
-	if c.OnDelta != nil || c.OnThinkingDelta != nil {
-		loop.StreamHandler = &agent.StreamHandler{
-			OnText:     c.OnDelta,
-			OnThinking: c.OnThinkingDelta,
-		}
-	}
+	loop.StreamHandler = c.streamHandler()
 	res, emergency := c.runLoopRecovering(ctx, &loop)
 	compacted = compacted || emergency
 	c.History = res.Messages
@@ -783,6 +789,89 @@ func (c *Conversation) runModelTurnBlocks(ctx context.Context, content []agent.C
 		Err:           res.Err,
 		Notices:       c.takeTurnNotices(),
 	}, nil
+}
+
+// streamHandler builds the loop's StreamHandler from the streaming callbacks,
+// or nil when none is set.
+func (c *Conversation) streamHandler() *agent.StreamHandler {
+	if c.OnDelta == nil && c.OnThinkingDelta == nil && c.OnToolUseStart == nil && c.OnToolInputDelta == nil {
+		return nil
+	}
+	return &agent.StreamHandler{
+		OnText:           c.OnDelta,
+		OnThinking:       c.OnThinkingDelta,
+		OnToolUseStart:   c.OnToolUseStart,
+		OnToolInputDelta: c.OnToolInputDelta,
+	}
+}
+
+// SubmitContent runs a user turn given as content blocks: text plus any
+// attached images. Text alone takes the Submit path (slash commands,
+// hooks, …). With images the text is never read as a slash command: the
+// UserPromptSubmit hooks see the text, and the user turn carries the text
+// followed by the images.
+func (c *Conversation) SubmitContent(ctx context.Context, content []agent.ContentBlock) (Result, error) {
+	var texts []string
+	var images []agent.ContentBlock
+	for _, b := range content {
+		switch b.Type {
+		case agent.BlockText:
+			if strings.TrimSpace(b.Text) != "" {
+				texts = append(texts, b.Text)
+			}
+		case agent.BlockImage:
+			if b.Source != nil {
+				images = append(images, b)
+			}
+		}
+	}
+	prompt := strings.Join(texts, "\n")
+	if len(images) == 0 {
+		return c.Submit(ctx, prompt)
+	}
+	blocked, extra, notices, prompt := c.runUserPromptSubmit(ctx, prompt)
+	if blocked != nil {
+		return *blocked, nil
+	}
+	var blocks []agent.ContentBlock
+	if strings.TrimSpace(prompt) != "" {
+		blocks = append(blocks, agent.TextBlock(prompt))
+	}
+	blocks = append(blocks, images...)
+	res, err := c.runModelTurnBlocks(ctx, blocks, extra...)
+	res.Notices = append(notices, res.Notices...)
+	return res, err
+}
+
+// SetModel switches the session's model outside a turn, as `/model <id>`
+// does: the model policy (ModelGate) is consulted first. It returns the
+// model switched to, or "" and the refusal message.
+func (c *Conversation) SetModel(id string) (string, string) {
+	if c.ModelGate != nil {
+		m, refusal := c.ModelGate(id)
+		if refusal != "" {
+			return "", refusal
+		}
+		id = m
+	}
+	c.ModelID = id
+	c.retargetModel(id)
+	return id, ""
+}
+
+// SetPermissionMode switches the permission mode outside a turn: the host's
+// dispatcher (OnModeChange) and the hooks' session info follow. Unlike the
+// plan-mode builtin it starts no turn.
+func (c *Conversation) SetPermissionMode(m toolreg.Mode) {
+	c.Mode = m
+	if c.OnModeChange != nil {
+		c.OnModeChange(m)
+	}
+	if c.HookHost != nil {
+		si := c.HookHost.Session()
+		si.PermissionMode = string(m)
+		c.HookHost.SetSession(si)
+	}
 }
 
 // ResumeWithQueuedContext runs a model turn with NO new user input, injecting
@@ -844,12 +933,7 @@ func (c *Conversation) ResumeWithQueuedContext(ctx context.Context) (res Result,
 		OnMessage:   c.OnMessage,
 		Done:        c.TurnDone,
 	}
-	if c.OnDelta != nil || c.OnThinkingDelta != nil {
-		loop.StreamHandler = &agent.StreamHandler{
-			OnText:     c.OnDelta,
-			OnThinking: c.OnThinkingDelta,
-		}
-	}
+	loop.StreamHandler = c.streamHandler()
 	r, emergency := c.runLoopRecovering(ctx, &loop)
 	c.History = r.Messages
 	c.persistHistory()
@@ -876,29 +960,17 @@ func (c *Conversation) ResumeWithQueuedContext(ctx context.Context) (res Result,
 func (c *Conversation) applyEffect(ctx context.Context, eff builtincmds.Effect) (Result, error) {
 	switch eff.Kind {
 	case builtincmds.EffectSetModel:
-		if c.ModelGate != nil {
-			m, refusal := c.ModelGate(eff.Model)
-			if refusal != "" {
-				return c.localResult(builtincmds.Effect{Kind: builtincmds.EffectPrintText, Text: refusal, Args: eff.Args}), nil
-			}
-			eff.Model = m
-		}
 		// Retarget the model used by the NEXT request.
-		c.ModelID = eff.Model
-		c.retargetModel(eff.Model)
+		m, refusal := c.SetModel(eff.Model)
+		if refusal != "" {
+			return c.localResult(builtincmds.Effect{Kind: builtincmds.EffectPrintText, Text: refusal, Args: eff.Args}), nil
+		}
+		eff.Model = m
 		return c.localResult(eff), nil
 
 	case builtincmds.EffectSetPermissionMode:
 		wasPlan := c.Mode == toolreg.ModePlan
-		c.Mode = eff.Mode
-		if c.OnModeChange != nil {
-			c.OnModeChange(eff.Mode)
-		}
-		if c.HookHost != nil {
-			si := c.HookHost.Session()
-			si.PermissionMode = string(eff.Mode)
-			c.HookHost.SetSession(si)
-		}
+		c.SetPermissionMode(eff.Mode)
 		if eff.Mode == toolreg.ModePlan {
 			return c.planCommand(ctx, eff, wasPlan)
 		}
@@ -1061,6 +1133,9 @@ func (c *Conversation) runCompaction(ctx context.Context, trigger compaction.Com
 	// The rebuilt history has no response usage yet: estimate until the next one.
 	c.resetUsage()
 	c.persistHistory()
+	if c.OnCompactBoundary != nil {
+		c.OnCompactBoundary(trigger, preTokens)
+	}
 	return res, nil
 }
 
