@@ -31,6 +31,15 @@ func sessionMetaOf(conv *conversation.Conversation) (sessionMetaRecorder, bool) 
 	return rec, ok && rec != nil
 }
 
+// conversationTitle is conv's /rename title, "" when it has none or is not
+// persisted.
+func conversationTitle(conv *conversation.Conversation) string {
+	if rec, ok := sessionMetaOf(conv); ok {
+		return rec.CustomTitle()
+	}
+	return ""
+}
+
 // sessionMetaUnavailable is the reply when the session is not persisted.
 const sessionMetaUnavailable = "Session persistence is disabled; this conversation is not saved, so it cannot be renamed or tagged."
 

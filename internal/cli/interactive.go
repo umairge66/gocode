@@ -94,6 +94,10 @@ type interactiveSession struct {
 	// sessionID identifies this session in the status-line context payload.
 	sessionID string
 
+	// sessionName returns the session's /rename title for the status-line
+	// payload's session_name ("" when unnamed). Nil reports none.
+	sessionName func() string
+
 	// asker is the interactive AskUserQuestion seam, created per session and
 	// injected into the toolrun dispatcher (via defaultNewConversation) so an
 	// AskUserQuestion tool call drives the ui dialog. It is bound to the program's
@@ -289,6 +293,9 @@ func runInteractiveSession(env *Env, s *interactiveSession, initialPrompt string
 		return code
 	}
 	conv := rt.conv
+	// The status line names the session by its /rename title, read from the
+	// live conversation's store (a /clear or /resume swaps it).
+	s.sessionName = func() string { return conversationTitle(rt.conv) }
 	// A background worker keeps its job record's state.json current.
 	status := newJobStatus(envGetenv(env), rt.sessionID, updateCurrentVersion())
 	s.asker.status = status
@@ -515,6 +522,7 @@ func runInteractiveSession(env *Env, s *interactiveSession, initialPrompt string
 	// input for a minute after a turn (hookevents.go).
 	idle := newIdleNotifier(rt.hooks, idlePromptDelay)
 	defer idle.disarm()
+	drv.refreshStatus = refreshStatusLine
 	drv.onTurnEnd = func() {
 		refreshStatusLine()
 		// The card style's info footer: the branch may have changed this turn.
@@ -806,6 +814,10 @@ type turnDriver struct {
 	// onTurnEnd is invoked once after each turn finishes (after the status is
 	// cleared to idle), used to re-render the status-line footer. Nil disables it.
 	onTurnEnd func()
+
+	// refreshStatus re-renders the status line outside a turn (after a
+	// /rename changes the session_name it shows). Nil disables it.
+	refreshStatus func()
 
 	// onBeforeTurn is invoked once at the start of each turn, before the model is
 	// reached. It keeps the autocompact window pointed at the active model (the
@@ -1955,6 +1967,9 @@ func (d *turnDriver) renderLocal(eff *builtincmds.Effect) {
 		case "rename":
 			// /rename <title>: name the session (sessionmeta.go).
 			d.showOutput(renameCommand(d.conv, eff.Args))
+			if d.refreshStatus != nil {
+				go d.refreshStatus()
+			}
 			return
 		case "tag":
 			// /tag [<name>|--remove <name>|--clear] (sessionmeta.go).

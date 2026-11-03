@@ -109,9 +109,9 @@ func (s *interactiveSession) renderStatusLine(ctx context.Context, env *Env) str
 }
 
 // buildStatusContext assembles the statusline.Context handed to the command on
-// stdin: the session id, the active model, the cwd, the permission mode, and —
-// when a git repository is cheaply reachable — the current branch. The
-// Context has no plain top-level branch field, so the branch is
+// stdin: the session id and /rename title, the active model, the cwd, the
+// permission mode, and — when a git repository is cheaply reachable — the
+// current branch. The Context has no plain top-level branch field, so the branch is
 // carried on Workspace.GitWorktree (git_worktree); it is left empty when git is
 // unavailable, detached, or slow.
 func (s *interactiveSession) buildStatusContext(ctx context.Context, env *Env) *statusline.Context {
@@ -122,6 +122,9 @@ func (s *interactiveSession) buildStatusContext(ctx context.Context, env *Env) *
 		PermissionMode: string(s.print.Mode),
 		Model:          statusline.Model{ID: s.print.Model, DisplayName: s.print.Model},
 		Workspace:      statusline.Workspace{CurrentDir: cwd, ProjectDir: cwd},
+	}
+	if s.sessionName != nil {
+		sc.SessionName = s.sessionName()
 	}
 	if branch := cheapGitBranch(ctx, cwd); branch != "" {
 		sc.Workspace.GitWorktree = branch
