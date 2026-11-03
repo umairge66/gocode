@@ -59,9 +59,21 @@ func WriteMessage(w io.Writer, v any) error {
 	return nil
 }
 
+// FrameTooLargeError is ReadMessage's error for a frame whose length prefix
+// exceeds MaxReadSize. The payload has not been read: a reader that wants to
+// carry on discards Size bytes and reads the next frame.
+type FrameTooLargeError struct {
+	Size uint32
+}
+
+func (e *FrameTooLargeError) Error() string {
+	return fmt.Sprintf("chromehost: frame length %d exceeds the %d-byte extension->host limit", e.Size, MaxReadSize)
+}
+
 // ReadMessage reads one native-messaging frame from r and returns its raw JSON
 // payload. It reads the 4-byte little-endian length prefix, rejects a length
-// greater than MaxReadSize, then reads exactly that many payload bytes.
+// greater than MaxReadSize (with a *FrameTooLargeError), then reads exactly
+// that many payload bytes.
 //
 // EOF handling: a clean EOF before any byte of the length prefix returns
 // io.EOF unwrapped, so a read loop can treat it as a normal end-of-stream. An
@@ -80,7 +92,7 @@ func ReadMessage(r io.Reader) (json.RawMessage, error) {
 	}
 	n := binary.LittleEndian.Uint32(prefix[:])
 	if n > MaxReadSize {
-		return nil, fmt.Errorf("chromehost: frame length %d exceeds the %d-byte extension->host limit", n, MaxReadSize)
+		return nil, &FrameTooLargeError{Size: n}
 	}
 	payload := make([]byte, n)
 	if _, err := io.ReadFull(r, payload); err != nil {

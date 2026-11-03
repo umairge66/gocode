@@ -24,8 +24,9 @@ var _ Relay = (*Host)(nil)
 
 // DefaultControlCallTimeout bounds a single relayed browser command when the
 // client supplies no earlier deadline, so a wedged extension cannot pin a server
-// goroutine forever. It is generous enough for a screenshot capture.
-const DefaultControlCallTimeout = 120 * time.Second
+// goroutine forever. It is generous enough for a screenshot capture or a long
+// browser_batch, and equals the native host's own DefaultRequestTimeout.
+const DefaultControlCallTimeout = DefaultRequestTimeout
 
 // ControlServer accepts LOCAL control-socket connections from gocode sessions and
 // relays each request to the extension through Relay. It reuses the daemon's
@@ -206,6 +207,14 @@ func (s *ControlServer) serveConn(ctx context.Context, conn net.Conn, l net.List
 	// (a cancelled host shutdown aborts an in-flight relay).
 	callCtx, cancel := context.WithTimeout(ctx, s.callTimeout())
 	defer cancel()
+
+	// A client sends one request and then only waits for the reply, so any
+	// read that returns means it went away (cancelled, timed out, exited):
+	// cancel the relay, which tells the extension to stop the command.
+	go func() {
+		_, _ = br.ReadByte()
+		cancel()
+	}()
 
 	var params any
 	if len(req.Params) > 0 {

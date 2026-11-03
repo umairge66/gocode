@@ -138,6 +138,37 @@ func TestControl_ContextCancelAbortsPendingCall(t *testing.T) {
 	}
 }
 
+// ctxRelay blocks until its context ends and reports that it did.
+type ctxRelay struct{ ended chan error }
+
+func (r *ctxRelay) Send(ctx context.Context, _ string, _ any) (json.RawMessage, error) {
+	<-ctx.Done()
+	r.ended <- ctx.Err()
+	return nil, ctx.Err()
+}
+
+// When the client gives up, the server cancels the relay (which tells the
+// extension to stop) instead of letting it run to the call timeout.
+func TestControl_ClientGoneCancelsRelay(t *testing.T) {
+	relay := &ctxRelay{ended: make(chan error, 1)}
+	client, stop := startServer(t, relay)
+	defer stop()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { time.Sleep(30 * time.Millisecond); cancel() }()
+	if _, err := client.Call(ctx, MethodBrowserBatch, nil); err == nil {
+		t.Fatal("Call returned nil, want a cancellation error")
+	}
+	select {
+	case err := <-relay.ended:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("relay ended with %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("relay was not cancelled when the client went away")
+	}
+}
+
 func TestControl_ListenTakesOverStaleSocket(t *testing.T) {
 	// Singleton/takeover: a stale socket file left by a prior host is replaced.
 	ep := ControlEndpoint{Network: "unix", Address: filepath.Join(shortSockDir(t), "i", ChromeHostSocketName)}

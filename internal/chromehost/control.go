@@ -156,24 +156,35 @@ func writeControlFrame(w io.Writer, v any) error {
 }
 
 // readControlFrame reads one newline-delimited JSON frame from br, rejecting a
-// frame larger than maxControlFrame.
+// frame larger than maxControlFrame. It stops reading as soon as the frame is
+// too large, so a peer that never sends a newline cannot make it buffer an
+// unbounded line.
 func readControlFrame(br *bufio.Reader) ([]byte, error) {
-	line, err := br.ReadBytes(controlFrameDelim)
-	if err != nil {
-		if len(line) == 0 {
+	return readFrameLimit(br, maxControlFrame)
+}
+
+func readFrameLimit(br *bufio.Reader, limit int) ([]byte, error) {
+	var line []byte
+	for {
+		chunk, err := br.ReadSlice(controlFrameDelim)
+		size := len(line) + len(chunk)
+		if err == nil {
+			size-- // the delimiter is not part of the frame
+		}
+		if size > limit {
+			return nil, fmt.Errorf("chromehost: control frame exceeds %d bytes", limit)
+		}
+		line = append(line, chunk...)
+		switch {
+		case err == nil:
+			return line[:len(line)-1], nil
+		case errors.Is(err, bufio.ErrBufferFull):
+			continue
+		case err == io.EOF && len(line) > 0:
+			// A final frame without a trailing newline is still usable.
+			return line, nil
+		default:
 			return nil, err
 		}
-		// A final frame without a trailing newline is still usable if it fit.
-		if err == io.EOF {
-			if len(line) > maxControlFrame {
-				return nil, fmt.Errorf("chromehost: control frame exceeds %d bytes", maxControlFrame)
-			}
-			return line, nil
-		}
-		return nil, err
 	}
-	if len(line) > maxControlFrame {
-		return nil, fmt.Errorf("chromehost: control frame exceeds %d bytes", maxControlFrame)
-	}
-	return line[:len(line)-1], nil
 }
