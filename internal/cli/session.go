@@ -579,9 +579,12 @@ func buildSession(ctx context.Context, env *Env, s *printSession, caller agent.M
 	conv.Agents = agentsdef.Load(fsys, agentsdef.LoadOptions{
 		UserAgentsDir: userAgentsDir(scoped.configDir),
 		ProjectDir:    scoped.projectCwd,
+		// --agents (promptflags.go), at the flag tier.
+		AgentsJSON: agentsFlagJSON(s),
 		// An untrusted folder's agents cannot loosen the permission mode.
 		IgnoreProjectPermissionMode: sctx.UntrustedProject,
 	})
+	r.notices = append(r.notices, agentsFlagProblems(s)...)
 	// System prompt: the identity + behavior guidance + runtime env block, with
 	// the loaded gocode.md project memory appended. It flows through turnSystem
 	// (which still appends the skills listing after) to the loop and
@@ -603,6 +606,8 @@ func buildSession(ctx context.Context, env *Env, s *printSession, caller agent.M
 	if sec := scratchpadPromptSection(r.scratchpad); sec != "" {
 		baseSystem += "\n\n" + sec
 	}
+	// --append-system-prompt goes last (promptflags.go).
+	baseSystem = appendSystemPrompt(s, baseSystem)
 	conv.System = baseSystem
 	r.projectMemory = mem.block
 	r.memory = mem

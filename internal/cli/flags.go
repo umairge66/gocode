@@ -54,6 +54,12 @@ type DispatchDefaults struct {
 	MaxTurns      string
 	MaxTurnsSet   bool
 	MaxTurnsLimit int
+
+	// The prompt flags, resolved by applyPromptFlags (promptflags.go):
+	// --system-prompt[-file], --append-system-prompt[-file] and --agents.
+	SystemPrompt       string
+	AppendSystemPrompt string
+	AgentsJSON         string
 }
 
 // stripDebugFlags removes the debug options (--debug[=filter], -d,

@@ -261,6 +261,14 @@ func runMain(env *Env, t []string) int {
 		return runEvalChild(env, defaults, rest)
 	}
 
+	// --system-prompt[-file], --append-system-prompt[-file], --agents
+	// (promptflags.go).
+	rest, promptVals := extractPromptFlags(rest)
+	if err := applyPromptFlags(defaults, promptVals); err != nil {
+		fmt.Fprintln(env.Stderr, err)
+		return 1
+	}
+
 	// `gocode mcp list`: connect to the configured MCP servers and print their
 	// status.
 	if firstPositional(rest) == "mcp" && secondPositional(rest) == "list" {

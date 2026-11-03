@@ -74,7 +74,8 @@ func buildSystemPrompt(ctx context.Context, env *Env, s *printSession, paths ses
 			info.GitBranch = cheapGitBranch(ctx, paths.cwd)
 		}
 	}
-	system = systemprompt.Build(info)
+	// --system-prompt replaces the built-in prompt; memory still follows.
+	system = replaceSystemPrompt(s, systemprompt.Build(info))
 
 	if envutil.EnvTruthy(envGet(env)(disableMemoryEnv)) {
 		return system, memory

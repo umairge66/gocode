@@ -45,6 +45,7 @@ var bgValueFlags = map[string]bool{
 	"--append-system-prompt": true, "--system-prompt": true, "--allowed-tools": true, "--allowedTools": true,
 	"--disallowed-tools": true, "--disallowedTools": true, "--fallback-model": true, "--max-turns": true,
 	"--output-format": true, "--input-format": true,
+	"--system-prompt-file": true, "--append-system-prompt-file": true, "--agents": true,
 }
 
 // bgRootFlagsBeforeVerb are the root options allowed in front of a verb.
