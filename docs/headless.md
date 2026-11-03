@@ -140,8 +140,36 @@ never the key.
 | `interrupt` | — | `{}`. Ends the running turn as if the user pressed Esc: its result is an `error_during_execution` with the error `Request interrupted by user`, and the session takes the next message. A no-op between turns. |
 | `set_model` | `model` (`"default"` or empty: the model the session started with) | `{"model":"…"}`. Applies from the next turn; a request sent during a turn is answered when the turn ends. The model policy (`availableModels`) can refuse it. |
 | `set_permission_mode` | `mode`: `default`, `acceptEdits`, `plan`, `dontAsk`, `auto`, `bypassPermissions` | `{"mode":"…"}`. Takes effect at the next tool call, also mid-turn. `bypassPermissions` needs a session started with `--dangerously-skip-permissions` or `--allow-dangerously-skip-permissions` (and not disabled by settings); `auto` needs auto mode to be available. |
-| `mcp_status` | — | `{"mcpServers":[{"name":"…","status":"connected"\|"pending"\|"failed"\|"needs-auth","serverInfo":{"name","version"},"error":"…"}]}` |
+| `mcp_status` | — | `{"mcpServers":[McpServerStatus…]}`, the Agent SDK's `mcpServerStatus()` shape (below) |
 | `get_context_usage` | — | `totalTokens`, `maxTokens`, `rawMaxTokens`, `percentage`, `model`, `isAutoCompactEnabled`, `autoCompactThreshold`, `categories`, `memoryFiles` (`path`, `type`, `tokens`), `mcpTools` (`name`, `serverName`, `tokens`), and empty `agents` / `gridRows`. Between turns `categories` breaks the total down into `system_prompt`, `system_tools`, `mcp_tools`, `memory_files`, `messages` and `free_space` (`id`, `name`, `tokens`, `color`, `kind`); the parts are ≈4-characters-per-token estimates, as in `/context`, and `messages` is what the measured total leaves after them. During a turn it reports the size the latest model response measured, as one `messages` category. |
+
+### MCP servers (`mcp_status`)
+
+Each `mcp_status` entry is
+
+```json
+{"name":"docs","status":"connected","serverInfo":{"name":"docs-server","version":"1.2.0"},
+ "config":{"type":"stdio","command":"docs-mcp","args":["--stdio"]},"scope":"user","source":"user",
+ "tools":[{"name":"search","description":"…","annotations":{"readOnly":true,"destructive":false,"openWorld":true}}]}
+```
+
+- `status` is `connected`, `failed` (with `error`), `needs-auth`, `pending`
+  (still connecting, or reconnecting) or `disabled` (switched off with
+  `disabledMcpServers`; listed after the running servers).
+- `config` is the transport and where it runs: `{"type":"stdio","command","args"}`
+  or `{"type":"sse"|"http"|"ws","url"}`. Env values and headers are left out.
+- `scope` and `source` are where the definition came from: `user`,
+  `project`, `local`, `managed`, `dynamic` (`--mcp-config`) or `plugin`.
+- `tools` is present for a connected server: each tool's name as the server
+  lists it (the model sees it as `mcp__<server>__<name>`), its description
+  and the `readOnly` / `destructive` / `openWorld` hints it declares.
+
+`system/init`'s `mcp_servers` entries (`name`, `status`, `source`) use the
+same status names. When tool search defers a server's tools, the server
+connects in the background: it is `pending` in `system/init` and its tools
+are not in `tools`. A host that wants them should send `mcp_status` after
+`system/init` while any server is `pending` (polling, say, every second
+until none is) and take the tools from the entries that turned `connected`.
 
 ### Permission prompts (`can_use_tool`)
 

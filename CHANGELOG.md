@@ -38,6 +38,10 @@ it refuses to publish a version that has no section here.
   permission prompt, AskUserQuestion dialog or plan approval;
   `gocode agents pending` lists the sessions waiting and
   `gocode agents respond <job> allow|deny|--answer <label>` answers them.
+- Print mode's `mcp_status` answers in the Agent SDK's `McpServerStatus`
+  shape — config, scope, source and each connected server's tools with
+  their annotations, and disabled servers — so a host can pick up the tools
+  of a server `system/init` listed as `pending`.
 - The status line's `session_name` shows the `/rename` title.
 - A PreToolUse hook can return `permissionDecision: "defer"`: the turn ends
   without running the call, print mode reports `stop_reason: "tool_deferred"`

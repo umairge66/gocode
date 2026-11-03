@@ -19,6 +19,8 @@ import (
 	"github.com/umairge66/gocode/internal/agent"
 	"github.com/umairge66/gocode/internal/conversation"
 	"github.com/umairge66/gocode/internal/headless"
+	"github.com/umairge66/gocode/internal/mcp"
+	"github.com/umairge66/gocode/internal/mcphost"
 	"github.com/umairge66/gocode/internal/toolreg"
 	"github.com/umairge66/gocode/internal/toolrun"
 )
@@ -578,5 +580,74 @@ func TestStreamSubagentMessagesCarryParentToolUseID(t *testing.T) {
 	}
 	if agentCall == "" || childAssistant != 1 || childUser != 1 || mainAssistant != 2 {
 		t.Fatalf("agent call %q, child assistant %d user %d, main assistant %d:\n%s", agentCall, childAssistant, childUser, mainAssistant, out)
+	}
+}
+
+// mcp_status reports each server as the Agent SDK's McpServerStatus: a
+// connected server with its serverInfo, config (no env), scope / source and
+// its tools with their annotations; one still connecting as "pending" with
+// no tools; a disabled one as "disabled". system/init uses the same status
+// vocabulary.
+func TestMCPStatusFullShape(t *testing.T) {
+	yes, no := true, false
+	mem := echoServer()
+	mem.tools = append(mem.tools, mcp.Tool{Name: "wipe", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: &no, DestructiveHint: &yes, OpenWorldHint: &no}},
+		mcp.Tool{Name: "peek", Description: "reads", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: &yes}})
+	slow := echoServer()
+	slow.initGate = make(chan struct{})
+	defer close(slow.initGate)
+	servers := map[string]mcp.ServerConfig{
+		"mem":  {Command: "mem-server", Args: []string{"--x"}, Env: map[string]string{"TOKEN": "secret"}},
+		"slow": {Type: mcp.TransportHTTP, URL: "https://slow.example/mcp", Headers: map[string]string{"Authorization": "Bearer secret"}},
+	}
+	host := mcphost.Start(context.Background(), servers, mcphost.Options{
+		Transport: func(name string, cfg mcp.ServerConfig) (mcp.Transport, error) {
+			if name == "slow" {
+				return slow.factory()(name, cfg)
+			}
+			return mem.factory()(name, cfg)
+		},
+		Background: func(name string, _ mcp.ServerConfig) bool { return name == "slow" },
+	})
+	defer host.Close()
+	g := mcphost.Gathered{
+		Servers: servers,
+		Scopes:  map[string]mcphost.Scope{"mem": mcphost.ScopeUser, "slow": mcphost.ScopeProject},
+		Skipped: []mcphost.Skipped{{Name: "off", Scope: mcphost.ScopeLocal, Reason: mcphost.ReasonDisabled},
+			{Name: "unapproved", Scope: mcphost.ScopeProject, Reason: mcphost.ReasonPendingApproval}},
+		SkippedConfigs: map[string]mcp.ServerConfig{"off": {Command: "off-server"}},
+	}
+	f := newSubcmdFixture(t)
+	env, _, _ := f.env()
+	h := &headlessRun{env: env, s: &printSession{Model: "m"}, rt: &sessionRuntime{conv: conversation.New(nil, nil), mcp: host, gathered: g}}
+
+	raw, _ := json.Marshal(h.mcpStatus())
+	var got []map[string]any
+	_ = json.Unmarshal(raw, &got)
+	if len(got) != 3 {
+		t.Fatalf("mcp_status = %s", raw)
+	}
+	want := []string{
+		`{"config":{"args":["--x"],"command":"mem-server","type":"stdio"},"name":"mem","scope":"user","serverInfo":{"name":"mem","version":"1"},"source":"user","status":"connected","tools":[` +
+			`{"description":"echoes","name":"echo"},` +
+			`{"annotations":{"destructive":true,"openWorld":false,"readOnly":false},"name":"wipe"},` +
+			`{"annotations":{"readOnly":true},"description":"reads","name":"peek"}]}`,
+		`{"config":{"type":"http","url":"https://slow.example/mcp"},"name":"slow","scope":"project","source":"project","status":"pending"}`,
+		`{"config":{"command":"off-server","type":"stdio"},"name":"off","scope":"local","source":"local","status":"disabled"}`,
+	}
+	for i, w := range want {
+		b, _ := json.Marshal(got[i])
+		if string(b) != w {
+			t.Errorf("server %d:\n got %s\nwant %s", i, b, w)
+		}
+	}
+	if strings.Contains(string(raw), "secret") {
+		t.Fatalf("mcp_status leaks env or headers: %s", raw)
+	}
+
+	init := h.systemInit()
+	b, _ := json.Marshal(init.MCPServers)
+	if string(b) != `[{"name":"mem","status":"connected","source":"user"},{"name":"slow","status":"pending","source":"project"}]` {
+		t.Fatalf("system/init mcp_servers = %s", b)
 	}
 }
