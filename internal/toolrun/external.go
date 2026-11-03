@@ -55,6 +55,21 @@ type ContentExternalTools interface {
 	MaxResultChars() int
 }
 
+// ReadOnlyExternalTools is optionally implemented by an ExternalTools provider
+// that knows which of its tools only read (for MCP, readOnlyHint without
+// destructiveHint). Those calls are concurrency-safe: the loop may run them
+// alongside other read-only calls.
+type ReadOnlyExternalTools interface {
+	ReadOnly(name string) bool
+}
+
+// AlwaysLoadExternalTools is optionally implemented by an ExternalTools
+// provider whose tools can opt out of deferred loading (an MCP server's
+// "alwaysLoad"): their definitions are always sent in full.
+type AlwaysLoadExternalTools interface {
+	AlwaysLoad(name string) bool
+}
+
 // WithExternalTools routes calls for the provider's tools to it and advertises
 // them in Schemas.
 func WithExternalTools(p ExternalTools) Option {
@@ -312,6 +327,19 @@ func (d *Dispatcher) externalResultLimit(name string) (bool, int) {
 		return true, max(cp.MaxResultChars(), 0)
 	}
 	return true, 0
+}
+
+// externalReadOnly reports whether name is an external tool its provider
+// declares read-only.
+func (d *Dispatcher) externalReadOnly(name string) bool {
+	if d.External == nil || !d.permitted(name) {
+		return false
+	}
+	if _, builtin := d.adapters[protocol.Tool(name)]; builtin || !d.External.Has(name) {
+		return false
+	}
+	ro, ok := d.External.(ReadOnlyExternalTools)
+	return ok && ro.ReadOnly(name)
 }
 
 // externalSchemas returns the external provider's schemas that pass the

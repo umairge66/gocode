@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"sync/atomic"
 
 	"github.com/umairge66/gocode/internal/agent"
 	pathguard "github.com/umairge66/gocode/internal/pathguard"
@@ -43,20 +44,41 @@ func (d *Dispatcher) markDeferred(schemas []agent.ToolSchema, external map[strin
 		// every definition is sent in full.
 		return d.undefer(schemas)
 	}
+	alwaysLoad, _ := d.External.(AlwaysLoadExternalTools)
 	size := 0
 	found := false
 	for i := range schemas {
-		if d.isDeferred(schemas[i].Name, external[schemas[i].Name]) {
-			schemas[i].Deferred = true
-			found = true
-			size += len(schemas[i].Name) + len(schemas[i].Description) + len(schemas[i].InputSchema)
+		name := schemas[i].Name
+		if !d.isDeferred(name, external[name]) {
+			continue
 		}
+		if external[name] && alwaysLoad != nil && alwaysLoad.AlwaysLoad(name) {
+			// The server opted out of deferred loading ("alwaysLoad").
+			continue
+		}
+		schemas[i].Deferred = true
+		found = true
+		size += len(name) + len(schemas[i].Description) + len(schemas[i].InputSchema)
 	}
-	if found && (d.toolSearch != toolsearch.ModeAuto || size >= d.toolSearchAuto) {
+	if !found {
+		return d.undefer(schemas)
+	}
+	if d.toolSearch != toolsearch.ModeAuto {
+		return schemas
+	}
+	// Auto mode: once the deferred definitions reached the threshold, keep
+	// deferring for the rest of the session (a stable tool list keeps the
+	// prompt cache warm, and a tool table that shrinks a little does not
+	// flip every definition back in).
+	if d.toolSearchTripped.Load() || size >= d.toolSearchAuto {
+		d.toolSearchTripped.Store(true)
 		return schemas
 	}
 	return d.undefer(schemas)
 }
+
+// deferLatch is the sticky "auto mode has deferred tools" flag.
+type deferLatch struct{ atomic.Bool }
 
 // isDeferred applies the deferred set of this dispatcher's session kind.
 func (d *Dispatcher) isDeferred(name string, mcp bool) bool {

@@ -51,6 +51,9 @@ type ServerConfig struct {
 	Timeout int               `json:"timeout,omitempty"`
 	// OAuth configures sign-in for sse/http servers (see OAuthConfig).
 	OAuth *OAuthConfig `json:"oauth,omitempty"`
+	// AlwaysLoad keeps this server's tools out of deferred loading: their
+	// full definitions are sent even when tool search is on.
+	AlwaysLoad bool `json:"alwaysLoad,omitempty"`
 }
 
 // Transport is the byte/message pipe the Client runs the MCP protocol over:

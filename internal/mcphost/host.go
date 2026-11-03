@@ -683,6 +683,41 @@ func (h *Host) MaxResultChars() int {
 	return h.maxTokens * charsPerToken
 }
 
+// ReadOnly reports whether a tool declares itself read-only
+// (annotations.readOnlyHint) and not destructive, so calls to it may run
+// alongside other read-only calls.
+func (h *Host) ReadOnly(modelToolName string) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	rt, ok := h.tools[modelToolName]
+	if !ok || rt.tool.Annotations == nil {
+		return false
+	}
+	a := rt.tool.Annotations
+	return a.ReadOnlyHint != nil && *a.ReadOnlyHint && (a.DestructiveHint == nil || !*a.DestructiveHint)
+}
+
+// Destructive reports whether a tool declares annotations.destructiveHint.
+func (h *Host) Destructive(modelToolName string) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	rt, ok := h.tools[modelToolName]
+	return ok && rt.tool.Annotations != nil && rt.tool.Annotations.DestructiveHint != nil && *rt.tool.Annotations.DestructiveHint
+}
+
+// AlwaysLoad reports whether a tool's server sets "alwaysLoad", so its
+// definition is never deferred behind tool search.
+func (h *Host) AlwaysLoad(modelToolName string) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	rt, ok := h.tools[modelToolName]
+	if !ok {
+		return false
+	}
+	s := h.servers[rt.server]
+	return s != nil && s.cfg.AlwaysLoad
+}
+
 // callTool routes one call to the owning server with the per-call timeout and
 // returns the server's raw result.
 func (h *Host) callTool(ctx context.Context, modelToolName string, input json.RawMessage) (*mcp.CallToolResult, error) {
