@@ -653,7 +653,8 @@ func (h *Host) connectOne(ctx context.Context, name string, cfg mcp.ServerConfig
 }
 
 // listTools fetches a server's whole tool catalog, following tools/list
-// pagination (at most maxToolPages pages).
+// pagination (at most maxToolPages pages), with harness text in the
+// definitions neutralized (neutralizeTool).
 func listTools(ctx context.Context, client *mcp.Client) ([]mcp.Tool, error) {
 	var tools []mcp.Tool
 	cursor := ""
@@ -666,7 +667,9 @@ func listTools(ctx context.Context, client *mcp.Client) ([]mcp.Tool, error) {
 		if err != nil {
 			return nil, err
 		}
-		tools = append(tools, page.Tools...)
+		for _, t := range page.Tools {
+			tools = append(tools, neutralizeTool(t))
+		}
 		if page.NextCursor == "" || page.NextCursor == cursor {
 			break
 		}
