@@ -372,3 +372,25 @@ func TestChromeTabsNilSafe(t *testing.T) {
 		t.Fatal("wired without a dispatcher")
 	}
 }
+
+// /clear starts exactly one cleanup of the cleared session. It used to start
+// two (one through switched, one of its own); when the first had already
+// finished, the second closed the same tabs again, which is how
+// TestChromeTabsClearKeepsUserAndKeptTabs closed tab 1 twice on slow machines.
+func TestChromeTabsClearStartsOneCleanup(t *testing.T) {
+	fc := &sessionChrome{listings: map[string]string{"S1": mixedGroup}}
+	r := chromeRuntime(t, fc, "S1")
+	openTab(t, r)
+	waitOp(t, r.chromeTabs.cleared("S2"))
+	if n := r.chromeTabs.started.Load(); n != 1 {
+		t.Fatalf("/clear started %d cleanups of the cleared session, want 1", n)
+	}
+	// Without persistence the session id stays the same: still one cleanup.
+	fc2 := &sessionChrome{listings: map[string]string{"S1": contentGroup}}
+	r2 := chromeRuntime(t, fc2, "S1")
+	openTab(t, r2)
+	waitOp(t, r2.chromeTabs.cleared("S1"))
+	if n := r2.chromeTabs.started.Load(); n != 1 {
+		t.Fatalf("/clear without a new session started %d cleanups, want 1", n)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"sync/atomic"
 
 	"github.com/umairge66/gocode/internal/subagent"
 	"github.com/umairge66/gocode/internal/tools/browser"
@@ -38,6 +39,15 @@ type chromeTabs struct {
 	mu      sync.Mutex
 	current string
 	exiting bool
+
+	// started counts the cleanups switched and cleared start (tests).
+	started atomic.Int32
+}
+
+// start begins a cleanup of session id's group.
+func (ct *chromeTabs) start(id string) *browser.CleanupOp {
+	ct.started.Add(1)
+	return ct.cleanup.Start(id, ct.agentsRunning())
 }
 
 // wireChromeTabs wraps the dispatcher's browser client so every command
@@ -120,22 +130,23 @@ func (ct *chromeTabs) switched(id string) *browser.CleanupOp {
 	if prev == id || !ct.client.Used(prev) {
 		return nil
 	}
-	return ct.cleanup.Start(prev, ct.agentsRunning())
+	return ct.start(prev)
 }
 
 // cleared handles /clear: the cleared session (the one current before the
 // clear) has its group closed (only if it is still empty while a subagent
-// runs) and the conversation moves on to id.
+// runs) and the conversation moves on to id. It starts one cleanup: going
+// through switched as well started a second one for the same session, which
+// closed the same tabs again when the first had already finished.
 func (ct *chromeTabs) cleared(id string) *browser.CleanupOp {
 	if ct == nil {
 		return nil
 	}
-	prev := ct.sessionID()
-	ct.switched(id)
+	prev := ct.switchTo(id)
 	if !ct.client.Used(prev) {
 		return nil
 	}
-	return ct.cleanup.Start(prev, ct.agentsRunning())
+	return ct.start(prev)
 }
 
 // atExit waits for the running cleanups and closes the current session's

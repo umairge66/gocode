@@ -18,6 +18,9 @@ it refuses to publish a version that has no section here.
 - Windows: path rules ignore case, as Windows paths do, so a file cannot slip
   past a deny rule by spelling its name differently (`Secret\key` and
   `secret/**`).
+- Chrome: `/clear` started two cleanups of the cleared session's tab group;
+  when the first had already finished, the second tried to close the same
+  tabs again. It now starts one.
 
 ## [0.1.6] - 2026-11-04
 
