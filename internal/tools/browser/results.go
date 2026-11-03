@@ -59,6 +59,65 @@ func pageNotes(notes []string, notice bool) string {
 	return "\n\nNotes:\n" + fenceUntrusted("", body)
 }
 
+// inputDelivery is what the extension reports about how a computer input
+// action reached the page (extension/background.js, "background tabs").
+// Delivery is "input" (the page received real input), "dom" (Chrome did not
+// deliver it, so the extension sent the same events from inside the page,
+// where they are untrusted) or "unconfirmed" (sent, but the page could not be
+// checked). Input that reached the page neither way is an error, never a
+// result.
+type inputDelivery struct {
+	Drag          string `json:"drag"`
+	Delivery      string `json:"delivery"`
+	DomReason     string `json:"domReason"`
+	Background    bool   `json:"background"`
+	Scrolled      *bool  `json:"scrolled"`
+	KeysCancelled bool   `json:"keysCancelled"`
+}
+
+// outcome is the action's short status: "done", "done with DOM events, not
+// real input" or "sent, not confirmed", with the kind of drag it was.
+func (d inputDelivery) outcome() string {
+	s := "done"
+	switch d.Delivery {
+	case "dom":
+		s = "done with DOM events, not real input"
+	case "unconfirmed":
+		s = "sent, not confirmed"
+	}
+	if d.Drag != "" {
+		s += " (as a " + d.Drag + ")"
+	}
+	return s
+}
+
+// note explains an outcome that is not plain real input ("" when it is).
+// Every word is the extension's own, none comes from the page.
+func (d inputDelivery) note() string {
+	switch d.Delivery {
+	case "dom":
+		if d.DomReason == "background-scroll" {
+			s := "the tab is in the background, where a real mouse wheel can make Chrome switch the user's tabs, so gocode scrolled from inside the page (an untrusted wheel event, then a scroll of the element under the point)."
+			if d.Scrolled != nil && !*d.Scrolled {
+				s += " The page cancelled the wheel event, so nothing scrolled."
+			}
+			return s
+		}
+		s := "Chrome did not deliver real input to the page"
+		if d.Background {
+			s += " (the tab is in the background)"
+		}
+		s += ", so gocode sent the same events from inside the page. They are untrusted (event.isTrusted is false): a page that ignores untrusted events, or a browser default action such as text selection or :hover styles, may not respond. Take a screenshot to check the result."
+		if d.KeysCancelled {
+			s += " The page cancelled some of the key presses."
+		}
+		return s
+	case "unconfirmed":
+		return "gocode could not check that the page received it (extension scripts cannot run on this page). Take a screenshot to see whether it worked."
+	}
+	return ""
+}
+
 // captureInfo is what the extension reports with a screenshot or zoom.
 type captureInfo struct {
 	DataURL     string    `json:"dataUrl"`
@@ -259,10 +318,14 @@ func stepDetail(name string, raw json.RawMessage) (string, bool) {
 		}
 		return fenceUntrusted("", fmt.Sprintf("%s now holds %q", r.Ref, r.Value)), true
 	case "computer":
-		var r struct {
-			Drag string `json:"drag"`
+		var r inputDelivery
+		if json.Unmarshal(raw, &r) != nil {
+			return "", false
 		}
-		if json.Unmarshal(raw, &r) == nil && r.Drag != "" {
+		if note := r.note(); note != "" {
+			return r.outcome() + ": " + note, false
+		}
+		if r.Drag != "" {
 			return "done as a " + r.Drag, false
 		}
 	case "resize_window":

@@ -20,6 +20,15 @@ import (
 // cdpHook(target, method, params, cb) may take over a CDP command (return
 // true; call cb later or never); scriptHook(target, func, args) may take over
 // a page script (return its result array). emitCdp sends a debugger event.
+//
+// CDP input on a loaded page reaches its fake DOM as trusted events, the way
+// Chrome 156 behaves (checked live): a page marked hidden (doc.hidden, a
+// background tab) drops mouse and key input — but not Input.insertText —
+// until Emulation.setFocusEmulationEnabled makes it visible
+// (doc.noFocusEmulation refuses that, like an old Chrome); a hidden page's
+// Page.captureScreenshot answers only while a screencast runs
+// (doc.shotNeverAnswers: never; doc.noFrames: the screencast sends no
+// frame). Detaching ends the emulation.
 // The timeouts are shortened (see fastTimeouts) so a hang fails in well under
 // a second.
 const fakeChromePrelude = `
@@ -30,7 +39,7 @@ let nextTab = 100, nextGroup = 500;
 const tabs = new Map();
 const groups = new Map();
 const session = {};
-const listeners = { created: [], removed: [], updated: [] };
+const listeners = { created: [], removed: [], updated: [], activated: [] };
 const cdpLog = [];
 const scriptLog = [];
 const attached = new Set();
@@ -41,7 +50,10 @@ function addTab(t) { const tab = { status: "complete", windowId: 1, groupId: -1,
 addTab({ id: 1, url: "https://bank.example/", title: "Bank", active: true });
 
 // --- a small fake DOM ---
-class FEvent { constructor(type, o) { Object.assign(this, o || {}); this.type = type; this.bubbles = !!(o && o.bubbles); } }
+class FEvent {
+  constructor(type, o) { Object.assign(this, o || {}); this.type = type; this.bubbles = !!(o && o.bubbles); this.isTrusted = !!(o && o.isTrusted); this.defaultPrevented = false; }
+  preventDefault() { if (this.cancelable) this.defaultPrevented = true; }
+}
 class FNode {
   constructor(doc) { this.ownerDocument = doc; this.childNodes = []; this.parentNode = null; this.listeners = {}; }
   appendChild(c) { if (c.parentNode) c.parentNode.removeChild(c); c.parentNode = this; this.childNodes.push(c); return c; }
@@ -53,10 +65,13 @@ class FNode {
   getRootNode() { let n = this; while (n.parentNode) n = n.parentNode; return n; }
   get isConnected() { const r = this.getRootNode(); return r === this.ownerDocument || (!!r.host && r.host.isConnected); }
   addEventListener(t, f) { (this.listeners[t] = this.listeners[t] || []).push(f); }
+  removeEventListener(t, f) { this.listeners[t] = (this.listeners[t] || []).filter((x) => x !== f); }
   dispatchEvent(e) {
     if (!e.target) e.target = this;
-    for (let n = this; n; n = n.parentNode || n.host) { for (const f of (n.listeners[e.type] || [])) f.call(n, e); if (!e.bubbles) break; }
-    return true;
+    const win = this.ownerDocument && this.ownerDocument.defaultView;
+    if (win && win.listeners) for (const f of (win.listeners[e.type] || []).slice()) f.call(win, e); // capture on window
+    for (let n = this; n; n = n.parentNode || n.host) { for (const f of (n.listeners[e.type] || []).slice()) f.call(n, e); if (!e.bubbles) break; }
+    return !e.defaultPrevented;
   }
   getElementById(id) { let found = null; const v = (n) => { for (const c of n.children) { if (found) return; if (c.getAttribute("id") === id) { found = c; return; } v(c); } }; v(this); return found; }
 }
@@ -83,6 +98,7 @@ class FElement extends FNode {
   }
   scrollIntoView() { const d = this.ownerDocument; d.scrolls++; const b = this.box; if (b) d.scrollY = Math.max(0, b[1] + b[3] / 2 - d.defaultView.innerHeight / 2); }
   focus() { this.ownerDocument.activeElement = this; }
+  blur() { if (this.ownerDocument.activeElement === this) this.ownerDocument.activeElement = null; }
   click() { this.dispatchEvent(new FEvent("click", { bubbles: true })); }
   get clientLeft() { return 0; }
   get clientTop() { return 0; }
@@ -128,7 +144,10 @@ class FShadow extends FNode {
   elementFromPoint(x, y) { return hitTest(this, x, y); }
 }
 class FDocument extends FNode {
-  constructor(win) { super(null); this.ownerDocument = this; this.nodeType = 9; this.defaultView = win; this.scrollY = 0; this.scrolls = 0; }
+  constructor(win) { super(null); this.ownerDocument = this; this.nodeType = 9; this.defaultView = win; this.scrollY = 0; this.scrolls = 0;
+    this.hidden = false; this.focusEmulated = false; this.activeElement = null; }
+  get visibilityState() { return this.hidden && !this.focusEmulated ? "hidden" : "visible"; }
+  hasFocus() { return this.visibilityState === "visible"; }
   get documentElement() { return this.children[0] || null; }
   get body() { const html = this.documentElement; return html && html.children.find((c) => c.tagName === "BODY"); }
   elementFromPoint(x, y) { return hitTest(this, x, y); }
@@ -144,7 +163,12 @@ function hitTest(root, x, y) {
 }
 function makeDocument(frameElement) {
   const win = { innerWidth: 800, innerHeight: 600, devicePixelRatio: 1, scrollX: 0, frameElement: frameElement || null, Event: FEvent, InputEvent: FEvent, setTimeout,
-    getComputedStyle: (el) => ({ visibility: /visibility:\s*hidden/.test(el.attrs.style || "") ? "hidden" : "visible", display: "block" }) };
+    MouseEvent: FEvent, PointerEvent: FEvent, KeyboardEvent: FEvent, WheelEvent: FEvent, DragEvent: FEvent, DataTransfer: class {},
+    getComputedStyle: (el) => ({ visibility: /visibility:\s*hidden/.test(el.attrs.style || "") ? "hidden" : "visible", display: "block" }),
+    listeners: {},
+    addEventListener(t, f) { (this.listeners[t] = this.listeners[t] || []).push(f); },
+    removeEventListener(t, f) { this.listeners[t] = (this.listeners[t] || []).filter((x) => x !== f); },
+    scrollBy(dx, dy) { doc.scrollY = Math.max(0, doc.scrollY + (Number(dy) || 0)); } };
   const doc = new FDocument(win);
   Object.defineProperty(win, "scrollY", { get: () => doc.scrollY });
   win.document = doc;
@@ -160,7 +184,55 @@ function makeDocument(frameElement) {
   doc.appendChild(E("html", {}, E("body", { box: [0, 0, 800, 2000] })));
   return { doc, win, E };
 }
-const pages = new Map(); // tabId -> { ctx, doc, fns }
+const pages = new Map(); // tabId -> { ctx, doc, fns, casting }
+const trusted = (type, o) => new FEvent(type, { bubbles: true, cancelable: true, composed: true, ...o, isTrusted: true });
+// cdpFail answers a fake CDP command with an error, as chrome.debugger does.
+function cdpFail(cb, message) { chrome.runtime.lastError = { message }; cb(undefined); chrome.runtime.lastError = undefined; }
+// pageCdp answers the CDP commands that touch a loaded page; false leaves
+// the command to the defaults.
+function pageCdp(tabId, pg, method, p, cb) {
+  const doc = pg.doc;
+  const hidden = doc.visibilityState === "hidden";
+  const active = () => doc.activeElement || doc.body;
+  switch (method) {
+    case "Emulation.setFocusEmulationEnabled":
+      if (doc.noFocusEmulation) { cdpFail(cb, "'Emulation.setFocusEmulationEnabled' wasn't found"); return true; }
+      doc.focusEmulated = !!p.enabled; cb({}); return true;
+    case "Input.dispatchMouseEvent": {
+      if (hidden) { cb({}); return true; } // dropped, yet reported as done
+      const el = hitTest(doc, p.x, p.y) || doc.body;
+      const o = { clientX: p.x, clientY: p.y, button: p.button === "right" ? 2 : p.button === "middle" ? 1 : 0, buttons: p.buttons || 0, detail: p.clickCount || 0 };
+      if (p.type === "mouseMoved") { el.dispatchEvent(trusted("pointermove", o)); el.dispatchEvent(trusted("mousemove", o)); }
+      else if (p.type === "mousePressed") { el.dispatchEvent(trusted("pointerdown", o)); if (el.dispatchEvent(trusted("mousedown", o)) && el.focus) el.focus(); }
+      else if (p.type === "mouseReleased") { el.dispatchEvent(trusted("pointerup", o)); el.dispatchEvent(trusted("mouseup", o)); if (o.button === 0) el.dispatchEvent(trusted("click", o)); }
+      else if (p.type === "mouseWheel") { if (el.dispatchEvent(trusted("wheel", { ...o, deltaY: p.deltaY }))) doc.scrollY = Math.max(0, doc.scrollY + (p.deltaY || 0)); }
+      cb({}); return true;
+    }
+    case "Input.dispatchKeyEvent": {
+      if (hidden) { cb({}); return true; }
+      const el = active();
+      const type = p.type === "keyUp" ? "keyup" : "keydown";
+      const go = el.dispatchEvent(trusted(type, { key: p.key, code: p.code }));
+      if (go && type === "keydown" && p.text && el.tagName === "INPUT") { el.value = el.value + p.text; el.dispatchEvent(trusted("input", { data: p.text })); }
+      cb({}); return true;
+    }
+    case "Input.insertText": {
+      const el = active();
+      if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") { el.value = el.value + p.text; el.dispatchEvent(trusted("input", { data: p.text })); }
+      cb({}); return true;
+    }
+    case "Page.startScreencast":
+      pg.casting = true;
+      if (!doc.noFrames) setTimeout(() => emitCdp(tabId, "Page.screencastFrame", { data: "RlJBTUU=", sessionId: 1, metadata: {} }), 5);
+      cb({}); return true;
+    case "Page.stopScreencast":
+      pg.casting = false; cb({}); return true;
+    case "Page.captureScreenshot":
+      if (doc.hidden && (!pg.casting || doc.shotNeverAnswers)) return true; // no frames: never answers
+      return false;
+  }
+  return false;
+}
 // loadPage gives tabId a new document (as a navigation does) built by build(body, E, doc).
 function loadPage(tabId, build, origin) {
   const { doc, win, E } = makeDocument();
@@ -210,10 +282,12 @@ const chrome = {
       if (attached.has(tabId)) throw new Error("Another debugger is already attached to the tab with id: " + tabId + ".");
       attached.add(tabId); attachLog.push(tabId);
     },
-    detach: async ({ tabId }) => { attached.delete(tabId); },
+    detach: async ({ tabId }) => { attached.delete(tabId); const pg = pages.get(tabId); if (pg) { pg.doc.focusEmulated = false; pg.casting = false; } },
     sendCommand: (t, method, params, cb) => {
       cdpLog.push({ tabId: t.tabId, method, params });
       if (cdpHook && cdpHook(t, method, params, cb)) return;
+      const pg = pages.get(t.tabId);
+      if (pg && pageCdp(t.tabId, pg, method, params || {}, cb)) return;
       if (method === "Runtime.evaluate") return cb({ result: { type: "number", value: 2 } });
       cb({ data: "AAAA" });
     } },
@@ -232,6 +306,8 @@ const chrome = {
       if (op === "point") return [{ result: { x: 10, y: 10 } }];
       if (op === "find") return [{ result: { matches: [], total: 0 } }];
       if (op === "origin") return [{ result: "null" }];
+      // A tab without a fake DOM takes all input.
+      if (op === "seen") return [{ result: { armed: true, events: [{ type: "canned", trusted: true }] } }];
       return [{ result: { ok: true } }];
     }
     return [{ result: "TEXT OF TAB " + target.tabId }];
@@ -243,7 +319,7 @@ const chrome = {
     query: async () => [...groups.values()],
   },
   tabs: {
-    onCreated: ev(listeners.created), onRemoved: ev(listeners.removed), onUpdated: ev(listeners.updated),
+    onCreated: ev(listeners.created), onRemoved: ev(listeners.removed), onUpdated: ev(listeners.updated), onActivated: ev(listeners.activated),
     get: (id, cb) => { const t = tabs.get(id); chrome.runtime.lastError = t ? undefined : { message: "no tab" }; cb(t); chrome.runtime.lastError = undefined; },
     query: async (q) => [...tabs.values()].filter((t) => q.groupId === undefined || t.groupId === q.groupId),
     create: async ({ url, openerTabId }) => { const t = addTab({ id: nextTab++, url: url || "chrome://newtab/", openerTabId }); for (const f of listeners.created) await f(t); return t; },
@@ -270,7 +346,7 @@ const ctx = vm.createContext({ chrome, console: { log() {} }, setTimeout, clearT
   btoa: (s) => Buffer.from(s, "binary").toString("base64") });
 // fastTimeouts shortens the extension's timeouts for the harness.
 const fastTimeouts = {
-  CDP_TIMEOUT_MS: 300, SCREENSHOT_TIMEOUT_MS: 300, SCRIPT_TIMEOUT_MS: 300, JS_TIMEOUT_MS: 300, JS_GRACE_MS: 50,
+  CDP_TIMEOUT_MS: 300, SCREENSHOT_TIMEOUT_MS: 300, HIDDEN_SCREENSHOT_TIMEOUT_MS: 150, DELIVERY_GRACE_MS: 40, SCRIPT_TIMEOUT_MS: 300, JS_TIMEOUT_MS: 300, JS_GRACE_MS: 50,
   DEBUGGER_WAIT_MS: 600, LOAD_TIMEOUT_MS: 300, MAX_WAIT_SECONDS: 0.05, MAX_REPLY_BYTES: 20000,
 };
 let src = fs.readFileSync(process.argv[2], "utf8");

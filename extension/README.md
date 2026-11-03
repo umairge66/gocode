@@ -148,6 +148,63 @@ detaches.
 tab; they live in the extension's isolated world, not in the page's DOM, and a
 ref from before a navigation or reload is reported as stale.
 
+## Background tabs
+
+gocode opens its tabs in the background, and the window may be minimized or
+covered, so the page gocode drives is usually hidden
+(`document.visibilityState` is `"hidden"`). Chrome does not deliver input to a
+hidden page: tested on Chrome 156 through `chrome.debugger`, a CDP mouse press
+or key press is accepted and reported as done, but the page gets no
+`pointerdown`, `click` or `keydown` (`Input.insertText` does arrive), and
+`Page.captureScreenshot` answers late or not at all because the page renders
+no frames. Up to 0.4.0 this meant a click that "worked" but did nothing, and
+screenshots that timed out after 20 seconds.
+
+From 0.4.1 the extension handles it like this, least intrusive first:
+
+1. **Focus emulation.** While gocode holds the debugger on a hidden (or
+   unfocused) tab, it turns on `Emulation.setFocusEmulationEnabled` — what
+   Playwright does for its pages. Chrome then treats the page as visible and
+   focused (as if it were being captured): it renders, hit-tests, and takes
+   clicks, keys and drags as real, trusted input, while the tab stays in the
+   background and the window is not raised. Detaching the debugger ends it.
+   Tested: hidden-tab clicks (40 of 40), keys and text arrive as trusted
+   events and the user's tab stays in front; a minimized window behaves the
+   same.
+2. **Screenshots** of a hidden tab are taken with a screencast running
+   (`Page.startScreencast` keeps frames coming, which `captureScreenshot`
+   waits for; tested at 130–400 ms), falling back to the last screencast
+   frame. When Chrome renders nothing at all the screenshot fails after 8
+   seconds saying why, instead of hanging.
+3. **Every input action is checked.** Before dispatching, the extension adds
+   capture-phase listeners in every frame of the page; afterwards it looks for
+   the trusted events the action must cause (a `pointerdown`/`mousedown`/
+   `click`, a `keydown`, an `input` event — a release alone does not count).
+   If none arrived, it does the same action with DOM events from inside the
+   page at the element under the point (through open shadow roots and
+   same-origin iframes), with the right `clientX/Y`, `button`, `buttons`,
+   `detail` and modifier keys, focusing what is clicked; typed text, Enter
+   (submits the form), Backspace/Delete and select-all are carried out too,
+   and the page gets transient user activation first, so a popup or
+   `target=_blank` link the click opens is not blocked. These events are
+   untrusted (`event.isTrusted` is false), and the result says so. When even
+   that is impossible (the point is in another site's frame, or `type` with
+   no text field focused) the action fails with the reason. A page where
+   extension scripts cannot run is reported as "sent, not confirmed". An
+   action is never reported as done when the page did not get it.
+4. **Scrolling** a hidden tab is done in the page from the start (an
+   untrusted `wheel` event, then scrolling the element under the point): in
+   testing, a CDP mouse wheel on a background tab now and then made Chrome
+   switch the window's tabs, as a wheel over the tab strip does on Linux.
+
+gocode never brings its tab to the front (`chrome.tabs.update` with
+`active: true`) to get input through: that would take the user's view of their
+window away, and focus emulation works without it. A link a gocode click
+follows can still open its tab in front (`target=_blank` does); when the gocode
+tab was in the background, the extension shows the user's tab again, and the
+new tab (which Chrome puts in the gocode group, while naming the user's tab as
+its opener) is gocode's.
+
 ## Tab groups per session
 
 Each gocode session sends its session id with every command, and the
