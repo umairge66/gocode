@@ -112,8 +112,12 @@ type Result struct {
 	StructuredOutput  any                   `json:"structured_output,omitempty"`
 	TerminalReason    string                `json:"terminal_reason,omitempty"`
 	DeferredToolUse   *DeferredToolUse      `json:"deferred_tool_use,omitempty"`
-	Errors            []string              `json:"errors,omitempty"`
-	UUID              string                `json:"uuid"`
+	// DeferredToolUses lists every deferred call of the round, in tool_use
+	// order, when a hook deferred more than one (DeferredToolUse is the
+	// first). A gocode extension.
+	DeferredToolUses []*DeferredToolUse `json:"deferred_tool_uses,omitempty"`
+	Errors           []string           `json:"errors,omitempty"`
+	UUID             string             `json:"uuid"`
 }
 
 // NewResult returns a result record with its identity, list and map fields

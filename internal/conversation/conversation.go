@@ -343,9 +343,9 @@ type Conversation struct {
 	pendingBoundary *compaction.BoundaryMarker
 	// persistedCost marks the ledger totals last written to Store (cost.go).
 	persistedCost costMark
-	// deferred is the tool call a PreToolUse hook deferred, still unanswered
-	// at the end of History (deferred.go).
-	deferred *agent.ToolUse
+	// deferred is the tool round a PreToolUse hook deferred calls of, still
+	// unanswered at the end of History (deferred.go).
+	deferred *agent.DeferredRound
 
 	// OnToolResultsCleared, when set, is told the file paths of Read results a
 	// microcompaction just cleared, so the host can forget their read state (the
@@ -436,6 +436,9 @@ func (c *Conversation) SeedHistory(msgs []agent.Message, store SessionRecorder) 
 	c.Store = store
 	c.persistedLen = len(msgs)
 	c.pendingBoundary = nil
+	// The previous history's deferred round, if any, is gone with it; a
+	// resumed session's own is set by SetDeferredRound.
+	c.dropDeferred()
 	c.resetUsage()
 }
 
@@ -652,10 +655,12 @@ type Result struct {
 	// Notices are user-facing hook messages (systemMessage, hook failures)
 	// produced while handling this input.
 	Notices []string
-	// Deferred is the tool call a PreToolUse hook deferred (Reason
+	// Deferred is the (first) tool call a PreToolUse hook deferred (Reason
 	// agent.ReasonToolDeferred or agent.ReasonToolDeferredUnavailable); it is
-	// still pending (deferred.go).
-	Deferred *agent.ToolUse
+	// still pending (deferred.go). DeferredCalls lists every deferred call of
+	// the round, Deferred first.
+	Deferred      *agent.ToolUse
+	DeferredCalls []agent.ToolUse
 }
 
 // ErrUnknownCommand is returned when a slash command does not resolve to any
@@ -769,9 +774,10 @@ func (c *Conversation) runModelTurnBlocks(ctx context.Context, content []agent.C
 	// Compaction tracking is per query.
 	c.tracking = compactTracking{}
 	c.beginFallbackTurn()
-	// --- (a2) a tool call a hook deferred is settled first: its result leads
-	//     this user turn. The history ends with that call unanswered until
-	//     then, so the pre-turn compaction is skipped this once.
+	// --- (a2) a tool round a hook deferred calls of is settled first: its
+	//     results lead this user turn. The history ends with that round
+	//     unanswered until then, so the pre-turn compaction is skipped this
+	//     once.
 	var lead []agent.ContentBlock
 	compacted := false
 	if r, ok := c.settleDeferred(ctx, false); ok {
@@ -851,6 +857,7 @@ func (c *Conversation) runModelTurnBlocks(ctx context.Context, content []agent.C
 		Err:           res.Err,
 		Notices:       withNotice(c.takeTurnNotices(), deferNotice),
 		Deferred:      res.Deferred,
+		DeferredCalls: deferredCalls(res),
 	}, nil
 }
 
@@ -1024,6 +1031,7 @@ func (c *Conversation) ResumeWithQueuedContext(ctx context.Context) (res Result,
 		Err:           r.Err,
 		Notices:       withNotice(c.takeTurnNotices(), deferNotice),
 		Deferred:      r.Deferred,
+		DeferredCalls: deferredCalls(r),
 	}, true, nil
 }
 
@@ -1057,6 +1065,7 @@ func (c *Conversation) applyEffect(ctx context.Context, eff builtincmds.Effect) 
 		// appending the empty history onto the old file. The new session is lazy —
 		// its file appears only once a turn is taken.
 		c.History = nil
+		c.dropDeferred()
 		c.clearPendingContext()
 		if c.NewSessionStore != nil {
 			c.Store = c.NewSessionStore()
@@ -1077,6 +1086,10 @@ func (c *Conversation) applyEffect(ctx context.Context, eff builtincmds.Effect) 
 		return res, nil
 
 	case builtincmds.EffectTriggerCompaction:
+		// A deferred round must be settled first (deferred.go).
+		if refusal := c.compactDeferredRefusal(); refusal != "" {
+			return c.localResult(builtincmds.Effect{Kind: builtincmds.EffectPrintText, Text: refusal, Args: eff.Args}), nil
+		}
 		compacted, err := c.compactNow(ctx, eff.Text, compaction.TriggerManual)
 		res := c.localResult(eff)
 		res.Compacted = compacted

@@ -60,6 +60,22 @@ settles the call first (a hook that defers again then gets an ask). If the
 tool is gone, the result has `stop_reason` `"tool_deferred_unavailable"`,
 `is_error: true`, and the call stays pending.
 
+A deferred call may share its round with other calls. Those run as usual (or
+are deferred too); their results are kept with the session, and the turn
+still ends with `tool_deferred`. `deferred_tool_use` is the first deferred
+call, and when more than one was deferred `deferred_tool_uses` lists them
+all, in the order the model made them. A resume settles every deferred call
+of the round — each is checked by the hooks and permissions again — and then
+sends all the round's results to the model together, in the order of its
+tool calls. When a hook defers some of them again, the ones that ran are
+kept too and the turn ends with `tool_deferred` once more. `/compact` is
+refused while a deferred call is pending; settle it first.
+
+Only the main conversation's calls can be deferred. In a subagent a
+`defer` is treated as `ask`: the subagent's run cannot end its parent's
+turn with a call pending, and it has no resumable session of its own in
+which the call could be settled later.
+
 ### Partial messages
 
 With `--include-partial-messages`, each model response is framed as in the

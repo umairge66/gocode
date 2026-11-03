@@ -131,8 +131,12 @@ type entry struct {
 	Tag         *string  `json:"tag,omitempty"`
 	Tags        []string `json:"tags,omitempty"`
 
-	// DeferredToolUse is a deferred-tool-use line's call (deferred.go).
-	DeferredToolUse *deferredToolUse `json:"deferredToolUse,omitempty"`
+	// DeferredToolUse is a deferred-tool-use line's (first) call; a round of
+	// several calls also lists them all and the other calls' results
+	// (deferred.go).
+	DeferredToolUse  *deferredToolUse     `json:"deferredToolUse,omitempty"`
+	DeferredToolUses []deferredToolUse    `json:"deferredToolUses,omitempty"`
+	ToolResults      []agent.ContentBlock `json:"toolResults,omitempty"`
 
 	// line is the entry's raw transcript line when it was read lazily
 	// (parseEntriesLazy) and its Message is not decoded yet; see msg.

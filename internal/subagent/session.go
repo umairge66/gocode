@@ -65,19 +65,25 @@ type Session struct {
 	closeReq bool               // a Close was requested (terminal, not resumable)
 	cancel   context.CancelFunc // cancels the active turn (nil when idle)
 
-	// Runtime, immutable after construction.
-	registry    *TaskRegistry
-	model       agent.ModelCaller
-	dispatcher  agent.ToolDispatcher
-	system      string
+	// toolSchemas are the advertised tools; a turn that refreshed them
+	// (refreshTools) stores its final list for the next turn. Guarded by mu.
 	toolSchemas []agent.ToolSchema
-	hooks       agent.PermissionHook
-	maxTurns    int
-	loopGuard   *agent.LoopGuardConfig
-	budget      func() error
-	capture     bool
-	summarize   ActivitySummarizer
-	stopHook    StopHook
+
+	// Runtime, immutable after construction.
+	registry   *TaskRegistry
+	model      agent.ModelCaller
+	dispatcher agent.ToolDispatcher
+	system     string
+	// refreshTools is the loop's RefreshTools (tools that arrive mid-run,
+	// already limited to the agent type); nil: the list is fixed.
+	refreshTools func([]agent.ToolSchema) []agent.ToolSchema
+	hooks        agent.PermissionHook
+	maxTurns     int
+	loopGuard    *agent.LoopGuardConfig
+	budget       func() error
+	capture      bool
+	summarize    ActivitySummarizer
+	stopHook     StopHook
 
 	// slot is the concurrency slot the spawn reserved for the first turn
 	// (taken over by it, then nil); a resumed turn takes a fresh one under
@@ -189,15 +195,20 @@ func (s *Session) runTurn(ctx context.Context, input []agent.ContentBlock) (Repo
 	}
 	hc := &handbackCapture{inner: observed}
 	canSend := hasTool(schemas, inbox.SendMessageToolName)
+	// No AllowDefer: a PreToolUse hook's defer of a subagent's call becomes
+	// an ask (toolrun applyDefer). The subagent's run cannot end its parent's
+	// turn with the call pending, and the subagent has no resumable session
+	// of its own in which the call could be settled later.
 	loop := &agent.Loop{
-		Model:       mc,
-		Tools:       hc,
-		System:      system,
-		ToolSchemas: schemas,
-		Hooks:       hooks,
-		MaxTurns:    maxTurns,
-		LoopGuard:   loopGuard,
-		Budget:      budget,
+		Model:        mc,
+		Tools:        hc,
+		System:       system,
+		ToolSchemas:  schemas,
+		RefreshTools: s.refreshTools,
+		Hooks:        hooks,
+		MaxTurns:     maxTurns,
+		LoopGuard:    loopGuard,
+		Budget:       budget,
 		// Messages sent to this agent while it runs are delivered at its next
 		// tool round (the task's pendingMessages are drained).
 		MidTurn: func(context.Context) []agent.ContentBlock {
@@ -276,6 +287,7 @@ func (s *Session) runTurn(ctx context.Context, input []agent.ContentBlock) (Repo
 	s.running = false
 	s.cancel = nil
 	s.history = res.Messages // seed the next turn with the full conversation
+	s.toolSchemas = loop.ToolSchemas
 	s.mu.Unlock()
 
 	// Keep the session ACTIVE only while it is Stopped. A Close drops it; any
@@ -293,6 +305,13 @@ func (s *Session) runTurn(ctx context.Context, input []agent.ContentBlock) (Repo
 		}
 	}
 	return report, final, nil
+}
+
+// schemas returns the session's current tool list.
+func (s *Session) schemas() []agent.ToolSchema {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.toolSchemas
 }
 
 // hasTool reports whether schemas advertise the named tool.
@@ -431,7 +450,7 @@ func (m *SessionManager) Revive(ctx context.Context, taskID string, msg inbox.Ag
 		m.retire(s)
 		return err
 	}
-	canSend := hasTool(s.toolSchemas, inbox.SendMessageToolName)
+	canSend := hasTool(s.schemas(), inbox.SendMessageToolName)
 	input := framedBlocks(append([]inbox.AgentMessage{msg}, m.reg.TakeMessages(taskID)...), false, canSend)
 	go m.runResumed(context.WithoutCancel(ctx), s, input)
 	return nil
@@ -460,7 +479,7 @@ func (m *SessionManager) ReviveStranded(ctx context.Context, taskID string) {
 		m.retire(s)
 		return
 	}
-	m.runResumed(ctx, s, framedBlocks(msgs, false, hasTool(s.toolSchemas, inbox.SendMessageToolName)))
+	m.runResumed(ctx, s, framedBlocks(msgs, false, hasTool(s.schemas(), inbox.SendMessageToolName)))
 }
 
 // reserveSlot takes the concurrency slot the session's next turn runs in,

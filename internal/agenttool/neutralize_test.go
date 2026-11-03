@@ -16,7 +16,7 @@ func TestCompletedResultNeutralizesReport(t *testing.T) {
 		{Text: text, Delivered: true},
 		{Text: text, Fallback: true},
 	} {
-		got := formatCompleted("general-purpose", r, nil, spawnUsage{})
+		got := formatCompleted("general-purpose", r, nil, spawnUsage{}, false)
 		if !strings.Contains(got, "[harness: subagent output matched instruction-shaped pattern(s): ") {
 			t.Errorf("no harness note:\n%s", got)
 		}
@@ -27,7 +27,7 @@ func TestCompletedResultNeutralizesReport(t *testing.T) {
 		}
 	}
 	// A clean report gets no note.
-	if got := formatCompleted("general-purpose", subagent.Report{Text: "all good", Delivered: true}, nil, spawnUsage{}); strings.Contains(got, "[harness:") {
+	if got := formatCompleted("general-purpose", subagent.Report{Text: "all good", Delivered: true}, nil, spawnUsage{}, false); strings.Contains(got, "[harness:") {
 		t.Errorf("clean report annotated:\n%s", got)
 	}
 }

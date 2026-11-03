@@ -180,21 +180,23 @@ func (d *Dispatcher) SetWorkflowTool(t ModelTool) {
 // Restrict limits the dispatcher to the named tools (built-in and external):
 // any other call is answered with the unknown-tool error and Schemas omits it.
 // A nil list, or one containing "*", lifts the restriction. It is how a
-// subagent's dispatcher is narrowed to its agent type's tool list.
+// subagent's dispatcher is narrowed to its agent type's tool list. It is safe
+// to call while calls are dispatched (a subagent's tool refresh replaces the
+// list when MCP tools arrive).
 func (d *Dispatcher) Restrict(allowed []string) {
 	if allowed == nil {
-		d.allowed = nil
+		d.allowed.Store(nil)
 		return
 	}
 	set := make(map[string]bool, len(allowed))
 	for _, n := range allowed {
 		if n == "*" {
-			d.allowed = nil
+			d.allowed.Store(nil)
 			return
 		}
 		set[n] = true
 	}
-	d.allowed = set
+	d.allowed.Store(&set)
 }
 
 // Disable turns the named tools off for this session: Schemas omits them and
@@ -235,7 +237,8 @@ func (d *Dispatcher) permitted(name string) bool {
 	if d.disabled[name] {
 		return false
 	}
-	return d.allowed == nil || d.allowed[name]
+	set := d.allowed.Load()
+	return set == nil || (*set)[name]
 }
 
 // dispatchExternal runs a call for an external tool through the hook +

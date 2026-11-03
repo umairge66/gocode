@@ -781,6 +781,12 @@ func (r *sessionRuntime) wireAgentTools(env *Env, s *printSession, caller agent.
 		}
 		return names
 	}
+	// A running subagent picks up MCP tools that arrive mid-run (background
+	// connect, tools/list_changed) as the main loop does (mcpToolRefresher),
+	// limited to what its agent type may use.
+	if r.mcp != nil {
+		at.ToolsVersion = r.mcp.ToolsVersion
+	}
 	if cfg.interactive {
 		conv := r.conv
 		at.OnBackgroundDone = func(task *subagent.Task, result string) {

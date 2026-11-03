@@ -38,6 +38,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/umairge66/gocode/internal/agent"
 	"github.com/umairge66/gocode/internal/bgtask"
@@ -372,9 +373,10 @@ type Dispatcher struct {
 	compact bool
 
 	adapters map[protocol.Tool]adapter
-	// allowed, when non-nil, restricts the dispatchable/advertised tools
-	// (see Restrict).
-	allowed map[string]bool
+	// allowed, when set to a non-nil set, restricts the dispatchable/advertised
+	// tools (see Restrict). Atomic: a subagent's refresh may widen it while
+	// another of its calls is checked.
+	allowed atomic.Pointer[map[string]bool]
 	// disabled names tools that are neither advertised nor dispatchable in
 	// this session (see Disable), independent of the Restrict allow-list.
 	disabled map[string]bool

@@ -21,9 +21,13 @@ import (
 //	{"type":"custom-title","customTitle":"<title>","sessionId":"<id>"}
 //	{"type":"tag","tag":"<last added>","tags":["a","b"],"sessionId":"<id>"}
 //
-// The latest line of each kind wins. A tag line records the whole tag set in
-// `tags`; `tag` repeats the most recently added tag ("" once none is left),
-// so a reader that keeps a single latest-wins tag still sees a current one.
+// The latest line of each kind wins. Claude Code (checked against v2.1.317)
+// writes {"type":"tag","tag":<string>,"sessionId":...} with a single
+// latest-wins tag, and {"type":"custom-title","customTitle":...,"sessionId":...}.
+// gocode's title line is the same; its tag line adds `tags`, the whole tag
+// set, and keeps `tag` as the most recently added tag ("" once none is
+// left), so Claude Code, which ignores the extra field, still reads a
+// current tag.
 
 // Meta-line types.
 const (

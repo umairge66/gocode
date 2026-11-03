@@ -127,14 +127,14 @@ type Loop struct {
 	// delivery included).
 	LoopGuard *LoopGuardConfig
 
-	// AllowDefer lets a PreToolUse hook defer a round's only tool call: the
-	// run then ends with ReasonToolDeferred and Result.Deferred (see
+	// AllowDefer lets a PreToolUse hook defer a round's tool calls: the run
+	// then ends with ReasonToolDeferred and Result.DeferredRound (see
 	// defercall.go). Without it a hook's defer is treated as an ask.
 	AllowDefer bool
 
-	// held is the call the dispatcher deferred in the running round.
+	// held are the calls the dispatcher deferred in the running round.
 	heldMu sync.Mutex
-	held   *ToolUse
+	held   []ToolUse
 
 	// guard holds the current streak of identical calls.
 	guard *loopGuard
@@ -211,8 +211,9 @@ func (l *Loop) observe(m Message, resp *ModelResponse) {
 //     between, gets a note (unless it already carries an exact-repeat note);
 //     at twice the stop threshold the run ends with ReasonRepeatedToolCalls
 //     once the turn's results are recorded.
-//  8. A PreToolUse hook may defer a round's only tool call (AllowDefer): the
-//     run ends with ReasonToolDeferred, the call unanswered (defercall.go).
+//  8. A PreToolUse hook may defer tool calls of a round (AllowDefer): the
+//     round's other calls run, and the run ends with ReasonToolDeferred, the
+//     round unanswered and its results kept aside (defercall.go).
 //  9. After every model response the spend cap is checked (Budget): once it
 //     is reached the response is kept, its tool calls are answered as not
 //     run (except those RunAtBudget accepts), and the run ends with
@@ -380,14 +381,31 @@ func (l *Loop) Run(ctx context.Context, initial []Message) Result {
 			runnable = toolUses[:verdict.stopAt]
 		}
 		dctx := WithTranscript(ctx, messages)
-		if l.AllowDefer && len(runnable) == 1 && verdict.stopAt < 0 {
+		if l.AllowDefer && verdict.stopAt < 0 {
 			dctx = withDeferrable(dctx)
 		}
 		resultBlocks := l.dispatchTurn(dctx, runnable, badInputs, deferred)
-		if held := l.takeHeld(); held != nil {
-			// A PreToolUse hook deferred the round's only call: the turn
-			// ends with it unanswered, for the caller to resume.
-			return Result{Reason: ReasonToolDeferred, Messages: messages, TurnCount: turnCount, Deferred: held}
+		if held := l.takeHeld(); len(held) > 0 {
+			if ctx.Err() == nil {
+				// A PreToolUse hook deferred calls of the round: the turn
+				// ends with the round unanswered, its other results kept
+				// aside, for the caller to resume.
+				for i, note := range verdict.notes {
+					if resultBlocks[i].Type == BlockToolResult {
+						resultBlocks[i] = appendNote(resultBlocks[i], note)
+					}
+				}
+				round := heldRound(runnable, resultBlocks, held)
+				first := round.First()
+				return Result{Reason: ReasonToolDeferred, Messages: messages, TurnCount: turnCount, Deferred: &first, DeferredRound: &round}
+			}
+			// The turn was cut off: the deferred calls are answered as
+			// interrupted, like every other call not run.
+			for i, c := range runnable {
+				if resultBlocks[i].Type != BlockToolResult {
+					resultBlocks[i] = interruptedToolResult(c.ID)
+				}
+			}
 		}
 		if verdict.stopAt >= 0 {
 			resultBlocks = append(resultBlocks, ToolResultBlock(toolUses[verdict.stopAt].ID,
