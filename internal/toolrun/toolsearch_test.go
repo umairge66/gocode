@@ -171,3 +171,26 @@ func TestToolSearchWaitsForConnectingServers(t *testing.T) {
 		t.Fatalf("miss = %+v, waits = %d", res, ext.waits)
 	}
 }
+
+// A direct call to the tool of a server still connecting waits for it instead
+// of failing as an unknown tool.
+func TestDirectMCPCallWaitsForConnectingServer(t *testing.T) {
+	ext := &connectingExternal{}
+	d := New(toolreg.ModeBypassPermissions, nil, WithExternalTools(ext))
+	call := func(name string) agent.ToolResult {
+		res, err := d.Dispatch(context.Background(), agent.ToolUse{ID: "t", Name: name, Input: json.RawMessage(`{}`)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	if res := call("mcp__slow__lookup"); res.IsError || ext.waits != 1 {
+		t.Fatalf("call while connecting = %+v, waits = %d", res, ext.waits)
+	}
+	if res := call("mcp__other__thing"); !res.IsError || !strings.Contains(res.Content, "No such tool available") {
+		t.Fatalf("unknown tool = %+v", res)
+	}
+	if res := call("Bogus"); !res.IsError || ext.waits != 2 {
+		t.Fatalf("non-MCP unknown tool waited: %+v, waits = %d", res, ext.waits)
+	}
+}

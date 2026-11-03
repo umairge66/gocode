@@ -792,6 +792,13 @@ func (d *Dispatcher) dispatch(ctx context.Context, call agent.ToolUse) (agent.To
 		if d.External != nil && d.External.Has(call.Name) {
 			return d.dispatchExternal(ctx, call)
 		}
+		// An MCP tool of a server still connecting in the background is not
+		// known yet: wait for the connects (bounded) before calling it unknown.
+		if d.External != nil && strings.HasPrefix(call.Name, "mcp__") {
+			if cw, ok := d.External.(ConnectingExternalTools); ok && cw.WaitConnecting(ctx) && d.External.Has(call.Name) {
+				return d.dispatchExternal(ctx, call)
+			}
+		}
 		return errResult("Error: No such tool available: " + call.Name), nil
 	}
 
