@@ -39,6 +39,9 @@ type sessionMemory struct {
 	// nested hands out the conditional rules and nested-directory memory as
 	// files are touched; nil when memory is disabled.
 	nested *projectmemory.Nested
+	// files are the memory files block was rendered from (conditional
+	// rules excluded), for get_context_usage.
+	files []projectmemory.Entry
 }
 
 // disableMemoryEnv turns off gocode.md memory and rules entirely.
@@ -99,6 +102,11 @@ func buildSystemPrompt(ctx context.Context, env *Env, s *printSession, paths ses
 		memory.managedBlock = projectMemoryHeader + "\n\n" + managed
 	}
 	memory.nested = projectmemory.NewNested(cfg, mem.Sources)
+	for _, e := range mem.Entries {
+		if len(e.Globs) == 0 {
+			memory.files = append(memory.files, e)
+		}
+	}
 
 	if memory.block != "" {
 		system += "\n\n" + memory.block

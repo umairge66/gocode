@@ -444,8 +444,8 @@ func (h *headlessRun) initializeResponse() map[string]any {
 		"commands":                cmds,
 		"output_style":            "default",
 		"available_output_styles": []string{"default"},
-		"models":                  []any{},
-		"account":                 map[string]any{},
+		"models":                  h.initModels(),
+		"account":                 h.initAccount(),
 		"capabilities":            headless.ControlCapabilities,
 		"pid":                     os.Getpid(),
 	}
@@ -525,12 +525,14 @@ func mcpStatusName(s mcphost.State) string {
 }
 
 // contextUsage answers get_context_usage. Between turns it measures the
-// session (conversation.ContextTokens); during one it reports the size the
-// latest model response measured.
+// session (conversation.ContextTokens) and breaks it down by category
+// (contextBreakdown); during one it reports the size the latest model
+// response measured, as a single Messages category.
 func (h *headlessRun) contextUsage(s *streamInput) map[string]any {
 	tokens := int(h.ctxTokens.Load())
 	model := ""
 	autoCompact, threshold := false, 0
+	var categories, memoryFiles, mcpTools []map[string]any
 	s.idle(func() {
 		tokens = h.rt.conv.ContextTokens()
 		model = h.modelName()
@@ -538,25 +540,35 @@ func (h *headlessRun) contextUsage(s *streamInput) map[string]any {
 			autoCompact = c.Planner.Config.Enabled && !h.rt.autoCompactOff.Load()
 			threshold = compaction.Threshold(c.Planner.Window.EffectiveWindow(), c.Planner.Config)
 		}
+		categories, memoryFiles, mcpTools = h.contextBreakdown(tokens, contextWindowFor(h.s.Provider, model))
 	})
 	if model == "" {
 		model = h.liveModel()
 	}
 	max := contextWindowFor(h.s.Provider, model)
+	if categories == nil {
+		categories = []map[string]any{category("messages", "Messages", tokens, "used")}
+	}
+	if memoryFiles == nil {
+		memoryFiles = []map[string]any{}
+	}
+	if mcpTools == nil {
+		mcpTools = []map[string]any{}
+	}
 	pct := 0.0
 	if max > 0 {
 		pct = float64(tokens) * 100 / float64(max)
 	}
 	out := map[string]any{
-		"categories":           []map[string]any{{"name": "Messages", "tokens": tokens}},
+		"categories":           categories,
 		"totalTokens":          tokens,
 		"maxTokens":            max,
 		"rawMaxTokens":         max,
 		"percentage":           pct,
 		"model":                model,
 		"isAutoCompactEnabled": autoCompact,
-		"memoryFiles":          []any{},
-		"mcpTools":             []any{},
+		"memoryFiles":          memoryFiles,
+		"mcpTools":             mcpTools,
 		"agents":               []any{},
 		"gridRows":             []any{},
 	}

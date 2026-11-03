@@ -112,14 +112,26 @@ and gocode answers on stdout with
 host can check before sending one. An unknown subtype is answered with an
 error.
 
+`initialize`'s `models` lists `default` (the model the session started
+with) and, for the Anthropic and OpenRouter providers, the Claude family
+models (`value` is the full model id, which `set_model` takes; `displayName`,
+`description`, `resolvedModel`). Other providers list their model catalog,
+fetched from the provider when `initialize` is answered (within 5 s; a
+failed fetch lists only `default`). The `availableModels` policy filters the
+list as it does the `/model` picker. `account` is
+`{"provider":"…","apiKeySource":"…"}`: gocode has no account, and
+`apiKeySource` names where the key came from (the environment variable's
+name, `auth.json` for a saved key, `settings`, `apiKeyHelper`, or `none`),
+never the key.
+
 | Subtype | Request fields | Response |
 | :- | :- | :- |
-| `initialize` | (SDK options such as `hooks` are accepted and ignored; hooks come from settings) | `commands` (`name`, `description`, `argumentHint`), `output_style`, `available_output_styles`, `models`, `account`, `capabilities`, `pid` |
+| `initialize` | (SDK options such as `hooks` are accepted and ignored; hooks come from settings) | `commands` (`name`, `description`, `argumentHint`), `output_style`, `available_output_styles`, `models`, `account`, `capabilities`, `pid` (see below) |
 | `interrupt` | — | `{}`. Ends the running turn as if the user pressed Esc: its result is an `error_during_execution` with the error `Request interrupted by user`, and the session takes the next message. A no-op between turns. |
 | `set_model` | `model` (`"default"` or empty: the model the session started with) | `{"model":"…"}`. Applies from the next turn; a request sent during a turn is answered when the turn ends. The model policy (`availableModels`) can refuse it. |
 | `set_permission_mode` | `mode`: `default`, `acceptEdits`, `plan`, `dontAsk`, `auto`, `bypassPermissions` | `{"mode":"…"}`. Takes effect at the next tool call, also mid-turn. `bypassPermissions` needs a session started with `--dangerously-skip-permissions` or `--allow-dangerously-skip-permissions` (and not disabled by settings); `auto` needs auto mode to be available. |
 | `mcp_status` | — | `{"mcpServers":[{"name":"…","status":"connected"\|"pending"\|"failed"\|"needs-auth","serverInfo":{"name","version"},"error":"…"}]}` |
-| `get_context_usage` | — | `totalTokens`, `maxTokens`, `rawMaxTokens`, `percentage`, `model`, `isAutoCompactEnabled`, `autoCompactThreshold`, `categories` (one `Messages` entry), and empty `memoryFiles` / `mcpTools` / `agents` / `gridRows`. During a turn it reports the size the latest model response measured. |
+| `get_context_usage` | — | `totalTokens`, `maxTokens`, `rawMaxTokens`, `percentage`, `model`, `isAutoCompactEnabled`, `autoCompactThreshold`, `categories`, `memoryFiles` (`path`, `type`, `tokens`), `mcpTools` (`name`, `serverName`, `tokens`), and empty `agents` / `gridRows`. Between turns `categories` breaks the total down into `system_prompt`, `system_tools`, `mcp_tools`, `memory_files`, `messages` and `free_space` (`id`, `name`, `tokens`, `color`, `kind`); the parts are ≈4-characters-per-token estimates, as in `/context`, and `messages` is what the measured total leaves after them. During a turn it reports the size the latest model response measured, as one `messages` category. |
 
 ### Permission prompts (`can_use_tool`)
 
