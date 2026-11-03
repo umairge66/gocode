@@ -194,3 +194,35 @@ func TestDirectMCPCallWaitsForConnectingServer(t *testing.T) {
 		t.Fatalf("non-MCP unknown tool waited: %+v, waits = %d", res, ext.waits)
 	}
 }
+
+// With the browser tools preloaded (--chrome), their definitions are sent
+// from the start while the other deferrable tools stay deferred.
+func TestBrowserToolsPreloaded(t *testing.T) {
+	deferred := func(d *Dispatcher) map[string]bool {
+		out := map[string]bool{}
+		for _, s := range d.Schemas() {
+			out[s.Name] = s.Deferred
+		}
+		return out
+	}
+	off := deferred(New(toolreg.ModeDefault, nil, WithToolSearch(toolsearch.ModeOn, 0)))
+	on := deferred(New(toolreg.ModeDefault, nil, WithToolSearch(toolsearch.ModeOn, 0), WithBrowserToolsPreloaded(true)))
+	for _, name := range []string{"navigate", "computer", "find", "read_page", "browser_batch", "tabs_context"} {
+		if _, ok := off[name]; !ok {
+			t.Skipf("%s not registered in this dispatcher", name)
+		}
+		if !off[name] {
+			t.Errorf("%s not deferred by default", name)
+		}
+		if on[name] {
+			t.Errorf("%s still deferred with the browser tools preloaded", name)
+		}
+	}
+	if !on["WebFetch"] {
+		t.Error("WebFetch no longer deferred: preloading must only cover the browser tools")
+	}
+	d := New(toolreg.ModeDefault, nil, WithBrowserToolsPreloaded(true))
+	if !d.BrowserToolsPreloaded() {
+		t.Error("BrowserToolsPreloaded not reported")
+	}
+}

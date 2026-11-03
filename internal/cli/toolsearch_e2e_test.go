@@ -145,3 +145,32 @@ func TestPrintToolSearchSubagent(t *testing.T) {
 		t.Fatalf("subagent tools = %v", child)
 	}
 }
+
+// TestPrintChromePreloadsBrowserTools: with --chrome the first request
+// already carries the browser tools' definitions; without it they are not
+// offered at all in print mode.
+func TestPrintChromePreloadsBrowserTools(t *testing.T) {
+	p := newFakeProvider(t, fakeTurn{text: "ok", in: 1, out: 1})
+	f := headlessFixture(t, p)
+	if code, _, errOut := f.run(t, "-p", "--chrome", "hi"); code != 0 {
+		t.Fatalf("exit %d err %q", code, errOut)
+	}
+	tools := p.toolsOf(0)
+	for _, want := range []string{"navigate", "computer", "find", "read_page", "browser_batch"} {
+		if !slices.Contains(tools, want) {
+			t.Fatalf("first request lacks %s: %v", want, tools)
+		}
+	}
+	if slices.Contains(tools, "WebFetch") {
+		t.Fatalf("WebFetch should stay deferred: %v", tools)
+	}
+
+	p2 := newFakeProvider(t, fakeTurn{text: "ok", in: 1, out: 1})
+	f2 := headlessFixture(t, p2)
+	if code, _, errOut := f2.run(t, "-p", "hi"); code != 0 {
+		t.Fatalf("exit %d err %q", code, errOut)
+	}
+	if slices.Contains(p2.toolsOf(0), "navigate") {
+		t.Fatalf("browser tools offered without --chrome: %v", p2.toolsOf(0))
+	}
+}

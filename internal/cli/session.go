@@ -512,6 +512,8 @@ func buildSession(ctx context.Context, env *Env, s *printSession, caller agent.M
 		// Deferred tool loading (ENABLE_TOOL_SEARCH): non-core tools are
 		// loaded on demand with ToolSearch.
 		toolSearchOption(env, s),
+		// --chrome: the browser tools come loaded (no ToolSearch turn first).
+		toolrun.WithBrowserToolsPreloaded(s != nil && s.Chrome == "on"),
 		// Compact tool texts, and the tools sessions rarely need loaded on
 		// demand (GOCODE_FULL_TOOL_DESCRIPTIONS turns this off).
 		toolrun.WithCompactTools(compactToolsEnabled(env)),
@@ -941,6 +943,7 @@ func (r *sessionRuntime) childDispatcherFrom(scopes []toolrun.InheritedScope, ro
 		r.subagentPeerTools(),
 		// The same deferred tool loading as the parent.
 		toolrun.WithToolSearch(parent.ToolSearchMode()),
+		toolrun.WithBrowserToolsPreloaded(parent.BrowserToolsPreloaded()),
 		// The same headless variant as the parent.
 		toolrun.WithCompactTools(parent.CompactTools()),
 		// A rejected prompt tells the subagent to adapt; it never ends a turn.

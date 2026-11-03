@@ -26,6 +26,33 @@ func WithToolSearch(mode toolsearch.Mode, autoThresholdChars int) Option {
 	}
 }
 
+// WithBrowserToolsPreloaded sends the browser tools' full definitions from
+// the first request instead of deferring them behind ToolSearch. A session
+// started with --chrome is there to use the browser, and live runs spent one
+// to four model turns loading these tools before doing anything.
+func WithBrowserToolsPreloaded(on bool) Option {
+	return func(d *Dispatcher) { d.browserPreloaded = on }
+}
+
+// BrowserToolsPreloaded reports WithBrowserToolsPreloaded (for building a
+// subagent's dispatcher the same way).
+func (d *Dispatcher) BrowserToolsPreloaded() bool { return d.browserPreloaded }
+
+// preloadableBrowserTools are the tools WithBrowserToolsPreloaded keeps loaded.
+var preloadableBrowserTools = map[string]bool{
+	string(protocol.ToolBrowserNavigate):    true,
+	string(protocol.ToolBrowserReadPage):    true,
+	string(protocol.ToolBrowserGetPageText): true,
+	string(protocol.ToolBrowserTabsContext): true,
+	string(protocol.ToolBrowserTabsCreate):  true,
+	string(protocol.ToolBrowserTabsClose):   true,
+	string(protocol.ToolBrowserScreenshot):  true,
+	string(protocol.ToolBrowserComputer):    true,
+	string(protocol.ToolBrowserFind):        true,
+	string(protocol.ToolBrowserFormInput):   true,
+	string(protocol.ToolBrowserBatch):       true,
+}
+
 // ToolSearchMode reports the dispatcher's deferred-loading mode and auto
 // threshold (for building a subagent's dispatcher the same way).
 func (d *Dispatcher) ToolSearchMode() (toolsearch.Mode, int) {
@@ -82,6 +109,9 @@ type deferLatch struct{ atomic.Bool }
 
 // isDeferred applies the deferred set of this dispatcher's session kind.
 func (d *Dispatcher) isDeferred(name string, mcp bool) bool {
+	if d.browserPreloaded && !mcp && preloadableBrowserTools[name] {
+		return false
+	}
 	if d.compact {
 		return toolsearch.IsDeferredCompact(name, mcp)
 	}

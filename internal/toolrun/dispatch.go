@@ -371,6 +371,9 @@ type Dispatcher struct {
 	// threshold in characters (see WithToolSearch).
 	toolSearch     toolsearch.Mode
 	toolSearchAuto int
+	// browserPreloaded keeps the browser tools' definitions loaded from the
+	// start instead of deferring them (WithBrowserToolsPreloaded).
+	browserPreloaded bool
 	// toolSearchTripped latches once auto mode has deferred tools, so later
 	// requests keep deferring instead of re-measuring each time.
 	toolSearchTripped deferLatch

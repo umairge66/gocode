@@ -55,6 +55,9 @@ it refuses to publish a version that has no section here.
 
 ### Changed
 
+- With `--chrome`, the browser tools' definitions are sent from the first
+  request instead of being loaded through ToolSearch, saving the one to four
+  model turns a session spent loading them.
 - The Agent tool's usage block reports `subagent_tokens`, as Claude Code
   does, instead of `total_tokens`.
 - **Prompt caching in the main loop and subagents.** The system prompt and
