@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -46,14 +47,14 @@ func TestProjectSkillsFromParents(t *testing.T) {
 	}
 
 	got := projectSkillDirs("/a/b/c", "/a/b", "")
-	if want := []string{"/a/b/c", "/a/b"}; !reflect.DeepEqual(got, want) {
+	if want := slashed("/a/b/c", "/a/b"); !reflect.DeepEqual(got, want) {
 		t.Errorf("dirs = %v, want %v", got, want)
 	}
 	// A root cwd is not inside is ignored; the walk then reaches /.
-	if got := projectSkillDirs("/x/y", "/a", ""); !reflect.DeepEqual(got, []string{"/x/y", "/x", "/"}) {
+	if got := projectSkillDirs("/x/y", "/a", ""); !reflect.DeepEqual(got, slashed("/x/y", "/x", "/")) {
 		t.Errorf("dirs outside root = %v", got)
 	}
-	if got := projectSkillDirs("/home/u", "", "/home/u"); !reflect.DeepEqual(got, []string{"/home/u"}) {
+	if got := projectSkillDirs("/home/u", "", "/home/u"); !reflect.DeepEqual(got, slashed("/home/u")) {
 		t.Errorf("cwd = home dirs = %v", got)
 	}
 }
@@ -91,4 +92,14 @@ func TestListingWhenToUseConditionalDenied(t *testing.T) {
 	if l := reg.Listing(); !strings.Contains(l, "- gostyle: Go style (project)") || strings.Contains(l, "nope") {
 		t.Errorf("listing after activation = %q", l)
 	}
+}
+
+// slashed is paths in the OS's own separator (projectSkillDirs returns
+// native paths, so on Windows "/a/b" comes back as "\\a\\b").
+func slashed(paths ...string) []string {
+	out := make([]string, len(paths))
+	for i, p := range paths {
+		out[i] = filepath.FromSlash(p)
+	}
+	return out
 }

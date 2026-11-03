@@ -45,10 +45,18 @@ func TestPromptUpdatedInputRuns(t *testing.T) {
 // A changed input that a deny rule covers is refused, though the prompt
 // allowed it.
 func TestPromptUpdatedInputIntoDeniedPathIsDenied(t *testing.T) {
-	allowed, secret := t.TempDir(), t.TempDir()
+	// A project-relative rule, so the test holds on every OS (absolute
+	// "//path" rules do not match drive-letter paths on Windows).
+	proj := t.TempDir()
+	allowed, secret := filepath.Join(proj, "ok"), filepath.Join(proj, "secret")
+	for _, dir := range []string{allowed, secret} {
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	target := filepath.Join(secret, "creds.txt")
-	rules := toolreg.RuleSet{{Behavior: toolreg.RuleDeny, ToolName: "Write", Content: "//" + strings.TrimPrefix(filepath.ToSlash(secret), "/") + "/**"}}
-	d := New(toolreg.ModeDefault, rules)
+	rules := toolreg.RuleSet{{Behavior: toolreg.RuleDeny, ToolName: "Write", Content: "./secret/**", Source: "projectSettings"}}
+	d := New(toolreg.ModeDefault, rules, WithSessionFiles(sessionFilesFor(proj, t.TempDir(), false)))
 	d.SetPermissionPrompter(changingPrompter(t, map[string]any{"file_path": target, "content": "x"}))
 
 	res := dispatch(t, d, string(protocol.ToolWrite), map[string]any{"file_path": filepath.Join(allowed, "ok.txt"), "content": "x"})

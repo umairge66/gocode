@@ -27,10 +27,18 @@ func rewriteHook(t *testing.T, behavior hooks.Behavior, input any) PreToolUseFun
 // the deny rule, and the file is not written — even under bypass, with the
 // original path allowed and the hook itself saying allow.
 func TestHookRewriteIntoDeniedPathIsDenied(t *testing.T) {
-	allowed, secret := t.TempDir(), t.TempDir()
+	// A project-relative rule, so the test holds on every OS (absolute
+	// "//path" rules do not match drive-letter paths on Windows).
+	proj := t.TempDir()
+	allowed, secret := filepath.Join(proj, "ok"), filepath.Join(proj, "secret")
+	for _, dir := range []string{allowed, secret} {
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	target := filepath.Join(secret, "creds.txt")
-	rules := toolreg.RuleSet{{Behavior: toolreg.RuleDeny, ToolName: "Write", Content: "//" + strings.TrimPrefix(filepath.ToSlash(secret), "/") + "/**"}}
-	d := New(toolreg.ModeBypassPermissions, rules)
+	rules := toolreg.RuleSet{{Behavior: toolreg.RuleDeny, ToolName: "Write", Content: "./secret/**", Source: "projectSettings"}}
+	d := New(toolreg.ModeBypassPermissions, rules, WithSessionFiles(sessionFilesFor(proj, t.TempDir(), false)))
 	var deniedCall agent.ToolUse
 	var deniedReason string
 	d.PermissionDeniedHook = func(_ context.Context, call agent.ToolUse, reason string) {

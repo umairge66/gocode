@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -19,7 +20,14 @@ import (
 // request id, a malformed decision or no open prompt are refused.
 func TestPermissionResponseRoutesToOpenPrompt(t *testing.T) {
 	f := newBGFixture(t)
-	sock := filepath.Join(t.TempDir(), "c.sock")
+	// A short directory: t.TempDir() on macOS is longer than a unix socket
+	// path may be (bind: invalid argument).
+	sockDir, err := os.MkdirTemp("/tmp", "gcperm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(sockDir) })
+	sock := filepath.Join(sockDir, "c.sock")
 	l, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatal(err)
