@@ -6,6 +6,12 @@ it refuses to publish a version that has no section here.
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-11-04
+
+This release includes Chrome extension 0.4.2. If you use gocode in Chrome,
+run `gocode chrome install` after updating and click **Reload** on "gocode
+browser control" in `chrome://extensions`.
+
 ### Added
 
 - **Spend and delegation limits.** `--max-budget-usd` caps what a session
@@ -120,7 +126,7 @@ it refuses to publish a version that has no section here.
   session was resumed.
 - With background connect, calling a tool of an MCP server that was still
   connecting failed as an unknown tool; it now waits for the server.
-- Chrome (extension 0.4.0; run `gocode chrome install` and reload it):
+- Chrome (extension 0.4.0):
   - `find` refs no longer collide: two finds could hand out the same ref, so
     `form_input` wrote every value into the first field. Refs are unique per
     tab, and a ref from before a navigation is reported as stale.
@@ -288,7 +294,8 @@ it refuses to publish a version that has no section here.
 
 First public release.
 
-[Unreleased]: https://github.com/umairge66/gocode/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/umairge66/gocode/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/umairge66/gocode/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/umairge66/gocode/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/umairge66/gocode/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/umairge66/gocode/compare/v0.1.2...v0.1.3
