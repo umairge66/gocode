@@ -10,6 +10,7 @@ import (
 	"github.com/umairge66/gocode/internal/envutil"
 	"github.com/umairge66/gocode/internal/fsfacade"
 	"github.com/umairge66/gocode/internal/projectmemory"
+	"github.com/umairge66/gocode/internal/settingspolicy"
 	"github.com/umairge66/gocode/internal/ui"
 )
 
@@ -17,7 +18,9 @@ import (
 // user file, the project file, and every other file loaded at startup (a
 // .gocode/gocode.md, gocode.local.md, rules, @-imports) — and open it in the
 // external editor. The user and project files are offered even when they do
-// not exist yet; choosing one creates it empty first.
+// not exist yet; choosing one creates it empty first. --setting-sources gates
+// the list as it gates the session's memory loading (buildSystemPrompt): a
+// file of a source the session does not read is not offered.
 
 // memoryFile is one row of the /memory picker.
 type memoryFile struct {
@@ -32,20 +35,25 @@ type memoryFile struct {
 // listed: they are not the user's to edit.
 func memoryFiles(env *Env) []memoryFile {
 	paths := resolveSessionPaths(env)
+	skipUser := !settingSourceEnabled(env, settingspolicy.SourceUser)
+	skipProject := !settingSourceEnabled(env, settingspolicy.SourceProject)
 	var userPath, projectPath string
-	if paths.configDir != "" {
+	if paths.configDir != "" && !skipUser {
 		userPath = filepath.Join(paths.configDir, "gocode.md")
 	}
-	if paths.cwd != "" {
+	if paths.cwd != "" && !skipProject {
 		projectPath = filepath.Join(paths.cwd, "gocode.md")
 	}
 	var entries []projectmemory.Entry
 	if !envutil.EnvTruthy(envGet(env)(disableMemoryEnv)) {
 		entries = projectmemory.Load(projectmemory.Config{
-			Cwd:       paths.cwd,
-			Home:      paths.home,
-			ConfigDir: paths.configDir,
-			FS:        fsfacade.OSFS{},
+			Cwd:         paths.cwd,
+			Home:        paths.home,
+			ConfigDir:   paths.configDir,
+			FS:          fsfacade.OSFS{},
+			SkipUser:    skipUser,
+			SkipProject: skipProject,
+			SkipLocal:   !settingSourceEnabled(env, settingspolicy.SourceLocal),
 		}).Entries
 	}
 
