@@ -45,6 +45,7 @@ func TestStreamInputControlRequests(t *testing.T) {
 	p := newFakeProvider(t, fakeTurn{text: "ok", in: 1, out: 1})
 	f := headlessFixture(t, p)
 	f.stdinTTY = false
+	subcmdWriteFile(t, filepath.Join(f.cwd, "gocode.md"), "Always run the tests before committing.\n")
 	req := func(id, body string) string {
 		return `{"type":"control_request","request_id":"` + id + `","request":` + body + "}\n"
 	}
@@ -85,14 +86,45 @@ func TestStreamInputControlRequests(t *testing.T) {
 			t.Fatalf("%s: %v", id, r)
 		}
 	}
-	if init := ok("i1"); init["output_style"] != "default" || init["commands"] == nil {
+	init := ok("i1")
+	if init["output_style"] != "default" || init["commands"] == nil {
 		t.Fatalf("initialize = %v", init)
+	}
+	models := init["models"].([]any)
+	var values []string
+	for _, m := range models {
+		e := m.(map[string]any)
+		if e["displayName"] == "" || e["description"] == "" {
+			t.Fatalf("model entry %v", e)
+		}
+		values = append(values, e["value"].(string))
+	}
+	if got := strings.Join(values, " "); got != "default anthropic/claude-sonnet-5-5 anthropic/claude-opus-5-5 anthropic/claude-haiku-5-5 anthropic/claude-fable-5-1" {
+		t.Fatalf("models = %s", got)
+	}
+	if acct := init["account"].(map[string]any); acct["provider"] != "openrouter" || acct["apiKeySource"] != "OPENROUTER_API_KEY" {
+		t.Fatalf("account = %v", acct)
+	}
+	if strings.Contains(out, "sk-test-not-a-real-key") {
+		t.Fatal("the API key reached the output")
 	}
 	if st := ok("m1"); fmt.Sprint(st["mcpServers"]) != "[]" {
 		t.Fatalf("mcp_status = %v", st)
 	}
-	if cu := ok("c1"); cu["maxTokens"].(float64) <= 0 || cu["model"] != "gocode-sonnet-4-5" {
+	cu := ok("c1")
+	if cu["maxTokens"].(float64) <= 0 || cu["model"] != "gocode-sonnet-4-5" {
 		t.Fatalf("get_context_usage = %v", cu)
+	}
+	cats := map[string]float64{}
+	for _, c := range cu["categories"].([]any) {
+		e := c.(map[string]any)
+		cats[e["id"].(string)] = e["tokens"].(float64)
+	}
+	if cats["system_prompt"] <= 0 || cats["system_tools"] <= 0 || cats["memory_files"] <= 0 || cats["free_space"] <= 0 {
+		t.Fatalf("categories = %v", cu["categories"])
+	}
+	if mf := fmt.Sprint(cu["memoryFiles"]); !strings.Contains(mf, "gocode.md") || !strings.Contains(mf, "Project") {
+		t.Fatalf("memoryFiles = %s", mf)
 	}
 	if pm := ok("p1"); pm["mode"] != "acceptEdits" {
 		t.Fatalf("set_permission_mode = %v", pm)
@@ -391,7 +423,7 @@ func TestPermissionFromResult(t *testing.T) {
 	}{
 		{"allow", headless.PermissionResult{Behavior: "allow"}, toolrun.PermissionAllowedOnce, ""},
 		{"allow same input", headless.PermissionResult{Behavior: "allow", UpdatedInput: json.RawMessage(`{ "command" : "ls" }`)}, toolrun.PermissionAllowedOnce, ""},
-		{"allow changed input", headless.PermissionResult{Behavior: "allow", UpdatedInput: json.RawMessage(`{"command":"rm -rf /"}`)}, toolrun.PermissionDenied, "updatedInput"},
+		{"allow changed input", headless.PermissionResult{Behavior: "allow", UpdatedInput: json.RawMessage(`{"command":"ls -la"}`)}, toolrun.PermissionAllowedOnce, ""},
 		{"allow rule", headless.PermissionResult{Behavior: "allow", UpdatedPermissions: []headless.PermissionUpdate{{Type: "addRules", Behavior: "allow", Rules: []headless.PermissionRule{{ToolName: "Bash", RuleContent: "ls:*"}}}}}, toolrun.PermissionAllowedAlways, ""},
 		{"deny", headless.PermissionResult{Behavior: "deny", Message: "not now"}, toolrun.PermissionDenied, "not now"},
 		{"deny interrupt", headless.PermissionResult{Behavior: "deny", Message: "stop", Interrupt: true}, toolrun.PermissionDenied, ""},
@@ -407,6 +439,16 @@ func TestPermissionFromResult(t *testing.T) {
 	}
 	if _, err := permissionFromResult(req, headless.PermissionResult{Behavior: "maybe"}); err == nil {
 		t.Error("unknown behavior accepted")
+	}
+	// A changed input rides on the answer; the same input does not.
+	if got, _ := permissionFromResult(req, headless.PermissionResult{Behavior: "allow", UpdatedInput: json.RawMessage(`{"command":"ls -la"}`)}); string(got.UpdatedInput) != `{"command":"ls -la"}` {
+		t.Errorf("changed input not carried: %+v", got)
+	}
+	if got, _ := permissionFromResult(req, headless.PermissionResult{Behavior: "allow", UpdatedInput: json.RawMessage(`{ "command" : "ls" }`)}); got.UpdatedInput != nil {
+		t.Errorf("unchanged input carried: %+v", got)
+	}
+	if _, err := permissionFromResult(req, headless.PermissionResult{Behavior: "allow", UpdatedInput: json.RawMessage(`["ls"]`)}); err == nil {
+		t.Error("a non-object updatedInput accepted")
 	}
 	edit := toolrun.PermissionRequest{ToolName: "Edit", IsEdit: true}
 	if got, _ := permissionFromResult(edit, headless.PermissionResult{Behavior: "allow", UpdatedPermissions: []headless.PermissionUpdate{{Type: "setMode", Mode: "acceptEdits"}}}); got.Kind != toolrun.PermissionAllowedEditsSession {
@@ -490,5 +532,51 @@ func TestPartialStreamerBlocks(t *testing.T) {
 	}
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Fatalf("events:\n%s\nwant:\n%s", strings.Join(got, " "), strings.Join(want, " "))
+	}
+}
+
+// A subagent's messages are forwarded with parent_tool_use_id set to the
+// Agent tool call that spawned it; the session's own stay null.
+func TestStreamSubagentMessagesCarryParentToolUseID(t *testing.T) {
+	p := newFakeProvider(t,
+		fakeTurn{toolName: "Agent", toolArgs: `{"description":"look","prompt":"say hi","subagent_type":"general-purpose"}`, in: 1, out: 1},
+		fakeTurn{toolName: "SubagentHandback", toolArgs: `{"message":"hi"}`, in: 1, out: 1},
+		fakeTurn{text: "done", in: 1, out: 1},
+	)
+	f := headlessFixture(t, p)
+	code, out, errOut := f.run(t, "-p", "delegate", "--output-format", "stream-json", "--verbose")
+	if code != 0 {
+		t.Fatalf("exit %d err %q", code, errOut)
+	}
+	var agentCall string
+	var childAssistant, childUser, mainAssistant int
+	for _, m := range decodeLines(t, out) {
+		if m["type"] != "assistant" && m["type"] != "user" {
+			continue
+		}
+		parent, _ := m["parent_tool_use_id"].(string)
+		if m["type"] == "assistant" && parent == "" {
+			mainAssistant++
+			for _, b := range m["message"].(map[string]any)["content"].([]any) {
+				if blk := b.(map[string]any); blk["type"] == "tool_use" && blk["name"] == "Agent" {
+					agentCall = blk["id"].(string)
+				}
+			}
+			continue
+		}
+		if parent == "" {
+			continue
+		}
+		if parent != agentCall {
+			t.Fatalf("parent_tool_use_id = %q, want the Agent call %q", parent, agentCall)
+		}
+		if m["type"] == "assistant" {
+			childAssistant++
+		} else {
+			childUser++
+		}
+	}
+	if agentCall == "" || childAssistant != 1 || childUser != 1 || mainAssistant != 2 {
+		t.Fatalf("agent call %q, child assistant %d user %d, main assistant %d:\n%s", agentCall, childAssistant, childUser, mainAssistant, out)
 	}
 }

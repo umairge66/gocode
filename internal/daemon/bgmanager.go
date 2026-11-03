@@ -498,19 +498,9 @@ func (m *Manager) Register(r *Router) {
 	r.Handle(OpEnsureSpare, func(_ context.Context, _ Request, rw ReplyWriter) {
 		_ = rw.Send(OKReply(OpEnsureSpare))
 	})
-	// permission-response is accepted (with the control key) but routed
-	// nowhere: a background session runs the interactive UI, which asks its
-	// permission prompts in the attached terminal, and the daemon has no
-	// channel into a running session's prompter. Print sessions take host
-	// answers over --input-format stream-json instead (can_use_tool, see
-	// docs/headless.md).
-	r.Handle(OpPermissionResponse, func(_ context.Context, req Request, rw ReplyWriter) {
-		if !KeysMatch(req.Auth, m.cfg.ControlKey) {
-			_ = rw.Send(FailReply(errutil.WorkerEAuth, "permission-response rejected: this client didn't present the daemon control key"))
-			return
-		}
-		_ = rw.Send(OKReply(OpPermissionResponse))
-	})
+	// permission-response answers a session's open permission prompt
+	// (bgpermission.go).
+	r.Handle(OpPermissionResponse, m.opPermissionResponse)
 	r.Handle(OpLease, m.opLease)
 	r.Handle(OpLeases, m.opLeases)
 	r.Handle(OpNudge, func(_ context.Context, _ Request, rw ReplyWriter) {
@@ -542,7 +532,7 @@ func (m *Manager) opList(_ context.Context, _ Request, rw ReplyWriter) {
 	m.mu.Unlock()
 	recs := make([]JobRecord, 0, len(hs))
 	for _, h := range hs {
-		recs = append(recs, h.Record())
+		recs = append(recs, withPendingPermission(h, h.Record()))
 	}
 	sort.Slice(recs, func(i, j int) bool { return recs[i].StartedAt < recs[j].StartedAt })
 	b, _ := json.Marshal(recs)

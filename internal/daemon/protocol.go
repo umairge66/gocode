@@ -181,6 +181,12 @@ type Request struct {
 	Text     string `json:"text,omitempty"`     // reply
 	NextTurn bool   `json:"nextTurn,omitempty"` // reply
 
+	// permission-response: the open prompt's id (from the job's
+	// JobRecord.Permission; "" answers whichever is open) and the decision,
+	// an Agent SDK PermissionResult object.
+	RequestID string          `json:"requestId,omitempty"`
+	Decision  json.RawMessage `json:"decision,omitempty"`
+
 	Cols         int  `json:"cols,omitempty"`         // resize/attach
 	Rows         int  `json:"rows,omitempty"`         // resize/attach
 	HoldingFrame bool `json:"holdingFrame,omitempty"` // attach

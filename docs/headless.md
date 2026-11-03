@@ -42,9 +42,13 @@ Every record is one line of JSON with a `type`; every record except
 | `{"type":"system","subtype":"task_notification","task_id":"…","status":"completed"\|"failed"\|"stopped","output_file":"…","summary":"…"}` | That task ended. |
 | `{"type":"result","subtype":"success"\|"error_max_turns"\|"error_during_execution"\|"error_max_structured_output_retries",…}` | The end of each turn: `result` (or `errors`), `is_error`, `num_turns`, `duration_ms`, `usage`, `modelUsage`, `total_cost_usd`, `permission_denials`, `stop_reason`. |
 
-Subagents' own messages are not forwarded: their work shows as the Agent tool
-call and its result, plus the task events. `parent_tool_use_id` is therefore
-always null.
+A subagent's own messages (its `assistant` records and the `user` records of
+its tool results) are forwarded too, as they happen, with
+`parent_tool_use_id` set to the id of the Agent tool call that spawned it (a
+nested subagent's records name the nested Agent call). A subagent resumed by
+a SendMessage keeps the id of its original Agent call. The session's own
+records carry `parent_tool_use_id: null`. The subagent's prompt itself is
+not repeated as a record; it is the Agent call's input.
 
 ### Partial messages
 
@@ -108,14 +112,26 @@ and gocode answers on stdout with
 host can check before sending one. An unknown subtype is answered with an
 error.
 
+`initialize`'s `models` lists `default` (the model the session started
+with) and, for the Anthropic and OpenRouter providers, the Claude family
+models (`value` is the full model id, which `set_model` takes; `displayName`,
+`description`, `resolvedModel`). Other providers list their model catalog,
+fetched from the provider when `initialize` is answered (within 5 s; a
+failed fetch lists only `default`). The `availableModels` policy filters the
+list as it does the `/model` picker. `account` is
+`{"provider":"…","apiKeySource":"…"}`: gocode has no account, and
+`apiKeySource` names where the key came from (the environment variable's
+name, `auth.json` for a saved key, `settings`, `apiKeyHelper`, or `none`),
+never the key.
+
 | Subtype | Request fields | Response |
 | :- | :- | :- |
-| `initialize` | (SDK options such as `hooks` are accepted and ignored; hooks come from settings) | `commands` (`name`, `description`, `argumentHint`), `output_style`, `available_output_styles`, `models`, `account`, `capabilities`, `pid` |
+| `initialize` | (SDK options such as `hooks` are accepted and ignored; hooks come from settings) | `commands` (`name`, `description`, `argumentHint`), `output_style`, `available_output_styles`, `models`, `account`, `capabilities`, `pid` (see below) |
 | `interrupt` | — | `{}`. Ends the running turn as if the user pressed Esc: its result is an `error_during_execution` with the error `Request interrupted by user`, and the session takes the next message. A no-op between turns. |
 | `set_model` | `model` (`"default"` or empty: the model the session started with) | `{"model":"…"}`. Applies from the next turn; a request sent during a turn is answered when the turn ends. The model policy (`availableModels`) can refuse it. |
 | `set_permission_mode` | `mode`: `default`, `acceptEdits`, `plan`, `dontAsk`, `auto`, `bypassPermissions` | `{"mode":"…"}`. Takes effect at the next tool call, also mid-turn. `bypassPermissions` needs a session started with `--dangerously-skip-permissions` or `--allow-dangerously-skip-permissions` (and not disabled by settings); `auto` needs auto mode to be available. |
 | `mcp_status` | — | `{"mcpServers":[{"name":"…","status":"connected"\|"pending"\|"failed"\|"needs-auth","serverInfo":{"name","version"},"error":"…"}]}` |
-| `get_context_usage` | — | `totalTokens`, `maxTokens`, `rawMaxTokens`, `percentage`, `model`, `isAutoCompactEnabled`, `autoCompactThreshold`, `categories` (one `Messages` entry), and empty `memoryFiles` / `mcpTools` / `agents` / `gridRows`. During a turn it reports the size the latest model response measured. |
+| `get_context_usage` | — | `totalTokens`, `maxTokens`, `rawMaxTokens`, `percentage`, `model`, `isAutoCompactEnabled`, `autoCompactThreshold`, `categories`, `memoryFiles` (`path`, `type`, `tokens`), `mcpTools` (`name`, `serverName`, `tokens`), and empty `agents` / `gridRows`. Between turns `categories` breaks the total down into `system_prompt`, `system_tools`, `mcp_tools`, `memory_files`, `messages` and `free_space` (`id`, `name`, `tokens`, `color`, `kind`); the parts are ≈4-characters-per-token estimates, as in `/context`, and `messages` is what the measured total leaves after them. During a turn it reports the size the latest model response measured, as one `messages` category. |
 
 ### Permission prompts (`can_use_tool`)
 
@@ -139,9 +155,11 @@ The host answers with a `control_response` for that `request_id` whose
   (behavior `allow`), which allows matching calls for the rest of the
   session, or `setMode` `acceptEdits` for an edit, which switches the session
   to acceptEdits. Rules are not written to settings files, whatever their
-  `destination`. `updatedInput` must be the call's input (as SDKs send by
-  default): a changed input cannot be applied, so the call is refused with a
-  message saying so.
+  `destination`. An `updatedInput` that differs from the call's input (it
+  must be an object) is the input the call runs with. It is checked again as
+  a PreToolUse hook's rewrite is: the permission fields come from the new
+  input, so a deny rule (or the working-directory guard) still refuses it;
+  a check that would ask again is answered by this allow.
 - `deny` refuses the call with `message`, and the model goes on. With
   `"interrupt": true` (or no message) the turn ends there, as when the user
   rejects a prompt without feedback.
@@ -167,6 +185,27 @@ answer `can_use_tool` never leaves a turn waiting.
 
 ## Background sessions
 
-The daemon's `permission-response` op is accepted (with the control key) but
-not routed anywhere yet: background sessions run the interactive UI, which
-asks its permission questions in the attached terminal.
+Background sessions run the interactive UI in the daemon's pty, so their
+permission prompts open in the attached terminal. A daemon client can answer
+them too:
+
+- While a prompt is open the job is `blocked` (its `needs` names the
+  prompt), and the daemon's `list` reply carries it on the job's record:
+  `"permission":{"requestId":"perm_…","toolName":"Bash","input":{…},"toolUseId":"…","reason":"…","suggestions":["Bash(make:*)"],"at":"…"}`.
+- The authed `permission-response` op answers it:
+  `{"op":"permission-response","auth":"<control key>","short":"<job>","requestId":"perm_…","decision":{"behavior":"allow"}}`.
+  `decision` is the same decision as a `can_use_tool` answer and is applied
+  the same way (`updatedInput`, session-only `addRules`, `setMode`
+  `acceptEdits`; `deny` with `message` / `interrupt`). The dialog in the
+  terminal closes.
+- The op fails with `ENOREPLY` when the job has no open prompt, `ESTALE` when
+  `requestId` names one that is no longer open (an empty `requestId`
+  answers whichever is open), and `EPROTO` for a decision that is not
+  `allow` / `deny`. Whichever answer comes first — the terminal's or the
+  client's — wins; a client's answer that loses that race is dropped.
+
+The prompt and the answer pass through the job directory
+(`permission.json`, `permission-response.json`, mode 0600), and the session
+checks for an answer every 200 ms while the prompt is open. Only permission
+prompts are routed: AskUserQuestion and plan approvals are still answered
+in the terminal.

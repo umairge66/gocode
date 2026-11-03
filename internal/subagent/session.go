@@ -211,6 +211,8 @@ func (s *Session) runTurn(ctx context.Context, input []agent.ContentBlock) (Repo
 		// The response that reaches the spend cap may be the hand-back: it
 		// still runs, so the report reaches the caller.
 		RunAtBudget: func(call agent.ToolUse) bool { return call.Name == string(protocol.CmdSubagentHandback) },
+		// A host may follow the agent's messages (stream-json output).
+		OnMessage: func(ev agent.MessageEvent) { reg.observeMessage(turnCtx, taskID, ev) },
 	}
 
 	// The turn scope carries the subagent's own model caller to the tools it

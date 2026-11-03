@@ -167,6 +167,10 @@ func (p *dialogPrompter) prompt(ctx context.Context, req toolrun.PermissionReque
 
 	p.status.setBlock(permissionBlockText(req.ToolName, req.Input))
 	defer p.status.clearBlock()
+	// A background worker's prompt can also be answered through the daemon
+	// (bgpermission.go); remote is nil otherwise.
+	remote, withdraw := p.status.openPermission(ctx, req)
+	defer withdraw()
 
 	send(ui.OpenDialogMsg{Dialog: dlg})
 
@@ -177,6 +181,12 @@ func (p *dialogPrompter) prompt(ctx context.Context, req toolrun.PermissionReque
 		p.mu.Unlock()
 		send(ui.CloseDialogMsg{})
 		return toolrun.PermissionResponse{}, ctx.Err()
+	case res := <-remote:
+		p.mu.Lock()
+		p.pending = nil
+		p.mu.Unlock()
+		send(ui.CloseDialogMsg{})
+		return remotePermissionResponse(req, res), nil
 	case r := <-ch:
 		if r.cancelled {
 			// esc / ctrl+c: deny, no feedback.
