@@ -119,7 +119,16 @@ func (t NavigateTool) Execute(ctx context.Context, in NavigateInput) (Result, er
 // when omitted the host reads the active tab.
 type ReadPageInput struct {
 	TabID *int `json:"tabId,omitempty"`
+	// Offset is the character to start from (0 = the start), for reading a
+	// long page in parts; MaxChars caps one reply (default PageTextChunk).
+	Offset   *Num `json:"offset,omitempty"`
+	MaxChars *Num `json:"max_chars,omitempty"`
 }
+
+// PageTextChunk is how much page text one read_page / get_page_text reply
+// carries by default: small enough to stay inline instead of being saved to a
+// file, with the next offset given when the page is longer.
+const PageTextChunk = 40000
 
 // ReadPageTool reads the text of a page. Method selects the host verb
 // (read_page or get_page_text, which the extension treats identically). It is a
@@ -138,6 +147,10 @@ func (t ReadPageTool) Execute(ctx context.Context, in ReadPageInput) (Result, er
 	if method == "" {
 		method = chromehost.MethodReadPage
 	}
+	if in.MaxChars == nil {
+		n := Num(PageTextChunk)
+		in.MaxChars = &n
+	}
 	raw, err := c.Call(ctx, method, in)
 	if err != nil {
 		return Result{}, err
@@ -147,14 +160,26 @@ func (t ReadPageTool) Execute(ctx context.Context, in ReadPageInput) (Result, er
 		URL       string `json:"url"`
 		Text      string `json:"text"`
 		Truncated bool   `json:"truncated"`
+		Total     *int   `json:"total"`
+		Offset    int    `json:"offset"`
+		Next      int    `json:"next"`
 	}
 	_ = json.Unmarshal(raw, &r)
 	if r.Text == "" {
+		if r.Total != nil && *r.Total > 0 {
+			return Result{Text: fmt.Sprintf("(no text at offset %d: the page has %d characters)", r.Offset, *r.Total)}, nil
+		}
 		return Result{Text: "(the page has no readable text)"}, nil
 	}
 	text := wrapUntrusted(tabSource(r.URL, r.TabID), r.Text)
-	if r.Truncated {
+	switch {
+	case r.Truncated && r.Total != nil:
+		text += fmt.Sprintf("\n[characters %d–%d of %d; call again with offset %d for the rest]", r.Offset, r.Next, *r.Total, r.Next)
+	case r.Truncated:
+		// An older extension that cannot page.
 		text += "\n[page text truncated]"
+	case r.Offset > 0 && r.Total != nil:
+		text += fmt.Sprintf("\n[characters %d–%d of %d: end of the page]", r.Offset, r.Next, *r.Total)
 	}
 	return Result{Text: text}, nil
 }

@@ -78,6 +78,14 @@ it refuses to publish a version that has no section here.
 
 ### Fixed
 
+- A call to a deferred tool before ToolSearch loaded it used to be refused,
+  costing a round trip that weaker models often fumbled. It now runs (through
+  the usual permission and input checks) and loads the tool's definition for
+  the next request.
+- `read_page` and `get_page_text` read long pages in parts (`offset`,
+  `max_chars`) instead of stopping at 500,000 characters.
+- A navigation that a redirect lands on a denied site clears the tab instead
+  of returning the denied page's title.
 - A PreToolUse hook that rewrites a tool's input no longer skips the
   permission checks; the rewritten input is checked and shown in the prompt.
 - A hook that times out, cannot start or is killed now blocks the call

@@ -2496,6 +2496,17 @@ async function doNavigate(params, policy, ctx) {
   // Wait for the navigation to finish so a following read_page/screenshot sees
   // the loaded page, and return the settled url/title.
   await waitForTabLoad(ctx, tab.id, LOAD_TIMEOUT_MS);
+  // A redirect can land on a site the policy denies: the checks above only saw
+  // the requested URL. Clear the tab rather than return the denied page's
+  // title, and name only the site.
+  try {
+    await checkTabSite(ctx, tab.id, policy, "read");
+  } catch (e) {
+    try {
+      await chrome.tabs.update(tab.id, { url: "about:blank" });
+    } catch (e2) {}
+    throw new Error("The page redirected to a site gocode in Chrome may not use: " + e.message + " The tab was cleared.");
+  }
   await setCurrentTab(tab.id, sid);
   await applyKeepOpen(params, tab.id);
   const settled = await getTab(tab.id);
@@ -2510,15 +2521,19 @@ async function doReadPage(params, policy, ctx) {
   const tabId = await resolveTabId(params.tabId, sessionOf(params));
   await checkTabSite(ctx, tabId, policy, "read");
   let text = (await runInPage(ctx, tabId, () => (document.body ? document.body.innerText : ""), [], "read_page")) || "";
-  let truncated = false;
-  if (text.length > MAX_PAGE_TEXT) {
-    text = text.slice(0, MAX_PAGE_TEXT);
-    truncated = true;
-  }
+  // Paging: offset/max_chars select a window of the text, so a page longer
+  // than one reply can be read to the end. total and next tell the host where
+  // the window sits.
+  const total = text.length;
+  const offset = Math.max(0, Math.min(total, Math.floor(Number(params.offset) || 0)));
+  const max = Math.max(1, Math.min(MAX_PAGE_TEXT, Math.floor(Number(params.max_chars) || MAX_PAGE_TEXT)));
+  text = text.slice(offset, offset + max);
+  const next = offset + text.length;
+  const truncated = next < total;
   // Report the page URL so the host can label the untrusted-content fence with
   // where the text came from.
   const tab = await getTab(tabId);
-  return { tabId, url: (tab && tab.url) || "", text, truncated };
+  return { tabId, url: (tab && tab.url) || "", text, truncated, total, offset, next };
 }
 
 // doTabsContext lists ONLY gocode's tabs and groups — never the user's other

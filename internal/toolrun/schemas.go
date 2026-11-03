@@ -74,10 +74,14 @@ var toolInputSchemas = map[protocol.Tool]json.RawMessage{
 		`"keep_open":{"type":"boolean","description":"` + browser.KeepOpenDescription + `"}` +
 		`},"required":["url"]}`),
 	protocol.ToolBrowserReadPage: json.RawMessage(`{"type":"object","properties":{` +
-		`"tabId":{"type":"number","description":"A gocode tab to read; omit to read gocode's current tab."}` +
+		`"tabId":{"type":"number","description":"A gocode tab to read; omit to read gocode's current tab."},` +
+		`"offset":{"type":"number","description":"Character to start from, to read a long page in parts (the reply gives the next offset). Default 0."},` +
+		`"max_chars":{"type":"number","description":"Most characters to return (default 40000)."}` +
 		`}}`),
 	protocol.ToolBrowserGetPageText: json.RawMessage(`{"type":"object","properties":{` +
-		`"tabId":{"type":"number","description":"A gocode tab to read; omit to read gocode's current tab."}` +
+		`"tabId":{"type":"number","description":"A gocode tab to read; omit to read gocode's current tab."},` +
+		`"offset":{"type":"number","description":"Character to start from, to read a long page in parts (the reply gives the next offset). Default 0."},` +
+		`"max_chars":{"type":"number","description":"Most characters to return (default 40000)."}` +
 		`}}`),
 	protocol.ToolBrowserTabsContext: json.RawMessage(`{"type":"object","properties":{}}`),
 	protocol.ToolBrowserTabsCreate: json.RawMessage(`{"type":"object","properties":{` +

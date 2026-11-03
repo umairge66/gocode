@@ -278,7 +278,7 @@
     "tabId": {
      "type": "number",
      "description": "Tab ID to navigate. Must be a tab in the current group. If omitted for URL navigation when calling navigate standalone, tabs_context_mcp{createIfEmpty:true} is called for you. Required for url:\"back\"/\"forward\" and for navigate (and other tools that act on a page) inside browser_batch."
-   },
+    },
     "keep_open": {
      "type": "boolean",
      "description": "Set true when the user asked to see this page or keep it open; it then stays open after the session ends."
@@ -324,6 +324,14 @@
     "tabId": {
      "type": "number",
      "description": "Tab ID to extract text from. Must be a tab in the current group. Use tabs_context_mcp first if you don't have a valid tab ID."
+    },
+    "offset": {
+     "type": "number",
+     "description": "Character to start from, to read a long page in parts (the reply gives the next offset). Default 0."
+    },
+    "max_chars": {
+     "type": "number",
+     "description": "Most characters to return (default 40000)."
     }
    },
    "required": [

@@ -109,21 +109,19 @@ func SelectTools(all []ToolSchema, messages []Message) (send, deferred []ToolSch
 	return send, deferred
 }
 
-// notLoadedError is the tool_result for a deferred tool called before
-// ToolSearch loaded it.
-func notLoadedError(name string) string {
-	return fmt.Sprintf("InputValidationError: %s did not run: it was not loaded when it was called. "+
-		"Unless %s has loaded it since, load it together with the other tools you expect to need, in one %s call "+
-		"(for example, query \"select:%s\", with the other names after it, comma-separated). "+
-		"Call it again once that result has come back, not in the same reply.",
-		name, ToolSearchName, ToolSearchName, name)
+// loadedNowNote follows the error of a deferred tool called before it was
+// loaded: the call ran without the model having seen the tool's definition,
+// which is sent from the next request on.
+func loadedNowNote(name string) string {
+	return fmt.Sprintf("(%s was called before it was loaded. Its full definition is loaded now and comes with your next request: "+
+		"check its parameters there before calling it again.)", name)
 }
 
 // Deferred-tool reminder texts.
 const (
 	deferredAddedLead = "The following deferred tools are now available via " + ToolSearchName +
-		". Their schemas are NOT loaded — calling them directly will fail with InputValidationError. Use " +
-		ToolSearchName + " with query \"select:<name>[,<name>...]\" to load tool schemas before calling them:"
+		". Their schemas are NOT loaded yet: use " +
+		ToolSearchName + " with query \"select:<name>[,<name>...]\" to load the schemas of the ones you need before calling them:"
 	deferredGone = "Do not search for them — " + ToolSearchName + " will return no match"
 	// deferredGroupLimit is how many disconnected MCP tools are listed one per
 	// line before they are summarized per server.

@@ -179,13 +179,12 @@ func toolCall(id, name, input string) ModelResponse {
 	return ModelResponse{Message: AssistantMessage(ToolUseBlock(id, name, json.RawMessage(input))), StopReason: StopToolUse}
 }
 
-// TestLoopDeferredToolFlow: a deferred tool called before it is loaded is
-// refused with the load-it-first error (not run); after ToolSearch loads it,
-// the next request carries it after the core tools and the call runs.
+// TestLoopDeferredToolFlow: a deferred tool called before it is loaded runs
+// anyway (the dispatcher still checks it) and its result loads it, so from the
+// next request on its definition is sent after the core tools.
 func TestLoopDeferredToolFlow(t *testing.T) {
 	model := &recordingModel{responses: []ModelResponse{
 		toolCall("c1", "WebFetch", `{"url":"x"}`),
-		toolCall("s1", ToolSearchName, `{"query":"select:WebFetch"}`),
 		toolCall("c2", "WebFetch", `{"url":"x"}`),
 	}}
 	disp := &searchDispatcher{}
@@ -194,11 +193,10 @@ func TestLoopDeferredToolFlow(t *testing.T) {
 	if res.Reason != ReasonCompleted {
 		t.Fatalf("reason = %s (%v)", res.Reason, res.Err)
 	}
-	if len(model.reqs) != 4 {
-		t.Fatalf("requests = %d, want 4", len(model.reqs))
+	if len(model.reqs) != 3 {
+		t.Fatalf("requests = %d, want 3", len(model.reqs))
 	}
 	for i, want := range []string{
-		"Bash,Read,ToolSearch",
 		"Bash,Read,ToolSearch",
 		"Bash,Read,ToolSearch,WebFetch",
 		"Bash,Read,ToolSearch,WebFetch",
@@ -210,14 +208,13 @@ func TestLoopDeferredToolFlow(t *testing.T) {
 	if got := names(model.reqs[0].DeferredTools); got != "NotebookEdit,WebFetch,mcp__srv__echo" {
 		t.Errorf("request 0 deferred = %s", got)
 	}
-	// The unloaded call was answered without running.
+	// The unloaded call ran and loaded the tool.
 	first := model.reqs[1].Messages[len(model.reqs[1].Messages)-1].Content[0]
-	if !first.IsError || !strings.Contains(first.Content, "InputValidationError: WebFetch did not run: it was not loaded when it was called") ||
-		!strings.Contains(first.Content, `query "select:WebFetch"`) {
+	if first.IsError || first.Content != "ran WebFetch" || strings.Join(first.LoadedTools, ",") != "WebFetch" {
 		t.Fatalf("unloaded call result = %+v", first)
 	}
-	if strings.Join(disp.ran, ",") != "ToolSearch,WebFetch" {
-		t.Fatalf("dispatched = %v, want only ToolSearch then WebFetch", disp.ran)
+	if strings.Join(disp.ran, ",") != "WebFetch,WebFetch" {
+		t.Fatalf("dispatched = %v", disp.ran)
 	}
 	// The first request announced the deferred tools in the user turn.
 	announce := model.reqs[0].Messages[0].Content
@@ -230,8 +227,27 @@ func TestLoopDeferredToolFlow(t *testing.T) {
 	}
 }
 
+// TestLoopUnloadedCallFailureSaysLoaded: when a call to a not-yet-loaded tool
+// fails, the error adds that the definition is loaded now.
+func TestLoopUnloadedCallFailureSaysLoaded(t *testing.T) {
+	model := &recordingModel{responses: []ModelResponse{toolCall("c1", "NotebookEdit", `{}`)}}
+	disp := failingDispatcher{}
+	l := Loop{Model: model, Tools: disp, ToolSchemas: catalog()}
+	l.Run(context.Background(), []Message{UserMessage(TextBlock("x"))})
+	r := model.reqs[1].Messages[len(model.reqs[1].Messages)-1].Content[0]
+	if !r.IsError || !strings.Contains(r.Content, "Its full definition is loaded now") || strings.Join(r.LoadedTools, ",") != "NotebookEdit" {
+		t.Fatalf("result = %+v", r)
+	}
+}
+
+type failingDispatcher struct{}
+
+func (failingDispatcher) Dispatch(_ context.Context, call ToolUse) (ToolResult, error) {
+	return ToolResult{Content: "Error: missing notebook_path", IsError: true}, nil
+}
+
 // TestLoopSameReplyLoadAndCall: ToolSearch and the deferred tool in the same
-// reply — the call fails (the tool was not loaded when it was called).
+// reply both run.
 func TestLoopSameReplyLoadAndCall(t *testing.T) {
 	both := ModelResponse{Message: AssistantMessage(
 		ToolUseBlock("s1", ToolSearchName, json.RawMessage(`{"query":"select:NotebookEdit"}`)),
@@ -242,10 +258,10 @@ func TestLoopSameReplyLoadAndCall(t *testing.T) {
 	l := Loop{Model: model, Tools: disp, ToolSchemas: catalog()}
 	l.Run(context.Background(), []Message{UserMessage(TextBlock("x"))})
 	results := model.reqs[1].Messages[len(model.reqs[1].Messages)-1].Content
-	if results[0].IsError || !results[1].IsError {
+	if results[0].IsError || results[1].IsError {
 		t.Fatalf("results = %+v", results)
 	}
-	if strings.Join(disp.ran, ",") != "ToolSearch" {
+	if strings.Join(disp.ran, ",") != "ToolSearch,NotebookEdit" {
 		t.Fatalf("dispatched = %v", disp.ran)
 	}
 }

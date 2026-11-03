@@ -154,3 +154,26 @@ func TestNilClient(t *testing.T) {
 		t.Fatal("want ErrNoClient for nil client")
 	}
 }
+
+func TestReadPage_Paging(t *testing.T) {
+	c := &fakeClient{byMethod: map[string]json.RawMessage{
+		chromehost.MethodReadPage: json.RawMessage(`{"tabId":1,"text":"part one","truncated":true,"total":120000,"offset":0,"next":40000}`),
+	}}
+	res, err := ReadPageTool{Client: c, Method: chromehost.MethodReadPage}.Execute(context.Background(), ReadPageInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Text, "characters 0–40000 of 120000; call again with offset 40000") {
+		t.Fatalf("text = %q", res.Text)
+	}
+	c.byMethod[chromehost.MethodReadPage] = json.RawMessage(`{"tabId":1,"text":"the end","truncated":false,"total":120000,"offset":80000,"next":120000}`)
+	res, _ = ReadPageTool{Client: c, Method: chromehost.MethodReadPage}.Execute(context.Background(), ReadPageInput{})
+	if !strings.Contains(res.Text, "end of the page") {
+		t.Fatalf("last part = %q", res.Text)
+	}
+	c.byMethod[chromehost.MethodReadPage] = json.RawMessage(`{"tabId":1,"text":"","total":10,"offset":50,"next":50}`)
+	res, _ = ReadPageTool{Client: c, Method: chromehost.MethodReadPage}.Execute(context.Background(), ReadPageInput{})
+	if !strings.Contains(res.Text, "no text at offset 50") {
+		t.Fatalf("past the end = %q", res.Text)
+	}
+}

@@ -91,7 +91,8 @@ func TestPrintToolSearchSettingsEnv(t *testing.T) {
 }
 
 // TestPrintToolSearchUnloadedCall: a deferred tool called before it is
-// loaded is not run; the model gets the load-it-first error.
+// loaded still goes through the normal permission check (here: refused for
+// lack of an allow rule), and its result loads the tool for the next request.
 func TestPrintToolSearchUnloadedCall(t *testing.T) {
 	p := newFakeProvider(t,
 		fakeTurn{toolName: "WebFetch", toolArgs: `{"url":"https://example.com","prompt":"x"}`, in: 1, out: 1},
@@ -102,8 +103,11 @@ func TestPrintToolSearchUnloadedCall(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d err %q", code, errOut)
 	}
-	if !strings.Contains(out, "WebFetch did not run: it was not loaded when it was called") {
-		t.Fatalf("unloaded call not refused:\n%s", out)
+	if !strings.Contains(out, "requested permissions to use WebFetch") || !strings.Contains(out, `"loaded_tools":["WebFetch"]`) {
+		t.Fatalf("unloaded call not permission-checked and loaded:\n%s", out)
+	}
+	if tools := p.toolsOf(1); !slices.Contains(tools, "WebFetch") {
+		t.Fatalf("second request lacks the loaded tool: %v", tools)
 	}
 	// system/init still lists every tool, deferred ones included.
 	init := decodeLines(t, out)[0]

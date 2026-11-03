@@ -97,9 +97,12 @@ type ToolFailureHook interface {
 // badInputs maps a tool_use id to the raw input text that could not be parsed
 // as JSON (see sanitizeToolInputs); such a call is answered with an
 // InputValidationError without being dispatched. notLoaded are the deferred
-// tools the request did not define (see SelectTools); a call to one is
-// answered with an InputValidationError telling the model to load it with
-// ToolSearch, without being dispatched.
+// tools the request did not define (see SelectTools). A call to one runs like
+// any other (the dispatcher still checks its input and permissions), and its
+// result loads the tool (LoadedTools), so the next request carries the full
+// definition. Refusing it instead, to make the model call ToolSearch and then
+// repeat the call, cost a round trip that weaker models often got wrong. When
+// the call fails, the result also says the definition is now loaded.
 func (l *Loop) dispatchTurn(ctx context.Context, calls []ContentBlock, badInputs map[string]string, notLoaded []ToolSchema) []ContentBlock {
 	results := make([]ContentBlock, len(calls))
 	var pending []ContentBlock
@@ -113,20 +116,30 @@ func (l *Loop) dispatchTurn(ctx context.Context, calls []ContentBlock, badInputs
 			results[i] = ToolResultBlock(c.ID, unparsedInputError(c.Name, raw), true)
 			continue
 		}
-		if unloaded[c.Name] {
-			// A deferred tool whose definition the request did not carry:
-			// it is not run, and the model is told to load it first.
-			results[i] = ToolResultBlock(c.ID, notLoadedError(c.Name), true)
-			continue
-		}
 		pending = append(pending, c)
 		pendingIdx = append(pendingIdx, i)
 	}
 	sub := l.dispatchCalls(ctx, pending)
 	for j, i := range pendingIdx {
-		results[i] = sub[j]
+		r := sub[j]
+		if name := calls[i].Name; unloaded[name] {
+			r.LoadedTools = appendUnique(r.LoadedTools, name)
+			if r.IsError {
+				r.Content += "\n\n" + loadedNowNote(name)
+			}
+		}
+		results[i] = r
 	}
 	return results
+}
+
+func appendUnique(names []string, name string) []string {
+	for _, n := range names {
+		if n == name {
+			return names
+		}
+	}
+	return append(names, name)
 }
 
 // dispatchCalls runs well-formed tool_use blocks with the Ps batching rules.

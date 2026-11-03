@@ -549,3 +549,41 @@ const pol = { allowed: ["example.com"], denied: ["bank.example"], requireAllowed
 func TestExtensionHistoryAndPageSites(t *testing.T) {
 	runExtensionHarness(t, historySiteHarness)
 }
+
+// redirectPagingHarness checks that a navigation a redirect lands on a denied
+// site is cleared (the denied page's title never reaches the caller), and that
+// read_page pages a long text by offset.
+const redirectPagingHarness = `
+const pol = { allowed: ["example.com"], denied: ["bank.example"], requireAllowed: true };
+(async () => {
+  const t = (await call("tabs_create", { url: "https://example.com/a", sitePolicy: pol })).tabId;
+  const realUpdate = chrome.tabs.update;
+  chrome.tabs.update = async (id, p) => {
+    if (p.url === "https://example.com/go") p = { url: "https://bank.example/private", title: "Bank balance 1234" };
+    return realUpdate(id, p);
+  };
+  try {
+    await call("navigate", { url: "https://example.com/go", tabId: t, sitePolicy: pol });
+    fails.push("redirect to a denied site was allowed");
+  } catch (e) {
+    if (!/denied on bank\.example/.test(e.message) || /1234/.test(e.message)) fails.push("redirect error: " + e.message);
+  }
+  if (tabs.get(t).url !== "about:blank") fails.push("redirected tab not cleared: " + tabs.get(t).url);
+  chrome.tabs.update = realUpdate;
+
+  await call("navigate", { url: "https://example.com/long", tabId: t, sitePolicy: pol });
+  const text = "x".repeat(95) + "END";
+  loadPage(t, (body, E) => body.appendChild(E("p", {}, text)));
+  const a = await call("read_page", { tabId: t, max_chars: 40, sitePolicy: pol });
+  if (a.text.length !== 40 || a.offset !== 0 || a.next !== 40 || a.total !== 98 || !a.truncated) fails.push("first page: " + JSON.stringify(a));
+  const b = await call("read_page", { tabId: t, offset: 80, max_chars: 40, sitePolicy: pol });
+  if (!b.text.endsWith("END") || b.next !== 98 || b.truncated) fails.push("last page: " + JSON.stringify(b));
+  const c = await call("read_page", { tabId: t, sitePolicy: pol });
+  if (c.text !== text || c.truncated) fails.push("whole page: " + JSON.stringify(c));
+  finish();
+})().catch((e) => { console.error("harness error: " + e.stack); process.exit(2); });
+`
+
+func TestExtensionRedirectAndPaging(t *testing.T) {
+	runExtensionHarness(t, redirectPagingHarness)
+}
