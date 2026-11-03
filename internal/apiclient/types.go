@@ -87,6 +87,11 @@ type ContentBlock struct {
 	// byte-for-byte as before — every other block type leaves this empty.
 	Images []ToolResultImage `json:"tool_result_images,omitempty"`
 
+	// image (input-only: a user turn's attached image). Source is the
+	// Anthropic image source, {type:"base64",media_type,data}; providers
+	// encode it into their own image part.
+	Source *ImageSource `json:"source,omitempty"`
+
 	// LoadedTools names deferred tools whose full definitions this block
 	// loads into the conversation: the matches of a ToolSearch tool_result,
 	// or (on a compact summary) the tools loaded before the compaction. A
@@ -108,6 +113,15 @@ type ContentBlock struct {
 type ToolResultImage struct {
 	Base64    string `json:"data"`
 	MediaType string `json:"media_type"`
+}
+
+// ImageSource is the source of a user image block: base64 data (Type
+// "base64") or a URL (Type "url").
+type ImageSource struct {
+	Type      string `json:"type"`
+	MediaType string `json:"media_type,omitempty"`
+	Data      string `json:"data,omitempty"`
+	URL       string `json:"url,omitempty"`
 }
 
 // Citation is a text-block citation, appended by citations_delta events.

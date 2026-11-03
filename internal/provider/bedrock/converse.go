@@ -251,9 +251,20 @@ func buildConverseBody(req provider.ChatRequest, modelID string) ([]byte, error)
 			blocks = append(blocks, cvBlock{ToolResult: tr})
 		default:
 			role = "user"
-			if strings.TrimSpace(m.Content) != "" {
-				blocks = append(blocks, cvBlock{Text: strPtr(m.Content)})
+			text := m.Content
+			var images []cvBlock
+			for _, im := range m.Images {
+				if im.Base64 == "" {
+					// Converse takes image bytes only.
+					text += "\n\n(An image URL was attached, which this provider cannot fetch: " + im.URL + ")"
+					continue
+				}
+				images = append(images, cvBlock{Image: &cvImage{Format: imageFormat(im.MediaType), Source: cvImageSource{Bytes: im.Base64}}})
 			}
+			if strings.TrimSpace(text) != "" {
+				blocks = append(blocks, cvBlock{Text: strPtr(text)})
+			}
+			blocks = append(blocks, images...)
 		}
 		if len(blocks) == 0 {
 			continue // Converse rejects empty content

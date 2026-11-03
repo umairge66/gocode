@@ -113,6 +113,7 @@ type antMessage struct {
 type antBlock struct {
 	Type      string          `json:"type"`
 	Text      string          `json:"text,omitempty"`
+	Source    *antImageSource `json:"source,omitempty"`
 	ID        string          `json:"id,omitempty"`
 	Name      string          `json:"name,omitempty"`
 	Input     json.RawMessage `json:"input,omitempty"`
@@ -131,9 +132,18 @@ type antToolResultPart struct {
 
 // antImageSource is the base64 image source of an image content block.
 type antImageSource struct {
-	Type      string `json:"type"` // "base64"
-	MediaType string `json:"media_type"`
-	Data      string `json:"data"`
+	Type      string `json:"type"` // "base64" or "url"
+	MediaType string `json:"media_type,omitempty"`
+	Data      string `json:"data,omitempty"`
+	URL       string `json:"url,omitempty"`
+}
+
+// antUserImage encodes a user-attached image block.
+func antUserImage(im ChatImage) antBlock {
+	if im.URL != "" && im.Base64 == "" {
+		return antBlock{Type: "image", Source: &antImageSource{Type: "url", URL: im.URL}}
+	}
+	return antBlock{Type: "image", Source: &antImageSource{Type: "base64", MediaType: im.MediaType, Data: im.Base64}}
 }
 
 type antTool struct {
@@ -340,6 +350,9 @@ func buildAnthropicBody(req ChatRequest, stream, native bool) ([]byte, error) {
 			role = RoleUser
 			if m.Content != "" {
 				blocks = append(blocks, antBlock{Type: "text", Text: m.Content})
+			}
+			for _, im := range m.Images {
+				blocks = append(blocks, antUserImage(im))
 			}
 		}
 		if len(blocks) == 0 {
@@ -642,6 +655,9 @@ scan:
 						onDelta(cb.Text)
 					}
 				}
+				if cb.Type == "tool_use" && req.OnToolUseStart != nil {
+					req.OnToolUseStart(cb.ID, cb.Name)
+				}
 			}
 			if _, seen := blocks[ev.Index]; !seen {
 				order = append(order, ev.Index)
@@ -660,6 +676,9 @@ scan:
 				}
 			case "input_json_delta":
 				acc.input.WriteString(ev.Delta.PartialJSON)
+				if req.OnToolInputDelta != nil && acc.typ == "tool_use" && ev.Delta.PartialJSON != "" {
+					req.OnToolInputDelta(acc.id, ev.Delta.PartialJSON)
+				}
 			case "thinking_delta":
 				// Shown live only; the block itself is assembled as before.
 				if req.OnReasoning != nil && ev.Delta.Thinking != "" {
