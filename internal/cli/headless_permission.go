@@ -120,22 +120,26 @@ func permissionSuggestions(req toolrun.PermissionRequest) []headless.PermissionU
 //     rule for the rest of the session; a setMode acceptEdits on an edit
 //     switches the session to acceptEdits. Rules are not written to settings
 //     files whatever their destination. An updatedInput that differs from
-//     the call's input cannot be applied here, so the call is refused with a
-//     note saying so rather than run with the old input.
+//     the call's input is the input the call runs with; the dispatcher
+//     checks it again (a deny rule still refuses it).
 //   - deny: refused with the message; interrupt (or no message at all)
 //     also ends the turn, as a rejection without feedback does.
 func permissionFromResult(req toolrun.PermissionRequest, res headless.PermissionResult) (toolrun.PermissionResponse, error) {
 	switch res.Behavior {
 	case "allow":
+		var updated json.RawMessage
 		if len(res.UpdatedInput) > 0 && !jsonEqual(res.UpdatedInput, toolInputOrEmpty(req.Input)) {
-			return toolrun.PermissionResponse{Kind: toolrun.PermissionDenied,
-				Feedback: "The permission prompt returned a changed tool input (updatedInput), which gocode cannot apply; the call was not run. Call the tool again with the changed input."}, nil
+			var obj map[string]any
+			if json.Unmarshal(res.UpdatedInput, &obj) != nil || obj == nil {
+				return toolrun.PermissionResponse{}, errors.New("permission result: updatedInput is not an object")
+			}
+			updated = res.UpdatedInput
 		}
 		for _, u := range res.UpdatedPermissions {
 			switch u.Type {
 			case "setMode":
 				if toolreg.Mode(u.Mode) == toolreg.ModeAcceptEdits && req.IsEdit {
-					return toolrun.PermissionResponse{Kind: toolrun.PermissionAllowedEditsSession}, nil
+					return toolrun.PermissionResponse{Kind: toolrun.PermissionAllowedEditsSession, UpdatedInput: updated}, nil
 				}
 			case "addRules":
 				if req.NoAlwaysAllow || (u.Behavior != "" && u.Behavior != "allow") || len(u.Rules) == 0 {
@@ -146,11 +150,11 @@ func permissionFromResult(req toolrun.PermissionRequest, res headless.Permission
 					spec += "(" + c + ")"
 				}
 				if rule, ok := parsePermissionRule(spec, toolreg.RuleAllow, "session"); ok {
-					return toolrun.PermissionResponse{Kind: toolrun.PermissionAllowedAlways, Rule: &rule}, nil
+					return toolrun.PermissionResponse{Kind: toolrun.PermissionAllowedAlways, Rule: &rule, UpdatedInput: updated}, nil
 				}
 			}
 		}
-		return toolrun.PermissionResponse{Kind: toolrun.PermissionAllowedOnce}, nil
+		return toolrun.PermissionResponse{Kind: toolrun.PermissionAllowedOnce, UpdatedInput: updated}, nil
 	case "deny":
 		feedback := strings.TrimSpace(res.Message)
 		if res.Interrupt {

@@ -149,7 +149,11 @@ func (d *Dispatcher) AuthorizeShellCommand(ctx context.Context, chk ShellCommand
 			return errors.New(noPrompterShellDenyMessage(chk))
 		}
 		input, _ := json.Marshal(map[string]string{"command": chk.Command})
-		if out := d.resolveAskFrom(ctx, pc, input, desc, decision, chk.Origin); out.allowed {
+		out := d.resolveAskFrom(ctx, pc, input, desc, decision, chk.Origin)
+		if out.allowed && out.input != nil {
+			return errors.New(errChangedInput)
+		}
+		if out.allowed {
 			return nil
 		}
 		if err := ctx.Err(); err != nil {

@@ -249,8 +249,18 @@ func (d *Dispatcher) dispatchExternal(ctx context.Context, call agent.ToolUse) (
 	case toolreg.BehaviorAllow:
 		// fall through
 	case toolreg.BehaviorAsk:
-		if out := d.resolveAsk(ctx, pc, checked.Input, desc, decision); !out.allowed {
+		out := d.resolveAsk(ctx, pc, checked.Input, desc, decision)
+		if !out.allowed {
 			return d.denied(ctx, checked, out.denyMessage), nil
+		}
+		// A changed input from the answer runs in place of the call's; with
+		// whole-tool rules it changes no permission field, but the mods
+		// check still sees it.
+		if out.input != nil {
+			checked.Input = out.input
+			if again := d.modsCheck(ctx, checked, toolreg.Decision{Behavior: toolreg.BehaviorAllow}); again.Behavior == toolreg.BehaviorDeny {
+				return d.denied(ctx, checked, deniedMessage(call.Name, again)), nil
+			}
 		}
 	default: // BehaviorDeny
 		msg := decision.Reason

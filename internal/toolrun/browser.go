@@ -331,8 +331,12 @@ func (d *Dispatcher) approveSite(tool protocol.Tool) browser.ApproveFunc {
 		}
 		pc, desc, dec := siteAskCall(tool, site)
 		input, _ := json.Marshal(map[string]string{"site": site})
-		if out := d.resolveAsk(ctx, pc, input, desc, dec); !out.allowed {
+		out := d.resolveAsk(ctx, pc, input, desc, dec)
+		if !out.allowed {
 			return errors.New(out.denyMessage)
+		}
+		if out.input != nil {
+			return errors.New(errChangedInput)
 		}
 		return nil
 	}
@@ -417,8 +421,12 @@ func (d *Dispatcher) authorizeWrite(ctx context.Context, path string) error {
 		return nil
 	case toolreg.BehaviorAsk:
 		input, _ := json.Marshal(map[string]string{"file_path": path})
-		if out := d.resolveAsk(ctx, pc, input, desc, decision); !out.allowed {
+		out := d.resolveAsk(ctx, pc, input, desc, decision)
+		if !out.allowed {
 			return errors.New(out.denyMessage)
+		}
+		if out.input != nil {
+			return errors.New(errChangedInput)
 		}
 		return nil
 	default:

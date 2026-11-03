@@ -139,9 +139,11 @@ The host answers with a `control_response` for that `request_id` whose
   (behavior `allow`), which allows matching calls for the rest of the
   session, or `setMode` `acceptEdits` for an edit, which switches the session
   to acceptEdits. Rules are not written to settings files, whatever their
-  `destination`. `updatedInput` must be the call's input (as SDKs send by
-  default): a changed input cannot be applied, so the call is refused with a
-  message saying so.
+  `destination`. An `updatedInput` that differs from the call's input (it
+  must be an object) is the input the call runs with. It is checked again as
+  a PreToolUse hook's rewrite is: the permission fields come from the new
+  input, so a deny rule (or the working-directory guard) still refuses it;
+  a check that would ask again is answered by this allow.
 - `deny` refuses the call with `message`, and the model goes on. With
   `"interrupt": true` (or no message) the turn ends there, as when the user
   rejects a prompt without feedback.

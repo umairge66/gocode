@@ -1,6 +1,7 @@
 package toolrun
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"strings"
@@ -106,6 +107,13 @@ type PermissionResponse struct {
 	// Feedback, for PermissionDenied, is the user's optional "tell gocode what to
 	// do differently" text, appended to the rejection message the model sees.
 	Feedback string
+	// UpdatedInput, for an allow, is the input the call runs with in place of
+	// the one asked about (a stream-json host's or permission prompt tool's
+	// updatedInput); nil keeps the input. The dispatcher re-derives the
+	// permission fields from it and checks it again, as it does a PreToolUse
+	// hook's rewrite: a deny still refuses the call, while an ask is answered
+	// by this allow rather than prompted again.
+	UpdatedInput json.RawMessage
 }
 
 // PermissionPrompter presents an "ask" decision to the user and returns their
@@ -223,6 +231,9 @@ type askOutcome struct {
 	allowed bool
 	// denyMessage is the is_error tool_result body when !allowed.
 	denyMessage string
+	// input, when allowed, is the changed input the answer carried
+	// (PermissionResponse.UpdatedInput); nil when the call runs as asked.
+	input json.RawMessage
 }
 
 // resolveAsk turns a behavior:"ask" decision into a concrete allow/deny by
@@ -336,9 +347,10 @@ func (d *Dispatcher) resolveAskFrom(ctx context.Context, pc toolreg.Call, input 
 		return d.rejected(ctx, "", false)
 	}
 
+	allowed := askOutcome{allowed: true, input: changedInput(input, resp.UpdatedInput)}
 	switch resp.Kind {
 	case PermissionAllowedOnce:
-		return askOutcome{allowed: true}
+		return allowed
 	case PermissionAllowedAlways:
 		// Under allowManagedPermissionRulesOnly only managed rules count: a
 		// "don't ask again" answer allows this one call and is never added to
@@ -346,17 +358,50 @@ func (d *Dispatcher) resolveAskFrom(ctx context.Context, pc toolreg.Call, input 
 		if resp.Rule != nil && !d.ManagedRulesOnly {
 			d.addAllowRule(*resp.Rule)
 		}
-		return askOutcome{allowed: true}
+		return allowed
 	case PermissionAllowedEditsSession:
 		d.SetMode(toolreg.ModeAcceptEdits)
 		if d.OnModeSwitch != nil {
 			d.OnModeSwitch(toolreg.ModeAcceptEdits)
 		}
-		return askOutcome{allowed: true}
+		return allowed
 	default: // PermissionDenied
 		return d.rejected(ctx, resp.Feedback, true)
 	}
 }
+
+// changedInput is updated when it is a JSON document that differs from
+// input, else nil.
+func changedInput(input, updated json.RawMessage) json.RawMessage {
+	if len(bytes.TrimSpace(updated)) == 0 || !json.Valid(updated) || jsonSameValue(input, updated) {
+		return nil
+	}
+	return updated
+}
+
+// jsonSameValue reports whether two JSON documents hold the same value (an
+// empty document counts as {}).
+func jsonSameValue(a, b json.RawMessage) bool {
+	norm := func(r json.RawMessage) ([]byte, bool) {
+		if len(bytes.TrimSpace(r)) == 0 {
+			r = json.RawMessage(`{}`)
+		}
+		var v any
+		if json.Unmarshal(r, &v) != nil {
+			return nil, false
+		}
+		out, _ := json.Marshal(v)
+		return out, true
+	}
+	x, okx := norm(a)
+	y, oky := norm(b)
+	return okx && oky && bytes.Equal(x, y)
+}
+
+// errChangedInput is the refusal for a changed input on a check whose input
+// gocode synthesized (a browser site, a save_to path, a `!` command): there
+// is no call to run it with.
+const errChangedInput = "The permission answer changed the input (updatedInput), which cannot be applied to this check; it was not allowed."
 
 // rejected is the outcome of a permission prompt the user rejected.
 //

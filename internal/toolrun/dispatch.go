@@ -753,6 +753,14 @@ func (d *Dispatcher) denied(ctx context.Context, call agent.ToolUse, msg string)
 	return res
 }
 
+// deniedMessage is the refusal text for a deny decision on tool name.
+func deniedMessage(name string, decision toolreg.Decision) string {
+	if decision.Reason != "" {
+		return decision.Reason
+	}
+	return "Permission to use " + name + " has been denied."
+}
+
 // rewrittenCall returns call with a PreToolUse hook's updatedInput in place
 // of its input, and whether there was one.
 func rewrittenCall(call agent.ToolUse, hd *hooks.Decision) (agent.ToolUse, bool) {
@@ -841,18 +849,36 @@ func (d *Dispatcher) dispatch(ctx context.Context, call agent.ToolUse) (agent.To
 	case toolreg.BehaviorAsk:
 		// An "ask" is resolved by prompting the user (interactive host) or, with
 		// no prompter, kept as a denial carrying the how-to-allow message.
-		if out := d.resolveAsk(ctx, pc, checked.Input, desc, decision); !out.allowed {
+		out := d.resolveAsk(ctx, pc, checked.Input, desc, decision)
+		if !out.allowed {
 			return d.denied(ctx, checked, out.denyMessage), nil
 		}
-	default: // BehaviorDeny
-		msg := decision.Reason
-		if msg == "" {
-			msg = "Permission to use " + call.Name + " has been denied."
+		// 4a. An answer that changed the input (a host's updatedInput) is
+		//     checked again exactly like a hook's rewrite: the permission
+		//     fields come from the new input and a deny still refuses it. An
+		//     ask is not prompted again — the answer was given for this input.
+		if out.input != nil {
+			checked.Input = out.input
+			ruleContent, path, op, perr = ad.permission(checked.Input)
+			if perr != nil {
+				return errResult(fmt.Sprintf("Error: invalid input for %s (as changed by the permission prompt): %v", call.Name, perr)), nil
+			}
+			pc = toolreg.Call{Tool: tool, Rule: desc.Rule(), RuleContent: ruleContent, Path: path, Op: op}
+			again := d.Decider.Decide(pc, d.CurrentMode(), d.SnapshotRules(), hookDec)
+			again = d.modsCheck(ctx, checked, again)
+			if ad.refine != nil {
+				pc, desc, again = ad.refine(checked.Input, pc, desc, again)
+			}
+			if again.Behavior == toolreg.BehaviorDeny {
+				return d.denied(ctx, checked, deniedMessage(call.Name, again)), nil
+			}
 		}
-		return d.denied(ctx, checked, msg), nil
+	default: // BehaviorDeny
+		return d.denied(ctx, checked, deniedMessage(call.Name, decision)), nil
 	}
 
-	// 5. Allowed: run the input that was checked (the hook's rewrite, if any).
+	// 5. Allowed: run the input that was checked (the hook's rewrite or the
+	//    prompt answer's changed input, if any).
 	input := checked.Input
 	d.trackFileEdit(tool, ad, input, path, false)
 	lines := d.beginLineCount(tool, ad, input, path, false)

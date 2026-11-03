@@ -391,7 +391,7 @@ func TestPermissionFromResult(t *testing.T) {
 	}{
 		{"allow", headless.PermissionResult{Behavior: "allow"}, toolrun.PermissionAllowedOnce, ""},
 		{"allow same input", headless.PermissionResult{Behavior: "allow", UpdatedInput: json.RawMessage(`{ "command" : "ls" }`)}, toolrun.PermissionAllowedOnce, ""},
-		{"allow changed input", headless.PermissionResult{Behavior: "allow", UpdatedInput: json.RawMessage(`{"command":"rm -rf /"}`)}, toolrun.PermissionDenied, "updatedInput"},
+		{"allow changed input", headless.PermissionResult{Behavior: "allow", UpdatedInput: json.RawMessage(`{"command":"ls -la"}`)}, toolrun.PermissionAllowedOnce, ""},
 		{"allow rule", headless.PermissionResult{Behavior: "allow", UpdatedPermissions: []headless.PermissionUpdate{{Type: "addRules", Behavior: "allow", Rules: []headless.PermissionRule{{ToolName: "Bash", RuleContent: "ls:*"}}}}}, toolrun.PermissionAllowedAlways, ""},
 		{"deny", headless.PermissionResult{Behavior: "deny", Message: "not now"}, toolrun.PermissionDenied, "not now"},
 		{"deny interrupt", headless.PermissionResult{Behavior: "deny", Message: "stop", Interrupt: true}, toolrun.PermissionDenied, ""},
@@ -407,6 +407,16 @@ func TestPermissionFromResult(t *testing.T) {
 	}
 	if _, err := permissionFromResult(req, headless.PermissionResult{Behavior: "maybe"}); err == nil {
 		t.Error("unknown behavior accepted")
+	}
+	// A changed input rides on the answer; the same input does not.
+	if got, _ := permissionFromResult(req, headless.PermissionResult{Behavior: "allow", UpdatedInput: json.RawMessage(`{"command":"ls -la"}`)}); string(got.UpdatedInput) != `{"command":"ls -la"}` {
+		t.Errorf("changed input not carried: %+v", got)
+	}
+	if got, _ := permissionFromResult(req, headless.PermissionResult{Behavior: "allow", UpdatedInput: json.RawMessage(`{ "command" : "ls" }`)}); got.UpdatedInput != nil {
+		t.Errorf("unchanged input carried: %+v", got)
+	}
+	if _, err := permissionFromResult(req, headless.PermissionResult{Behavior: "allow", UpdatedInput: json.RawMessage(`["ls"]`)}); err == nil {
+		t.Error("a non-object updatedInput accepted")
 	}
 	edit := toolrun.PermissionRequest{ToolName: "Edit", IsEdit: true}
 	if got, _ := permissionFromResult(edit, headless.PermissionResult{Behavior: "allow", UpdatedPermissions: []headless.PermissionUpdate{{Type: "setMode", Mode: "acceptEdits"}}}); got.Kind != toolrun.PermissionAllowedEditsSession {
