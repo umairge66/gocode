@@ -185,6 +185,27 @@ answer `can_use_tool` never leaves a turn waiting.
 
 ## Background sessions
 
-The daemon's `permission-response` op is accepted (with the control key) but
-not routed anywhere yet: background sessions run the interactive UI, which
-asks its permission questions in the attached terminal.
+Background sessions run the interactive UI in the daemon's pty, so their
+permission prompts open in the attached terminal. A daemon client can answer
+them too:
+
+- While a prompt is open the job is `blocked` (its `needs` names the
+  prompt), and the daemon's `list` reply carries it on the job's record:
+  `"permission":{"requestId":"perm_…","toolName":"Bash","input":{…},"toolUseId":"…","reason":"…","suggestions":["Bash(make:*)"],"at":"…"}`.
+- The authed `permission-response` op answers it:
+  `{"op":"permission-response","auth":"<control key>","short":"<job>","requestId":"perm_…","decision":{"behavior":"allow"}}`.
+  `decision` is the same decision as a `can_use_tool` answer and is applied
+  the same way (`updatedInput`, session-only `addRules`, `setMode`
+  `acceptEdits`; `deny` with `message` / `interrupt`). The dialog in the
+  terminal closes.
+- The op fails with `ENOREPLY` when the job has no open prompt, `ESTALE` when
+  `requestId` names one that is no longer open (an empty `requestId`
+  answers whichever is open), and `EPROTO` for a decision that is not
+  `allow` / `deny`. Whichever answer comes first — the terminal's or the
+  client's — wins; a client's answer that loses that race is dropped.
+
+The prompt and the answer pass through the job directory
+(`permission.json`, `permission-response.json`, mode 0600), and the session
+checks for an answer every 200 ms while the prompt is open. Only permission
+prompts are routed: AskUserQuestion and plan approvals are still answered
+in the terminal.

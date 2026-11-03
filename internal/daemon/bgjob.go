@@ -69,6 +69,9 @@ type JobRecord struct {
 	Outcome       string `json:"outcome,omitempty"`
 	SettledAt     int64  `json:"settledAt,omitempty"`
 	Dying         bool   `json:"dying,omitempty"`
+	// Permission is the session's open permission prompt (list only; see
+	// bgpermission.go).
+	Permission *PendingPermission `json:"permission,omitempty"`
 }
 
 type jobPhase int
