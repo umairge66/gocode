@@ -350,7 +350,7 @@ func (t *AgentTool) notifyResumeDone(_ string, task *subagent.Task, report subag
 	if notify == nil || task == nil {
 		return
 	}
-	notify(task, formatCompleted(task.AgentType, report, task, spawnUsage{}))
+	notify(task, formatCompleted(task.AgentType, report, task, spawnUsage{}, true))
 }
 
 // sessionManager returns the shared live-session manager, creating one bound to
@@ -1105,6 +1105,9 @@ type spawnOutcome struct {
 	text   string
 	report subagent.Report
 	task   *subagent.Task
+	// notice is text rendered for a task-notification (the <usage> block in
+	// its XML-element form); empty when the spawn failed.
+	notice string
 }
 
 // spawn runs one subagent to completion and formats its result.
@@ -1232,24 +1235,30 @@ func (t *AgentTool) spawnWith(ctx context.Context, sp *subagent.Spawner, req sub
 	if task != nil && task.Status == subagent.StatusKilled && !report.Delivered {
 		return spawnOutcome{report: report, task: task}, fmt.Errorf("the %s agent was stopped before it delivered a report", req.SubagentType)
 	}
-	text := formatCompleted(req.SubagentType, report, task, spawnUsage{totalTokens: tokens.total(), toolUses: counter.count.Load(), elapsed: time.Since(start)})
-	return spawnOutcome{text: text, report: report, task: task}, nil
+	u := spawnUsage{subagentTokens: tokens.total(), toolUses: counter.count.Load(), elapsed: time.Since(start)}
+	return spawnOutcome{
+		text:   formatCompleted(req.SubagentType, report, task, u, false),
+		notice: formatCompleted(req.SubagentType, report, task, u, true),
+		report: report, task: task,
+	}, nil
 }
 
 // spawnUsage is what a finished spawn's <usage> block reports.
 type spawnUsage struct {
-	// totalTokens is the subagent's context at its last model response:
+	// subagentTokens is the subagent's context at its last model response:
 	// that response's input (cached and cache-written included) plus output
 	// tokens, as Claude Code reports it. Its spend is in the session ledger.
-	totalTokens int
-	toolUses    int64
-	elapsed     time.Duration
+	subagentTokens int
+	toolUses       int64
+	elapsed        time.Duration
 }
 
 // formatCompleted renders the completed-status tool result: the report, then —
 // except for Explore/Plan — the agentId line and the <usage> block
-// (total_tokens, tool_uses, duration_ms).
-func formatCompleted(agentType string, report subagent.Report, task *subagent.Task, u spawnUsage) string {
+// (subagent_tokens, tool_uses, duration_ms). As in Claude Code, the tool
+// result's block holds "key: value" lines and a task-notification's (notice)
+// holds one element per field.
+func formatCompleted(agentType string, report subagent.Report, task *subagent.Task, u spawnUsage, notice bool) string {
 	var body string
 	switch {
 	case report.Delivered && strings.TrimSpace(report.Text) != "":
@@ -1272,7 +1281,11 @@ func formatCompleted(agentType string, report subagent.Report, task *subagent.Ta
 		}
 	}
 	if task != nil && (!subagent.IsSpecialBuiltIn(agentType) || wtInfo != "") {
-		body += fmt.Sprintf("\nagentId: %s%s\n<usage>total_tokens: %d\ntool_uses: %d\nduration_ms: %d</usage>", task.ID, wtInfo, u.totalTokens, u.toolUses, u.elapsed.Milliseconds())
+		format := "\nagentId: %s%s\n<usage>subagent_tokens: %d\ntool_uses: %d\nduration_ms: %d</usage>"
+		if notice {
+			format = "\nagentId: %s%s\n<usage><subagent_tokens>%d</subagent_tokens><tool_uses>%d</tool_uses><duration_ms>%d</duration_ms></usage>"
+		}
+		body += fmt.Sprintf(format, task.ID, wtInfo, u.subagentTokens, u.toolUses, u.elapsed.Milliseconds())
 	}
 	return truncateResult(body)
 }
@@ -1326,7 +1339,7 @@ func (t *AgentTool) launchBackground(ctx context.Context, sp *subagent.Spawner, 
 		out, err := t.spawnWith(bgCtx, sp, req, mc, allowed, scope)
 		signal()
 		done <- result{out, err}
-		text := out.text
+		text := out.notice
 		if err != nil {
 			text = err.Error()
 		}
@@ -1389,7 +1402,7 @@ func (c *countingDispatcher) IsConcurrencySafe(call agent.ToolUse) bool {
 }
 
 // usageCaller records the token usage of the last response a subagent's
-// model returned (total_tokens in the <usage> block).
+// model returned (subagent_tokens in the <usage> block).
 type usageCaller struct {
 	inner agent.ModelCaller
 	last  atomic.Int64

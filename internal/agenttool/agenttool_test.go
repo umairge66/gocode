@@ -111,7 +111,7 @@ func TestAgentBuiltinGeneralPurpose(t *testing.T) {
 	if !strings.Contains(out, "[Subagent hand-back]") || !strings.Contains(out, "  the report") {
 		t.Fatalf("missing framed report: %q", out)
 	}
-	if !strings.Contains(out, "agentId: task_1") || !strings.Contains(out, "<usage>total_tokens: 0\ntool_uses: 0") {
+	if !strings.Contains(out, "agentId: task_1") || !strings.Contains(out, "<usage>subagent_tokens: 0\ntool_uses: 0") {
 		t.Fatalf("missing agentId/usage trailer: %q", out)
 	}
 	if h.models[0] != "parent-model" {
@@ -298,6 +298,10 @@ func TestAgentBackground(t *testing.T) {
 	case r := <-done:
 		if !strings.HasPrefix(r, "task_1|") || !strings.Contains(r, "the report") {
 			t.Fatalf("notification = %q", r)
+		}
+		// A task-notification's usage block uses one element per field.
+		if !strings.Contains(r, "<usage><subagent_tokens>0</subagent_tokens><tool_uses>0</tool_uses><duration_ms>") {
+			t.Fatalf("notification usage block = %q", r)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("background agent never completed")

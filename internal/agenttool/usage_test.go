@@ -26,9 +26,9 @@ func (u *usageModel) CallModel(ctx context.Context, req agent.ModelRequest) (age
 	return resp, err
 }
 
-// The usage block carries total_tokens: the subagent's context at its last
+// The usage block carries subagent_tokens: the subagent's context at its last
 // model response (input, cached and cache-written included, plus output).
-func TestAgentUsageBlockTotalTokens(t *testing.T) {
+func TestAgentUsageBlockSubagentTokens(t *testing.T) {
 	h := newHarness(nil)
 	h.model.extra = &agent.ToolUse{ID: "r", Name: "Read", Input: []byte(`{}`)}
 	m := &usageModel{inner: h.model, usage: []agent.ModelUsage{
@@ -40,8 +40,8 @@ func TestAgentUsageBlockTotalTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "<usage>total_tokens: 155\ntool_uses: 1\nduration_ms: ") {
-		t.Fatalf("usage block missing total_tokens:\n%s", out)
+	if !strings.Contains(out, "<usage>subagent_tokens: 155\ntool_uses: 1\nduration_ms: ") {
+		t.Fatalf("usage block missing subagent_tokens:\n%s", out)
 	}
 }
 
