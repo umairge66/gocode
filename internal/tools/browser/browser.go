@@ -391,6 +391,11 @@ type ComputerInput struct {
 	// neither is sent to the extension.
 	SaveToDisk bool   `json:"save_to_disk,omitempty"`
 	SaveTo     string `json:"save_to,omitempty"`
+	// Screenshot asks a page-changing action (AutoScreenshotAction) for a
+	// screenshot of the page after it (true) or none (false); nil takes the
+	// tool's default (ComputerTool.AutoScreenshot). The extension receives it
+	// only as true.
+	Screenshot *bool `json:"screenshot,omitempty"`
 }
 
 // screenshotActions are the computer actions that return an image rather than a
@@ -399,14 +404,48 @@ func isScreenshotAction(action string) bool {
 	return action == "screenshot" || action == "zoom"
 }
 
+// AutoScreenshotAction reports whether a computer action changes the page and
+// so can return a screenshot of it after the action (see
+// ComputerTool.AutoScreenshot): clicks, typing, keys, scrolling, drags and
+// hovering (which is done to see what it reveals).
+func AutoScreenshotAction(action string) bool {
+	switch action {
+	case "left_click", "click", "right_click", "middle_click", "double_click", "triple_click",
+		"type", "key", "keypress", "scroll", "scroll_to", "left_click_drag", "hover", "mouse_move":
+		return true
+	}
+	return false
+}
+
+// wantShot is whether a computer action asks the extension for a screenshot
+// after it: an action that changes the page, with the input's screenshot
+// flag, or the default when it has none.
+func wantShot(action string, flag *bool, def bool) bool {
+	if !AutoScreenshotAction(action) {
+		return false
+	}
+	if flag != nil {
+		return *flag
+	}
+	return def
+}
+
 // ComputerTool performs a mouse/keyboard gesture (or a screenshot) in the user's
 // real Chrome through chrome.debugger. It is an ACTION (it manipulates input on
 // logged-in sites) and is gated like Bash. The screenshot/zoom actions return an
 // IMAGE result through the structured-image delivery path so the model sees it.
+//
+// With AutoScreenshot, a page-changing action (AutoScreenshotAction) also
+// returns a screenshot of the page once it settled, through the same image
+// path, unless its input says screenshot:false: the model sees what its click
+// did without a second call. An input with screenshot:true asks for one even
+// when AutoScreenshot is off.
 type ComputerTool struct {
 	Client Client
 	// Saver handles save_to_disk (nil -> DefaultScreenshotSaver).
 	Saver *ScreenshotSaver
+	// AutoScreenshot is the default of the input's screenshot flag.
+	AutoScreenshot bool
 }
 
 func (t ComputerTool) Execute(ctx context.Context, in ComputerInput) (Result, error) {
@@ -422,6 +461,11 @@ func (t ComputerTool) Execute(ctx context.Context, in ComputerInput) (Result, er
 	}
 	saveToDisk, saveTo := in.SaveToDisk, in.SaveTo
 	in.SaveToDisk, in.SaveTo = false, ""
+	shot := wantShot(in.Action, in.Screenshot, t.AutoScreenshot)
+	in.Screenshot = nil
+	if shot {
+		in.Screenshot = &shot
+	}
 	raw, err := c.Call(ctx, chromehost.MethodComputer, in)
 	if err != nil {
 		return Result{}, err
@@ -454,7 +498,24 @@ func (t ComputerTool) Execute(ctx context.Context, in ComputerInput) (Result, er
 	if note := r.note(); note != "" {
 		text = fmt.Sprintf("computer: %s %s: %s", in.Action, r.outcome(), note)
 	}
-	return Result{Text: text + pageNotes(notes.Notes, true)}, nil
+	// The screenshot the extension took after the action, when asked.
+	var after struct {
+		DataURL string `json:"dataUrl"`
+	}
+	_ = json.Unmarshal(raw, &after)
+	var images []Image
+	if after.DataURL != "" {
+		if img, derr := decodeDataURL(after.DataURL); derr == nil {
+			images = append(images, img)
+		} else {
+			r.ScreenshotError = derr.Error()
+		}
+	}
+	text += r.shotLine(len(images) > 0)
+	if len(images) > 0 {
+		text += "\n\n" + UntrustedImageNotice
+	}
+	return Result{Text: text + pageNotes(notes.Notes, true), Images: images}, nil
 }
 
 // --- find (milestone 3, CDP element lookup) ---------------------------------
@@ -602,6 +663,47 @@ type BatchTool struct {
 	Approve ApproveFunc
 	// Saver handles save_to_disk (nil -> DefaultScreenshotSaver).
 	Saver *ScreenshotSaver
+	// AutoScreenshot: a last step that is a page-changing computer action
+	// returns a screenshot after itself unless its input says
+	// screenshot:false (see ComputerTool.AutoScreenshot). Earlier steps never
+	// do: only the last page matters to the model.
+	AutoScreenshot bool
+}
+
+// setShotFlags settles each computer item's screenshot flag: removed from
+// every step but the last, and on the last one true when it is a
+// page-changing action that wants one (its own flag, else def), else
+// removed.
+func setShotFlags(actions []BatchAction, def bool) []BatchAction {
+	out := make([]BatchAction, len(actions))
+	copy(out, actions)
+	for i, a := range out {
+		if a.Name != "computer" || len(a.Input) == 0 {
+			continue
+		}
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(a.Input, &fields) != nil {
+			continue
+		}
+		var in struct {
+			Action     string `json:"action"`
+			Screenshot *bool  `json:"screenshot"`
+		}
+		_ = json.Unmarshal(a.Input, &in)
+		_, had := fields["screenshot"]
+		want := i == len(out)-1 && wantShot(in.Action, in.Screenshot, def)
+		if !had && !want {
+			continue
+		}
+		delete(fields, "screenshot")
+		if want {
+			fields["screenshot"] = json.RawMessage("true")
+		}
+		if b, err := json.Marshal(fields); err == nil {
+			out[i].Input = b
+		}
+	}
+	return out
 }
 
 // stripSaveFlags removes save_to_disk / save_to from each item's input (the
@@ -642,6 +744,7 @@ func (t BatchTool) Execute(ctx context.Context, in BatchInput) (Result, error) {
 		return Result{}, errors.New("browser_batch requires at least one action")
 	}
 	actions, wantsSave := stripSaveFlags(in.Actions)
+	actions = setShotFlags(actions, t.AutoScreenshot)
 	wantsSave = wantsSave || in.SaveToDisk
 
 	var all []batchResult
@@ -693,7 +796,16 @@ func (t BatchTool) Execute(ctx context.Context, in BatchInput) (Result, error) {
 				images = append(images, img)
 				line := "image captured"
 				var ci captureInfo
-				if json.Unmarshal(res.Result, &ci) == nil {
+				var after struct {
+					Shot json.RawMessage `json:"shot"`
+				}
+				if json.Unmarshal(res.Result, &after) == nil && len(after.Shot) > 0 {
+					// A computer action's screenshot after itself.
+					line = "ok; screenshot after the action attached"
+					if detail, _ := stepDetail(res.Name, res.Result); detail != "" {
+						line = "ok: " + strings.TrimSuffix(detail, ".") + "; screenshot after the action attached"
+					}
+				} else if json.Unmarshal(res.Result, &ci) == nil {
 					if note := ci.frameNote(); note != "" {
 						line += ". " + note
 					}

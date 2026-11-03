@@ -132,9 +132,10 @@ and then answers the commands the host sends (`ping`, `navigate`, `read_page`
 / `get_page_text`, `tabs_context`, `tabs_create`, `tabs_close`, `screenshot`,
 `computer`, `find`, `form_input`, `browser_batch`, `javascript_tool`,
 `resize_window`). Interaction commands attach `chrome.debugger` to the target
-tab only while they run, one command per tab at a time. If the host
-disconnects, the worker stops its commands and reconnects with backoff; a
-reply for a command from a host that has gone is dropped.
+tab while they run, one command per tab at a time, and keep the attachment for
+a short grace afterwards (see "Debugger attachment" below). If the host
+disconnects, the worker stops its commands, detaches, and reconnects with
+backoff; a reply for a command from a host that has gone is dropped.
 
 Every CDP call and page script has a timeout, so a hung page fails the call
 instead of wedging the tab. A JavaScript dialog that opens while gocode holds
@@ -143,6 +144,44 @@ When gocode stops waiting for a command (the call was cancelled or timed out
 after 120 seconds), the host sends `{"method":"cancel","params":{"id":…}}` and
 the extension aborts what is left of it — the remaining steps of a batch — and
 detaches.
+
+### Debugger attachment
+
+From 0.4.2 a command that used the debugger does not detach at once: the
+attachment stays, idle, for 1.5 seconds (`DEBUGGER_HOLD_MS`), and the next
+command on the same tab within that time takes it over — no new attach, no
+`Page.enable`, and a background tab's focus emulation is still on. A click,
+type, key, screenshot sequence pays the attach cost once. The tab's lock is
+released when each command ends, so a kept attachment never makes another
+command wait. It is detached when the grace runs out, and at once when the
+command failed or was cancelled, the tab closes, goes to a page gocode may not
+act on (a `chrome://` page, a site the rules deny) or leaves the gocode group,
+the native host disconnects, a `cancel` arrives, a session's end-of-task
+cleanup runs, or the user presses Cancel on the debugging banner. So Chrome's
+"started debugging this browser" banner stays up at most 1.5 seconds after
+gocode's last action. Tested on Chrome 156: focus emulation outlasts a
+same-tab navigation (same site and cross-origin) while the attachment is kept;
+the page is asked on every command anyway, and gets the emulation again if it
+is hidden once more.
+
+### Screenshots after actions
+
+A `computer` click (left, right, middle, double, triple), `type`, `key`,
+`scroll`, `scroll_to`, `left_click_drag` or `hover` / `mouse_move` with
+`screenshot: true` waits for the page to settle — two animation frames, at
+most 300 ms (100 ms on a background tab, whose capture waits for a fresh
+frame anyway), plus the load of a navigation the action started, at most
+1.5 s — and returns a screenshot with its result (`dataUrl`, and `shot` with
+the viewport frame), taken the same way as the `screenshot` action
+(downscaled to CSS pixels, the background-tab screencast path) but as a JPEG
+(quality 80), about half the size of the PNG. A capture that fails, or a page
+that is now on a site gocode may not read, leaves the action done and says
+why (`screenshotError`). In a `browser_batch` only the last step may return
+one. The gocode session asks for it by default (`"chrome":
+{"screenshotAfterActions": false}` in the settings, or
+`GOCODE_CHROME_SCREENSHOT_AFTER_ACTIONS=0`, turns that off; the model can
+pass `screenshot: false` on one call). The `--gocode-in-chrome-mcp` server
+does not: its clients expect a click to answer with text.
 
 `find` tags the elements it returns with refs (`ref_<n>`) that are unique per
 tab; they live in the extension's isolated world, not in the page's DOM, and a
@@ -167,7 +206,8 @@ From 0.4.1 the extension handles it like this, least intrusive first:
    Playwright does for its pages. Chrome then treats the page as visible and
    focused (as if it were being captured): it renders, hit-tests, and takes
    clicks, keys and drags as real, trusted input, while the tab stays in the
-   background and the window is not raised. Detaching the debugger ends it.
+   background and the window is not raised. Detaching the debugger ends it
+   (from 0.4.2, when the attachment's idle grace ends).
    Tested: hidden-tab clicks (40 of 40), keys and text arrive as trusted
    events and the user's tab stays in front; a minimized window behaves the
    same.

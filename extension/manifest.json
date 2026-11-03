@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "gocode browser control",
   "description": "Lets the gocode command-line coding agent on your computer control Chrome tabs locally. No account, no servers, no telemetry.",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAweaAPDU0d7iUk3uB1Ba555IxVIlvoe3ElgwfeCS0BBDJvwGPshOSUJ5vmA3W8TlK+EKEQytMerIIwFRWp5ofBkChnhVxj1sLRg1gtBAa9BExiRgMxJlK/Y4+5qYlpE340wMTwfs5E3b59uHZN1yo8lw3/Z9WoSJ+YJZhG5LtnCqz6mzHh4cz0mF6MjXrlalsin8UN8BhHlopT7GPC1q4EuIAk/yxbXqodU29RKeIApM10N+aklBhj/ogkdd7tbprkhh0SZPDGIOKsqJcmVvTb92jlcOcfiWfIdsjcLcuA4S7PJ9kHx0rMbAMzXAuZE8k2ppLBEOGxGCwkDg+j5AInwIDAQAB",
   "permissions": [
     "nativeMessaging",

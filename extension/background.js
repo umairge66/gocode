@@ -20,11 +20,15 @@
 //
 // Milestone 3 adds the CDP-backed interaction verbs (computer / find /
 // form_input / browser_batch). chrome.debugger is attached to the target tab
-// ONLY while input is actually dispatched and ALWAYS detached afterwards (in a
-// finally), so Chrome's "started debugging this browser" banner appears only
-// during active control and never lingers — even when an action fails or is
-// aborted. A browser_batch shares one attach across its steps and detaches once
-// at the end. Only one gocode command at a time holds the debugger on a tab
+// ONLY while gocode is driving it: after a command that used it, the
+// attachment is kept for a short idle grace (DEBUGGER_HOLD_MS) so the next
+// action on the same tab reuses it instead of attaching again, and is detached
+// when the grace runs out — or at once when the command failed or was
+// cancelled, the tab closes, leaves the gocode group or goes to a page gocode
+// may not act on, or the native host disconnects. Chrome's "started debugging
+// this browser" banner therefore shows only during active control and never
+// lingers past the grace. A browser_batch shares one attach across its steps.
+// Only one gocode command at a time holds the debugger on a tab
 // (others wait their turn), every CDP call and page script has a timeout, and
 // a JavaScript dialog (alert/confirm/prompt/beforeunload) that opens while
 // gocode holds the debugger is dismissed and reported in the result instead of
@@ -64,6 +68,16 @@ const SCRIPT_TIMEOUT_MS = 15000;
 const JS_TIMEOUT_MS = 30000;
 const JS_GRACE_MS = 2000; // past JS_TIMEOUT_MS, for Chrome's own evaluation timeout to answer
 const DEBUGGER_WAIT_MS = 30000; // waiting for another gocode command on the tab
+// How long an attachment is kept after a command, for the next action on the
+// tab to reuse (0: detach at the end of every command).
+const DEBUGGER_HOLD_MS = 1500;
+// After a page-changing computer action that asked for a screenshot: how long
+// to wait for the page to paint (two animation frames, at most this), and for a
+// navigation the action started to finish.
+const SETTLE_FRAME_MS = 300;
+const SETTLE_NAV_MS = 1500;
+// JPEG quality (0-1) of that screenshot.
+const JPEG_QUALITY = 0.8;
 const LOAD_TIMEOUT_MS = 20000;
 const MAX_WAIT_SECONDS = 30;
 
@@ -171,6 +185,8 @@ function onDisconnect(p) {
       inflight.delete(id);
     }
   }
+  // Nobody is driving the browser any more: drop the kept attachments.
+  detachAllIdle();
   if (port !== p) return;
   port = null;
   setConnected(false);
@@ -193,6 +209,8 @@ function onMessage(msg, p) {
     if (entry && entry.port === p) {
       abortOp(entry.op, new Error("cancelled: gocode stopped waiting for this command (it was cancelled or timed out)"));
     }
+    // The cancelled command detaches its own tabs; a kept attachment goes too.
+    detachAllIdle();
     return;
   }
   onCommand(msg, p);
@@ -265,30 +283,33 @@ function bounded(promise, ms, what, op) {
 // --- dispatch -------------------------------------------------------------------
 //
 // Every command runs with a ctx: { op, attached, releases, notes }. attached
-// holds the tabs it attached the debugger to (detached when the command ends,
-// whatever happens); notes collects what the user should hear about (a
-// dismissed dialog), returned with the result.
+// holds the tabs it has the debugger attached to (released when the command
+// ends, whatever happens: kept for the idle grace or detached); notes collects
+// what the user should hear about (a dismissed dialog), returned with the
+// result.
 
 function newCtx(op) {
   return {
     op: op || newOp(), attached: new Set(), releases: new Map(), notes: [], onDrag: null,
-    // Background-tab handling (see "background tabs" below): tabId -> what
-    // prepareTab found and did, and tabId -> the screencast frame sink.
-    prepared: new Map(), frames: new Map(),
+    // tabId -> the screencast frame sink (see "background tabs" below).
+    frames: new Map(),
   };
 }
 
 async function dispatch(method, params, op) {
   const ctx = newCtx(op);
+  let failed = true;
   try {
     const result = await run(method, params || {}, ctx);
     if (ctx.notes.length && result && typeof result === "object" && !Array.isArray(result)) {
       result.notes = (result.notes || []).concat(ctx.notes);
     }
+    failed = false;
     return result;
   } finally {
-    // One detach for the whole command, guaranteed even on error/abort.
-    await detachAll(ctx);
+    // One release for the whole command, guaranteed even on error/abort: a
+    // failed or cancelled command detaches at once.
+    await releaseAll(ctx, failed);
   }
 }
 
@@ -485,18 +506,38 @@ function checkNavigation(policy, url) {
 
 // --- chrome.debugger (CDP) session lifecycle --------------------------------
 //
-// A command attaches the debugger to a tab through ensureAttached and dispatch
-// ALWAYS detaches every tab it attached when the command ends — success,
-// thrown error, denied action or cancel — so the debugging banner cannot
-// linger. Only one command at a time holds the debugger on a tab: Chrome
-// allows one attachment per tab per extension, so a second command (a parallel
-// screenshot) waits for the first one's detach instead of failing with
-// "Another debugger is already attached".
+// A command attaches the debugger to a tab through ensureAttached, and dispatch
+// ALWAYS releases every tab it attached when the command ends — success,
+// thrown error, denied action or cancel. Only one command at a time holds the
+// debugger on a tab: Chrome allows one attachment per tab per extension, so a
+// second command (a parallel screenshot) waits for the first one's release
+// instead of failing with "Another debugger is already attached".
+//
+// Keeping the attachment between commands: a command that ends well leaves its
+// attachment in place, idle, for DEBUGGER_HOLD_MS; the next command on the tab
+// within that time adopts it (no attach, no Page.enable, and the focus
+// emulation of a background tab is still on), so a click / type / key /
+// screenshot sequence pays the attach cost once. The tab's lock is released
+// when the command ends either way, so a kept attachment never makes another
+// command wait. An idle attachment is detached when the grace runs out, and at
+// once when the tab closes, navigates to a page gocode may not act on or
+// leaves the gocode group, when the native host disconnects or a cancel
+// arrives, and when the user cancels the debugging banner (onDetach). A
+// command that failed or was cancelled detaches at once instead of keeping it.
 
 // tabLocks: tabId -> tail of the queue of commands waiting for that tab.
 const tabLocks = new Map();
 // sessions: tabId -> the ctx that has the debugger attached to it.
 const sessions = new Map();
+// attachments: tabId -> { owner, prepared, timer } for every tab gocode has
+// the debugger attached to: owner is the ctx using it (null while idle, with
+// timer the pending detach); prepared is what prepareTab found and did
+// ({ hidden, emulated }), which lasts as long as the attachment.
+const attachments = new Map();
+// detaching: tabId -> the detach in flight (an attach waits for it).
+const detaching = new Map();
+// Counters for diagnostics and the tests: attaches made, attachments reused.
+const attachStats = { attached: 0, reused: 0 };
 
 // lockTab waits for the tab's debugger turn and resolves with its release.
 function lockTab(tabId, op) {
@@ -517,20 +558,85 @@ function lockTab(tabId, op) {
   );
 }
 
-async function detachAll(ctx) {
+// detachTab detaches the debugger from a tab now (whoever had it) and forgets
+// the attachment.
+function detachTab(tabId) {
+  const att = attachments.get(tabId);
+  if (att) {
+    if (att.timer) clearTimeout(att.timer);
+    attachments.delete(tabId);
+  }
+  const p = Promise.resolve()
+    .then(() => chrome.debugger.detach({ tabId }))
+    .catch(() => {
+      // Already gone (tab closed, user cancelled) — nothing to clean up.
+    })
+    .then(() => {
+      if (detaching.get(tabId) === p) detaching.delete(tabId);
+    });
+  detaching.set(tabId, p);
+  return p;
+}
+
+// detachIdle detaches a tab's attachment if no command is using it.
+function detachIdle(tabId) {
+  const att = attachments.get(tabId);
+  if (att && !att.owner) return detachTab(tabId);
+  return Promise.resolve();
+}
+
+function detachAllIdle() {
+  for (const tabId of Array.from(attachments.keys())) detachIdle(tabId);
+}
+
+// actableUrl: a web page, or a blank page (what it may do is checked per
+// command). chrome://, file:, data: and the like are not.
+function actableUrl(url) {
+  return !!siteOf(url || "") || isBlankUrl(url) || /^blob:https?:/i.test(String(url || ""));
+}
+
+// mayKeep reports whether a tab's attachment may be kept after a command: the
+// tab is still gocode's and shows a page gocode may act on (not one the last
+// site policy denies).
+async function mayKeep(tabId) {
+  const tab = await getTab(tabId);
+  if (!tab || !actableUrl(tab.url) || (tab.pendingUrl && !actableUrl(tab.pendingUrl))) return false;
+  if (!isOwnedTab(tab, await ownership())) return false;
+  const { sitePolicy } = await sessionGet("sitePolicy");
+  if (!sitePolicy) return true;
+  const pol = sanitizePolicy(sitePolicy);
+  for (const u of [tab.url, tab.pendingUrl]) {
+    const site = u ? siteOf(u) : null;
+    if (site && hostListed(pol.denied, site)) return false;
+  }
+  return true;
+}
+
+// releaseAll ends a command's use of the debugger: each tab's attachment is
+// kept for the idle grace, or detached at once when the command failed or was
+// cancelled (or the tab may no longer be kept); then the tab's lock is
+// released.
+async function releaseAll(ctx, failed) {
   for (const tabId of Array.from(ctx.attached)) {
     if (sessions.get(tabId) === ctx) sessions.delete(tabId);
-    try {
-      await chrome.debugger.detach({ tabId });
-    } catch (e) {
-      // Already gone (tab closed, user cancelled) — nothing to clean up.
-    }
     ctx.attached.delete(tabId);
-    // Detaching also ends the focus emulation (see "background tabs").
-    ctx.prepared.delete(tabId);
     ctx.frames.delete(tabId);
     const release = ctx.releases.get(tabId);
     ctx.releases.delete(tabId);
+    const att = attachments.get(tabId);
+    let keep = DEBUGGER_HOLD_MS > 0 && !failed && !ctx.op.aborted && !!att && att.owner === ctx;
+    if (keep) {
+      try { keep = await mayKeep(tabId); } catch (e) { keep = false; }
+    }
+    if (keep && attachments.get(tabId) === att && !ctx.op.aborted) {
+      att.owner = null;
+      att.timer = setTimeout(() => {
+        if (attachments.get(tabId) === att && !att.owner) detachTab(tabId);
+      }, DEBUGGER_HOLD_MS);
+    } else if (att && attachments.get(tabId) === att && att.owner === ctx) {
+      // Detaching also ends the focus emulation (see "background tabs").
+      await detachTab(tabId);
+    }
     if (release) release();
   }
 }
@@ -538,8 +644,23 @@ async function detachAll(ctx) {
 async function ensureAttached(ctx, tabId) {
   if (ctx.attached.has(tabId)) return;
   const release = await lockTab(tabId, ctx.op);
+  let fresh = false;
   try {
-    await bounded(chrome.debugger.attach({ tabId }, "1.3"), CDP_TIMEOUT_MS, "attaching the debugger to tab " + tabId, ctx.op);
+    const pending = detaching.get(tabId);
+    if (pending) await bounded(pending, CDP_TIMEOUT_MS, "detaching the debugger from tab " + tabId, ctx.op);
+    const att = attachments.get(tabId);
+    if (att && !att.owner) {
+      // Kept from the previous command: adopt it.
+      if (att.timer) clearTimeout(att.timer);
+      att.timer = null;
+      att.owner = ctx;
+      attachStats.reused++;
+    } else {
+      await bounded(chrome.debugger.attach({ tabId }, "1.3"), CDP_TIMEOUT_MS, "attaching the debugger to tab " + tabId, ctx.op);
+      attachments.set(tabId, { owner: ctx, prepared: null, timer: null });
+      attachStats.attached++;
+      fresh = true;
+    }
   } catch (e) {
     release();
     const msg = String((e && e.message) || e);
@@ -554,10 +675,13 @@ async function ensureAttached(ctx, tabId) {
   ctx.attached.add(tabId);
   ctx.releases.set(tabId, release);
   sessions.set(tabId, ctx);
-  // Page events report JavaScript dialogs (see handleDialog).
-  try {
-    await cdp(ctx, tabId, "Page.enable", {}, 5000);
-  } catch (e) {}
+  // Page events report JavaScript dialogs (see handleDialog). A kept
+  // attachment has the Page domain on already.
+  if (fresh) {
+    try {
+      await cdp(ctx, tabId, "Page.enable", {}, 5000);
+    } catch (e) {}
+  }
 }
 
 // cdp sends one CDP command and resolves with its result (or rejects). It
@@ -610,11 +734,15 @@ if (chrome.debugger.onEvent) {
 chrome.debugger.onDetach.addListener((source, reason) => {
   const tabId = source && source.tabId;
   log("debugger detached", tabId, reason);
+  const att = attachments.get(tabId);
+  if (att) {
+    if (att.timer) clearTimeout(att.timer);
+    attachments.delete(tabId);
+  }
   const ctx = sessions.get(tabId);
   if (!ctx) return;
   sessions.delete(tabId);
   ctx.attached.delete(tabId);
-  ctx.prepared.delete(tabId);
   ctx.frames.delete(tabId);
   const release = ctx.releases.get(tabId);
   ctx.releases.delete(tabId);
@@ -1052,6 +1180,8 @@ if (chrome.tabs.onActivated) {
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   actingTabs.delete(tabId);
   openedBehind.delete(tabId);
+  // Chrome ends the debugging session with the tab; forget a kept attachment.
+  detachIdle(tabId);
   await removeFromList("ownedTabs", tabId);
   await removeFromList("openedTabs", tabId);
   await removeFromList("keptTabs", tabId);
@@ -1062,6 +1192,21 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
     delete next[String(tabId)];
     return { refCounters: next };
   });
+});
+
+// A kept (idle) attachment goes as soon as its tab shows a page gocode may not
+// act on, or leaves the gocode group (see "session lifecycle").
+chrome.tabs.onUpdated.addListener((tabId, info) => {
+  const att = attachments.get(tabId);
+  if (!att || att.owner || !info || (info.url === undefined && info.groupId === undefined)) return;
+  if (info.url !== undefined && !actableUrl(info.url)) {
+    detachIdle(tabId);
+    return;
+  }
+  mayKeep(tabId).then(
+    (ok) => { if (!ok) detachIdle(tabId); },
+    () => detachIdle(tabId)
+  );
 });
 
 function sleep(ms) {
@@ -1187,7 +1332,7 @@ async function showCursor(ctx, tabId, x, y) {
 //
 // crop { x, y, w, h, vw } takes only that rectangle (CSS pixels of a viewport
 // vw CSS pixels wide) of the source image.
-async function resizeImage(dataUrl, w, h, crop) {
+async function resizeImage(dataUrl, w, h, crop, type) {
   const blob = await (await fetch(dataUrl)).blob();
   const bmp = await createImageBitmap(blob);
   const canvas = new OffscreenCanvas(w, h);
@@ -1198,14 +1343,15 @@ async function resizeImage(dataUrl, w, h, crop) {
   } else {
     cx.drawImage(bmp, 0, 0, w, h);
   }
-  const out = await canvas.convertToBlob({ type: "image/png" });
+  const mime = type === "jpeg" ? "image/jpeg" : "image/png";
+  const out = await canvas.convertToBlob(type === "jpeg" ? { type: mime, quality: JPEG_QUALITY } : { type: mime });
   const bytes = new Uint8Array(await out.arrayBuffer());
   let bin = "";
   const CH = 0x8000;
   for (let i = 0; i < bytes.length; i += CH) {
     bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
   }
-  return "data:image/png;base64," + btoa(bin);
+  return "data:" + mime + ";base64," + btoa(bin);
 }
 
 // --- background tabs: making input and screenshots work, and checking delivery ---
@@ -1267,19 +1413,23 @@ const DELIVERY_EVENTS = {
 
 // prepareTab attaches the debugger to a tab gocode is about to drive or
 // capture and, when the page is hidden or unfocused, turns on focus emulation
-// (once per attach). It returns the viewport info and { hidden, emulated }:
-// hidden is the page's state before gocode changed it.
+// (once per attach; a kept attachment keeps it). It returns the viewport info
+// and { hidden, emulated }: hidden is the page's state before gocode changed
+// it. The page is asked every time, so a page that is hidden again although
+// the emulation is on (a navigation swapped its renderer while the attachment
+// was kept) gets the emulation once more.
 async function prepareTab(ctx, tabId) {
   await ensureAttached(ctx, tabId);
   const info = await viewportInfo(ctx, tabId);
-  let p = ctx.prepared.get(tabId);
+  const att = attachments.get(tabId);
+  let p = att && att.prepared;
   if (!p) {
     p = { hidden: false, emulated: false };
-    ctx.prepared.set(tabId, p);
+    if (att) att.prepared = p;
   }
   const hidden = info.vis === "hidden";
   if (hidden) p.hidden = true;
-  if (!p.emulated && (hidden || info.focus === false)) {
+  if ((!p.emulated || hidden) && (hidden || info.focus === false)) {
     try {
       await cdp(ctx, tabId, "Emulation.setFocusEmulationEnabled", { enabled: true }, 5000);
       p.emulated = true;
@@ -2966,19 +3116,108 @@ async function doComputer(params, policy, ctx) {
     if (secs > MAX_WAIT_SECONDS) out.notes = ["wait is capped at " + MAX_WAIT_SECONDS + "s; waited " + MAX_WAIT_SECONDS + "s."];
     return out;
   }
+  let out;
   if (action === "scroll_to") {
     if (!params.ref) throw new Error("scroll_to requires a ref");
     await pageCall(ctx, tabId, "scroll", { ref: params.ref }, "scrolling to " + params.ref);
-    return { action, ok: true };
+    out = { action, ok: true };
+  } else {
+    out = await inputAction(params, ctx, tabId, action);
   }
+  if (params.screenshot === true && AUTO_SHOT_ACTIONS.has(action) && !out.typedNothing) {
+    await shotAfter(ctx, tabId, policy, out);
+  }
+  delete out.typedNothing;
+  return out;
+}
 
+// AUTO_SHOT_ACTIONS are the page-changing computer actions that return a
+// screenshot of the page after them when asked to (params.screenshot true, which
+// the gocode session sets unless turned off).
+const AUTO_SHOT_ACTIONS = new Set([
+  "left_click", "click", "right_click", "middle_click", "double_click", "triple_click",
+  "type", "key", "keypress", "scroll", "scroll_to", "left_click_drag", "hover", "mouse_move",
+]);
+
+// shotAfter waits for the page to settle after an action and adds a
+// screenshot of it to the action's result: dataUrl plus shot (the capture's
+// viewport frame, as the screenshot action reports it). The capture is the
+// screenshot action's own (same downscaling to CSS pixels, same background-tab
+// path), as a JPEG. The action already happened, so a capture that fails
+// leaves the result as it is, with screenshotError saying why; so does a page
+// that is now on a site gocode may not read.
+async function shotAfter(ctx, tabId, policy, out) {
+  try {
+    await settle(ctx, tabId, !!out.background);
+    await checkTabSite(ctx, tabId, policy, "read");
+    const shot = await captureTab(ctx, tabId, { format: "jpeg" });
+    const { dataUrl, ...frame } = shot;
+    out.dataUrl = dataUrl;
+    out.shot = frame;
+  } catch (e) {
+    if (ctx.op.aborted) throw e;
+    out.screenshotError = String((e && e.message) || e);
+  }
+}
+
+// settle waits for the page to show what the action did: two animation frames
+// (at most SETTLE_FRAME_MS: a page that renders nothing does not hold it up)
+// and, when the action started a navigation, its load (at most SETTLE_NAV_MS)
+// and two more frames. A background tab renders no frames of its own until
+// the capture's screencast runs (which then waits for a fresh frame), so there
+// the wait is only long enough for the page's own handlers to run.
+async function settle(ctx, tabId, background) {
+  const ms = background ? Math.min(SETTLE_FRAME_MS, 100) : SETTLE_FRAME_MS;
+  await settleFrames(ctx, tabId, ms);
+  const t = await getTab(tabId);
+  if (!t) throw new Error("tab " + tabId + " was closed");
+  if (t.status === "loading" || (t.pendingUrl && t.pendingUrl !== t.url)) {
+    await waitForTabLoad(ctx, tabId, SETTLE_NAV_MS);
+    await settleFrames(ctx, tabId, ms);
+  }
+}
+
+// settleFrames waits for two frames in the page. A page being replaced by a
+// navigation does not run the script until the new document is there, so the
+// wait is bounded tightly (and is not taken for a page blocked by a dialog).
+async function settleFrames(ctx, tabId, ms) {
+  checkOp(ctx.op);
+  try {
+    const call = chrome.scripting.executeScript({ target: { tabId }, func: nextFrames, args: [ms] });
+    await bounded(call, ms + 200, "waiting for the page to settle", ctx.op);
+  } catch (e) {
+    if (ctx.op.aborted) throw e;
+    // Scripts are blocked on the page, or it is being replaced: a short wait.
+    await bounded(sleep(50), 1050, "waiting for the page to settle", ctx.op);
+  }
+}
+
+// nextFrames runs in the page: it resolves after two animation frames, or
+// after ms when the page renders none.
+function nextFrames(ms) {
+  return new Promise((resolve) => {
+    let done = false;
+    const end = () => {
+      if (!done) {
+        done = true;
+        resolve(true);
+      }
+    };
+    setTimeout(end, ms);
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => requestAnimationFrame(end));
+  });
+}
+
+// inputAction does one computer input action (click / type / key / scroll /
+// hover / drag) and reports how it reached the page.
+async function inputAction(params, ctx, tabId, action) {
   const kind = INPUT_KIND[action];
   if (!kind) throw new Error("unsupported computer action: " + action);
   return await acting(tabId, async () => {
     // Input actions require CDP; attach via the shared session (and make a
     // background tab take input, see "background tabs").
     const prep = await prepareTab(ctx, tabId);
-    if (kind === "text" && !params.text) return { action, tabId, ok: true }; // nothing to type
+    if (kind === "text" && !params.text) return { action, tabId, ok: true, typedNothing: true }; // nothing to type
     const pointer = kind !== "key" && kind !== "text";
     const coord = pointer ? await resolveCoord(ctx, tabId, params, action === "scroll") : null;
     const out = { action, tabId, ok: true };
@@ -3016,6 +3255,9 @@ async function doComputer(params, policy, ctx) {
           break;
         case "right_click":
           await mouseClick(ctx, tabId, coord, "right", 1, params.modifiers);
+          break;
+        case "middle_click":
+          await mouseClick(ctx, tabId, coord, "middle", 1, params.modifiers);
           break;
         case "double_click":
           await mouseClick(ctx, tabId, coord, "left", 2, params.modifiers);
@@ -3085,7 +3327,7 @@ async function doComputer(params, policy, ctx) {
 // INPUT_KIND maps each input action to the events that show it arrived (see
 // DELIVERY_EVENTS).
 const INPUT_KIND = {
-  left_click: "click", click: "click", right_click: "click", double_click: "click", triple_click: "click",
+  left_click: "click", click: "click", right_click: "click", middle_click: "click", double_click: "click", triple_click: "click",
   hover: "move", mouse_move: "move", left_click_drag: "drag", scroll: "wheel",
   type: "text", key: "key", keypress: "key",
 };
@@ -3099,9 +3341,10 @@ async function domAction(ctx, tabId, action, a) {
     case "left_click":
     case "click":
     case "right_click":
+    case "middle_click":
     case "double_click":
     case "triple_click": {
-      const button = action === "right_click" ? "right" : "left";
+      const button = action === "right_click" ? "right" : action === "middle_click" ? "middle" : "left";
       const clickCount = action === "double_click" ? 2 : action === "triple_click" ? 3 : 1;
       return await domFallback(ctx, tabId, "dom_click", { x, y, button, clickCount, mods: modifierMask(a.params.modifiers) }, what);
     }
@@ -3177,13 +3420,16 @@ async function doBatch(params, policy, ctx) {
   if (actions.length === 0) throw new Error("browser_batch requires at least one action");
   const results = [];
   let imageBytes = 0;
-  for (const act of actions) {
+  for (const [i, act] of actions.entries()) {
     const name = act && act.name;
     if (ctx.op.aborted) {
       results.push({ name, error: String(ctx.op.aborted.message || ctx.op.aborted) });
       break;
     }
     const input = { ...((act && act.input) || {}), sessionId: sessionOf(params) };
+    // Only the last step may return a screenshot after itself: the earlier
+    // steps' pages are gone by the time anyone looks.
+    if (i < actions.length - 1) delete input.screenshot;
     const notesBefore = ctx.notes.length;
     try {
       const r = await callSub(name, input, policy, ctx);
@@ -3383,6 +3629,8 @@ async function doTabsClose(params) {
   const pinned = params.groupId !== undefined && params.groupId !== null;
   const otherSession = pinned && sid && (await groupSession(params.groupId)) !== sid;
   const cleanup = params.cleanup === true;
+  // An end-of-session cleanup: nothing is driving the tabs any more.
+  if (cleanup) detachAllIdle();
   const opened = cleanup ? await tabIdList("openedTabs") : [];
   const kept = cleanup ? await tabIdList("keptTabs") : [];
   const allowed = [];
@@ -3443,7 +3691,9 @@ function scaleOf(v) {
 // rectangle, magnified to about the viewport's size (at most 4x) for a closer
 // look (zoom). opts.scale in [0.1, 1] shrinks the returned image. Either way
 // the result reports the full viewport size: coordinates for clicks are always
-// in that frame, never in the returned image's own pixels.
+// in that frame, never in the returned image's own pixels. opts.format "jpeg"
+// returns a JPEG (JPEG_QUALITY) instead of a PNG: the screenshot a computer
+// action returns after itself is one, a fraction of a PNG's size.
 //
 // A hidden (background) tab renders no frames of its own: it is captured with
 // focus emulation and a screencast running (see "background tabs"), and fails
@@ -3453,6 +3703,8 @@ function scaleOf(v) {
 async function captureTab(ctx, tabId, opts) {
   opts = opts || {};
   const scale = scaleOf(opts.scale);
+  const fmt = opts.format === "jpeg" ? "jpeg" : "png";
+  const enc = fmt === "jpeg" ? { format: "jpeg", quality: Math.round(JPEG_QUALITY * 100) } : { format: "png" };
   const prep = await prepareTab(ctx, tabId);
   const info = prep.info;
   const shoot = (params) =>
@@ -3471,7 +3723,7 @@ async function captureTab(ctx, tabId, opts) {
     const zoom = Math.min(4, Math.max(1, fit));
     // The clip is in document coordinates: add the scroll offset.
     const shot = await shoot({
-      format: "png",
+      ...enc,
       captureBeyondViewport: false,
       clip: { x: x0 + (info.sx || 0), y: y0 + (info.sy || 0), width: rw, height: rh, scale: zoom },
     });
@@ -3480,7 +3732,7 @@ async function captureTab(ctx, tabId, opts) {
     // A screencast frame is the whole viewport: crop the region out of it.
     const crop = shot.frame ? { x: x0, y: y0, w: rw, h: rh, vw: info.w || rw } : undefined;
     if (shot.frame) out.frame = true;
-    out.dataUrl = await resizeImage("data:image/png;base64," + shot.data, iw, ih, crop);
+    out.dataUrl = await resizeImage("data:image/" + (shot.frame ? "png" : fmt) + ";base64," + shot.data, iw, ih, crop, fmt);
     out.region = [x0, y0, x1, y1];
     out.zoom = Math.round(zoom * scale * 100) / 100;
     out.imageWidth = iw;
@@ -3488,15 +3740,16 @@ async function captureTab(ctx, tabId, opts) {
     return out;
   }
   const shot = await shoot({
-    format: "png",
+    ...enc,
     captureBeyondViewport: false,
   });
-  out.dataUrl = "data:image/png;base64," + shot.data;
+  // A screencast frame is a PNG.
+  out.dataUrl = "data:image/" + (shot.frame ? "png" : fmt) + ";base64," + shot.data;
   if (shot.frame) out.frame = true;
   if (info.w && info.h && ((info.dpr && info.dpr !== 1) || scale !== 1 || shot.frame)) {
     const iw = Math.max(1, Math.round(info.w * scale));
     const ih = Math.max(1, Math.round(info.h * scale));
-    out.dataUrl = await resizeImage(out.dataUrl, iw, ih);
+    out.dataUrl = await resizeImage(out.dataUrl, iw, ih, undefined, fmt);
     if (scale !== 1) {
       out.scale = scale;
       out.imageWidth = iw;

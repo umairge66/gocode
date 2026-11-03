@@ -57,7 +57,14 @@ func (d *Dispatcher) browserClient() browser.Client {
 func (d *Dispatcher) registerBrowserTools() {
 	raw := d.browserClient()
 	c := browser.PolicyClient{Inner: raw, Policy: d.sitePolicy}
-	batch := browser.BatchTool{Client: c, Approve: d.approveSite(protocol.ToolBrowserBatch)}
+	autoShot := !d.BrowserNoScreenshotAfterActions
+	batch := browser.BatchTool{Client: c, Approve: d.approveSite(protocol.ToolBrowserBatch), AutoScreenshot: autoShot}
+	computer := BrowserComputerAdapter(browser.ComputerTool{Client: c, AutoScreenshot: autoShot})
+	batchAdapter := BrowserBatchAdapter(batch)
+	if !autoShot {
+		computer.description = computerDescriptionNoAutoShot
+		batchAdapter.description = batchDescriptionNoAutoShot
+	}
 
 	d.Register(protocol.ToolBrowserNavigate, d.siteChecked(protocol.ToolBrowserNavigate, BrowserNavigateAdapter(browser.NavigateTool{Client: c, ListTabs: true})))
 	d.Register(protocol.ToolBrowserReadPage, d.siteChecked(protocol.ToolBrowserReadPage, BrowserReadPageAdapter(protocol.ToolBrowserReadPage, browser.ReadPageTool{Client: c, Method: string(protocol.ToolBrowserReadPage)})))
@@ -66,10 +73,10 @@ func (d *Dispatcher) registerBrowserTools() {
 	d.Register(protocol.ToolBrowserTabsCreate, d.siteChecked(protocol.ToolBrowserTabsCreate, BrowserTabsCreateAdapter(browser.TabsCreateTool{Client: c})))
 	d.Register(protocol.ToolBrowserTabsClose, BrowserTabsCloseAdapter(browser.TabsCloseTool{Client: c}))
 	d.Register(protocol.ToolBrowserScreenshot, d.screenshotPathChecked(d.siteChecked(protocol.ToolBrowserScreenshot, BrowserScreenshotAdapter(browser.ScreenshotTool{Client: c}))))
-	d.Register(protocol.ToolBrowserComputer, d.screenshotPathChecked(d.siteChecked(protocol.ToolBrowserComputer, BrowserComputerAdapter(browser.ComputerTool{Client: c}))))
+	d.Register(protocol.ToolBrowserComputer, d.screenshotPathChecked(d.siteChecked(protocol.ToolBrowserComputer, computer)))
 	d.Register(protocol.ToolBrowserFind, d.siteChecked(protocol.ToolBrowserFind, BrowserFindAdapter(browser.FindTool{Client: c})))
 	d.Register(protocol.ToolBrowserFormInput, d.siteChecked(protocol.ToolBrowserFormInput, BrowserFormInputAdapter(browser.FormInputTool{Client: c})))
-	d.Register(protocol.ToolBrowserBatch, d.siteChecked(protocol.ToolBrowserBatch, BrowserBatchAdapter(batch)))
+	d.Register(protocol.ToolBrowserBatch, d.siteChecked(protocol.ToolBrowserBatch, batchAdapter))
 
 	if d.BrowserNotice != nil {
 		for _, tool := range []protocol.Tool{

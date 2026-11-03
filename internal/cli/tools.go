@@ -79,6 +79,9 @@ func newSessionDispatcher(mode toolreg.Mode, env *Env, caller agent.ModelCaller,
 		// Tell the user once per process when the connected extension's
 		// version differs from the one built into this gocode.
 		toolrun.WithBrowserNotice(sessionExtensionVersionCheck(sessionChromeConfigDir(env)).Notice),
+		// A screenshot after each page-changing computer action, unless the
+		// "chrome" settings or the environment turn it off (chromesettings.go).
+		toolrun.WithBrowserScreenshotAfterActions(screenshotAfterActions(env)),
 		// Grep/Glob engine from the "search" settings (bundled ugrep by
 		// default; see search.go), and `grep` in Bash running that ugrep.
 		toolrun.WithSearchEngine(search),

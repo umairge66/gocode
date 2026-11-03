@@ -247,6 +247,12 @@ func (h chromeMcpHandlers) handler(name string) mcpserver.ToolHandler {
 				// mode has no user to ask for.
 				return toMCP(browser.Result{}, errors.New("save_to is not available over MCP; use save_to_disk"))
 			}
+			// No screenshot after actions by default here (AutoScreenshot
+			// off): an MCP client of this tool surface expects a click to
+			// answer with text and takes screenshots when it wants them, so
+			// an image it did not ask for would only cost it tokens. The
+			// schema (chromemcp_tools.json) is unchanged; a client that sends
+			// screenshot:true still gets one.
 			return toMCP(browser.ComputerTool{Client: c, Saver: h.saver}.Execute(ctx, in))
 		}
 	case "browser_batch":
