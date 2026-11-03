@@ -29,6 +29,9 @@ type ToolResult struct {
 	// LoadedTools, on a ToolSearch result, names the deferred tools whose
 	// definitions the result loads (carried onto the tool_result block).
 	LoadedTools []string
+	// PermissionDenied marks an is_error result for a call the permission
+	// check refused: the tool never ran, so it is not a tool failure.
+	PermissionDenied bool
 }
 
 // ToolDispatcher runs one tool by name with the given JSON input and returns
@@ -70,6 +73,13 @@ type PermissionHook interface {
 	PreToolUse(ctx context.Context, call ToolUse) (PermissionDecision, error)
 	// PostToolUse observes a completed (allowed) call's result.
 	PostToolUse(ctx context.Context, call ToolUse, result ToolResult)
+}
+
+// ToolFailureHook is an optional PermissionHook capability: it observes a call
+// whose tool failed (an is_error result that is not a permission denial), in
+// place of PostToolUse.
+type ToolFailureHook interface {
+	PostToolUseFailure(ctx context.Context, call ToolUse, result ToolResult)
 }
 
 // dispatchTurn runs every tool_use block of an assistant turn and returns the
@@ -197,11 +207,17 @@ func (l *Loop) runOne(ctx context.Context, call ToolUse) ContentBlock {
 		// A loop-fatal dispatch error is still surfaced to the model as an
 		// is_error tool_result, matching "Error calling
 		// tool (<name>): <message>".
-		return ToolResultBlock(call.ID, fmt.Sprintf("Error calling tool (%s): %v", call.Name, err), true)
+		msg := fmt.Sprintf("Error calling tool (%s): %v", call.Name, err)
+		if fh, ok := l.Hooks.(ToolFailureHook); ok {
+			fh.PostToolUseFailure(ctx, call, ToolResult{Content: msg, IsError: true})
+		}
+		return ToolResultBlock(call.ID, msg, true)
 	}
 
 	if l.Hooks != nil && !result.IsError {
 		l.Hooks.PostToolUse(ctx, call, result)
+	} else if fh, ok := l.Hooks.(ToolFailureHook); ok && result.IsError && !result.PermissionDenied {
+		fh.PostToolUseFailure(ctx, call, result)
 	}
 
 	b := ToolResultBlockWithImages(call.ID, result.Content, result.IsError, result.Images)

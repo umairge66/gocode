@@ -92,6 +92,10 @@ type Decision struct {
 	// The dispatcher runs the classifier; without one the
 	// call is asked (interactive) or denied, never silently allowed.
 	Classify bool
+	// SafetyAsk marks an ask that is a safety screen although its ReasonType
+	// is not ReasonSafetyCheck (the network-path read screen): like a safety
+	// check, neither an allow rule nor a hook allow settles it.
+	SafetyAsk bool
 }
 
 // RuleBehavior is the behavior a settings rule grants.
@@ -584,7 +588,8 @@ type Decider struct {
 //     Classify set, decided by the dispatcher's classifier), else ask.
 //
 // Then mergeHook applies the hook's verdict by strictness (deny>ask>allow), so
-// a PreToolUse hook deny overrides a base allow.
+// a PreToolUse hook deny overrides a base allow; a hook allow settles only an
+// allow-rule-satisfiable ask (HookAllowSettles) and never a deny.
 func (d *Decider) Decide(call Call, mode Mode, rules RuleSet, hook *hooks.Decision) Decision {
 	base := d.decideBase(call, mode, rules)
 	return mergeHook(base, hook)
@@ -664,7 +669,7 @@ func (d *Decider) decideBase(call Call, mode Mode, rules RuleSet) Decision {
 				if rs.SafetyCheck {
 					rt = ReasonSafetyCheck
 				}
-				return Decision{Behavior: BehaviorAsk, ReasonType: rt, Reason: rs.Message}
+				return Decision{Behavior: BehaviorAsk, ReasonType: rt, Reason: rs.Message, SafetyAsk: true}
 			}
 		}
 	}
@@ -917,6 +922,12 @@ func (d *Decider) descriptor(tool protocol.Tool) (ToolDescriptor, bool) {
 // mergeHook applies a PreToolUse hook's verdict onto the base decision by
 // strictness: deny > ask > allow. A hook with no opinion (nil or BehaviorNone)
 // leaves the base untouched; a hook updatedInput is always carried through.
+//
+// One exception to strictness: a hook "allow" settles an "ask" that an allow
+// rule would also have settled (see HookAllowSettles) — the hook answers the
+// prompt. It never overrides a deny (deny rules, path-guard and session-file
+// refusals, dontAsk), an ask rule, a safety-check ask, a plan-mode hold or a
+// tool whose call is itself a question to the user.
 func mergeHook(base Decision, hook *hooks.Decision) Decision {
 	if hook == nil {
 		return base
@@ -928,6 +939,13 @@ func mergeHook(base Decision, hook *hooks.Decision) Decision {
 	if !ok {
 		return base // BehaviorNone / unknown: no opinion.
 	}
+	if hb == BehaviorAllow && HookAllowSettles(base) {
+		out := Decision{Behavior: BehaviorAllow, ReasonType: ReasonHook, Reason: hook.Reason, UpdatedInput: base.UpdatedInput}
+		if out.Reason == "" {
+			out.Reason = "A PreToolUse hook allowed this tool call."
+		}
+		return out
+	}
 	if strictness(hb) <= strictness(base.Behavior) {
 		return base // base is at least as strict; keep it.
 	}
@@ -937,6 +955,25 @@ func mergeHook(base Decision, hook *hooks.Decision) Decision {
 		out.Reason = "A PreToolUse hook " + string(hb) + "ed this tool call."
 	}
 	return out
+}
+
+// HookAllowSettles reports whether a PreToolUse hook's "allow" settles base,
+// an "ask": only a plain not-granted-yet ask, the kind an allow rule would
+// also settle — the mode default (auto mode's classifier review included), a
+// read outside the working directories, an edit acceptEdits does not cover.
+// An ask rule, a safety check (SafetyAsk included), a plan-mode hold and a
+// RequiresUserInteraction tool still ask.
+func HookAllowSettles(base Decision) bool {
+	if base.Behavior != BehaviorAsk || base.SafetyAsk {
+		return false
+	}
+	switch base.ReasonType {
+	case ReasonSafetyCheck, ReasonRule, ReasonUserInteraction, ReasonHook:
+		return false
+	case ReasonMode:
+		return base.Mode != ModePlan
+	}
+	return true
 }
 
 // hookBehavior maps a hooks.Behavior onto a toolreg Behavior. BehaviorNone (and

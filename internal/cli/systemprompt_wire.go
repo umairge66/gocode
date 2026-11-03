@@ -191,9 +191,18 @@ type nestedMemoryHooks struct {
 }
 
 var (
-	_ agent.PermissionHook = (*nestedMemoryHooks)(nil)
-	_ agent.TurnEndHook    = (*nestedMemoryHooks)(nil)
+	_ agent.PermissionHook  = (*nestedMemoryHooks)(nil)
+	_ agent.TurnEndHook     = (*nestedMemoryHooks)(nil)
+	_ agent.ToolFailureHook = (*nestedMemoryHooks)(nil)
 )
+
+// PostToolUseFailure forwards a failed call to the inner hooks when they
+// observe failures.
+func (h *nestedMemoryHooks) PostToolUseFailure(ctx context.Context, call agent.ToolUse, result agent.ToolResult) {
+	if fh, ok := h.inner.(agent.ToolFailureHook); ok {
+		fh.PostToolUseFailure(ctx, call, result)
+	}
+}
 
 // withNestedMemory wraps inner; a nil tracker returns inner unchanged.
 func withNestedMemory(inner agent.PermissionHook, nested *projectmemory.Nested, cwd string) agent.PermissionHook {

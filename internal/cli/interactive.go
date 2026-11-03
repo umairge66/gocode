@@ -508,13 +508,21 @@ func runInteractiveSession(env *Env, s *interactiveSession, initialPrompt string
 		defer cancel()
 		prog.Send(ui.SetStatusLineMsg{Line: s.renderStatusLine(ctx, env)})
 	}
+	// The idle_prompt Notification hooks run once the session has waited for
+	// input for a minute after a turn (hookevents.go).
+	idle := newIdleNotifier(rt.hooks, idlePromptDelay)
+	defer idle.disarm()
 	drv.onTurnEnd = func() {
 		refreshStatusLine()
 		// The card style's info footer: the branch may have changed this turn.
 		prog.Send(footerInfo(env))
+		idle.arm()
 	}
 	// Keep the autocompact window on the active model (after /model or /provider).
-	drv.onBeforeTurn = rt.syncCompactionWindow
+	drv.onBeforeTurn = func() {
+		idle.disarm()
+		rt.syncCompactionWindow()
+	}
 
 	model.OnSubmit = func(input string) { drv.submit(input) }
 	// Shell mode ("!"): the command runs locally and its exchange joins the

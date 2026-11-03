@@ -321,6 +321,17 @@ type Dispatcher struct {
 	// may be called concurrently. Optional.
 	OnPermissionDenied func(call agent.ToolUse)
 
+	// PermissionDeniedHook, when set, is told of every refused call with the
+	// denial message the model receives (the session runs the
+	// PermissionDenied hooks from it). It may be called concurrently.
+	// Optional; a subagent's dispatcher takes the parent's.
+	PermissionDeniedHook func(ctx context.Context, call agent.ToolUse, reason string)
+
+	// OnPermissionPrompt, when set, is told just before a permission prompt
+	// is shown to the user (the session runs the Notification hooks from
+	// it). Optional; a subagent's dispatcher takes the parent's.
+	OnPermissionPrompt func(ctx context.Context, req PermissionRequest)
+
 	// Mods is the plugin hooks-module engine's seam (internal/mods): its
 	// tool.call hooks run around every call and its tool.check hooks over
 	// every permission verdict. Optional; see mods.go.
@@ -726,13 +737,30 @@ func (d *Dispatcher) SetBackgroundTasks(m *bgtask.Manager) {
 	d.registerTaskTools()
 }
 
-// denied reports a refused call to OnPermissionDenied and returns its
-// is_error result.
-func (d *Dispatcher) denied(call agent.ToolUse, msg string) agent.ToolResult {
+// denied reports a refused call to OnPermissionDenied and the
+// PermissionDeniedHook and returns its is_error result, marked as a
+// permission denial. call carries the input that was checked (a PreToolUse
+// hook's rewrite, if any).
+func (d *Dispatcher) denied(ctx context.Context, call agent.ToolUse, msg string) agent.ToolResult {
 	if d.OnPermissionDenied != nil {
 		d.OnPermissionDenied(call)
 	}
-	return errResult(msg)
+	if d.PermissionDeniedHook != nil {
+		d.PermissionDeniedHook(ctx, call, msg)
+	}
+	res := errResult(msg)
+	res.PermissionDenied = true
+	return res
+}
+
+// rewrittenCall returns call with a PreToolUse hook's updatedInput in place
+// of its input, and whether there was one.
+func rewrittenCall(call agent.ToolUse, hd *hooks.Decision) (agent.ToolUse, bool) {
+	if hd == nil || hd.UpdatedInput == nil {
+		return call, false
+	}
+	call.Input = json.RawMessage(hd.UpdatedInput)
+	return call, true
 }
 
 // dispatch is Dispatch beneath the hooks modules' tool.call (mods.go). It looks up the tool, resolves the
@@ -768,14 +796,6 @@ func (d *Dispatcher) dispatch(ctx context.Context, call agent.ToolUse) (agent.To
 		return errResult(fmt.Sprintf("Error: invalid input for %s: %v", call.Name, perr)), nil
 	}
 
-	pc := toolreg.Call{
-		Tool:        tool,
-		Rule:        desc.Rule(),
-		RuleContent: ruleContent,
-		Path:        path,
-		Op:          op,
-	}
-
 	// 3. Optional PreToolUse hook. A hook error is loop-fatal.
 	var hookDec *hooks.Decision
 	if d.Hook != nil {
@@ -786,13 +806,34 @@ func (d *Dispatcher) dispatch(ctx context.Context, call agent.ToolUse) (agent.To
 		hookDec = hd
 	}
 
+	// 3a. A hook's updatedInput is the call that runs, so it is the call that
+	//     is checked: the permission fields come from the rewritten input, and
+	//     the deny rules, path guard, sandbox refinement and any prompt all see
+	//     it. A rewrite never reaches the tool past the checks the original
+	//     input went through.
+	checked, rewritten := rewrittenCall(call, hookDec)
+	if rewritten {
+		ruleContent, path, op, perr = ad.permission(checked.Input)
+		if perr != nil {
+			return errResult(fmt.Sprintf("Error: invalid input for %s (as rewritten by a PreToolUse hook): %v", call.Name, perr)), nil
+		}
+	}
+
+	pc := toolreg.Call{
+		Tool:        tool,
+		Rule:        desc.Rule(),
+		RuleContent: ruleContent,
+		Path:        path,
+		Op:          op,
+	}
+
 	// 4. Permission decision (mode + rules + hook merge). Mode and Rules are read
 	//    under the lock: concurrency-safe tools are dispatched in parallel, and a
 	//    prompt answer can mutate both.
 	decision := d.Decider.Decide(pc, d.CurrentMode(), d.SnapshotRules(), hookDec)
-	decision = d.modsCheck(ctx, call, decision)
+	decision = d.modsCheck(ctx, checked, decision)
 	if ad.refine != nil {
-		pc, desc, decision = ad.refine(call.Input, pc, desc, decision)
+		pc, desc, decision = ad.refine(checked.Input, pc, desc, decision)
 	}
 	switch decision.Behavior {
 	case toolreg.BehaviorAllow:
@@ -800,25 +841,22 @@ func (d *Dispatcher) dispatch(ctx context.Context, call agent.ToolUse) (agent.To
 	case toolreg.BehaviorAsk:
 		// An "ask" is resolved by prompting the user (interactive host) or, with
 		// no prompter, kept as a denial carrying the how-to-allow message.
-		if out := d.resolveAsk(ctx, pc, call.Input, desc, decision); !out.allowed {
-			return d.denied(call, out.denyMessage), nil
+		if out := d.resolveAsk(ctx, pc, checked.Input, desc, decision); !out.allowed {
+			return d.denied(ctx, checked, out.denyMessage), nil
 		}
 	default: // BehaviorDeny
 		msg := decision.Reason
 		if msg == "" {
 			msg = "Permission to use " + call.Name + " has been denied."
 		}
-		return d.denied(call, msg), nil
+		return d.denied(ctx, checked, msg), nil
 	}
 
-	// 5. Allowed. A PreToolUse hook may have rewritten the input.
-	input := call.Input
-	if decision.UpdatedInput != nil {
-		input = decision.UpdatedInput
-	}
-	d.trackFileEdit(tool, ad, input, path, decision.UpdatedInput != nil)
-	lines := d.beginLineCount(tool, ad, input, path, decision.UpdatedInput != nil)
-	edited := d.beginFileEdit(tool, ad, input, path, decision.UpdatedInput != nil)
+	// 5. Allowed: run the input that was checked (the hook's rewrite, if any).
+	input := checked.Input
+	d.trackFileEdit(tool, ad, input, path, false)
+	lines := d.beginLineCount(tool, ad, input, path, false)
+	edited := d.beginFileEdit(tool, ad, input, path, false)
 
 	// A tool that can emit image content (Read) uses runImages; every other
 	// tool uses run and returns a plain string result (unchanged).

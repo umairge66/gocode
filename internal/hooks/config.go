@@ -7,22 +7,54 @@ import "encoding/json"
 // keys of the user's hooks config.
 type Event string
 
-// The supported lifecycle event set. Only the general-purpose lifecycle events
-// are modelled; further events (PostToolBatch, PermissionRequest,
-// PostToolUseFailure, Elicitation, Pre/PostModelSwitch, WorktreeCreate/Remove,
-// CwdChanged, ConfigChange, Setup, ...) are not.
+// The modelled lifecycle event set. Only the general-purpose lifecycle events
+// are modelled; further events (PostToolBatch, PermissionRequest, Elicitation,
+// Pre/PostModelSwitch, WorktreeCreate/Remove, CwdChanged, ConfigChange,
+// Setup, ...) are not. Not every modelled event is fired: see FiredEvents.
 const (
-	EventPreToolUse       Event = "PreToolUse"
-	EventPostToolUse      Event = "PostToolUse"
-	EventUserPromptSubmit Event = "UserPromptSubmit"
-	EventNotification     Event = "Notification"
-	EventStop             Event = "Stop"
-	EventSubagentStop     Event = "SubagentStop"
-	EventSubagentStart    Event = "SubagentStart"
-	EventSessionStart     Event = "SessionStart"
-	EventSessionEnd       Event = "SessionEnd"
-	EventPreCompact       Event = "PreCompact"
+	EventPreToolUse         Event = "PreToolUse"
+	EventPostToolUse        Event = "PostToolUse"
+	EventPostToolUseFailure Event = "PostToolUseFailure"
+	EventPermissionDenied   Event = "PermissionDenied"
+	EventUserPromptSubmit   Event = "UserPromptSubmit"
+	EventNotification       Event = "Notification"
+	EventStop               Event = "Stop"
+	EventSubagentStop       Event = "SubagentStop"
+	EventSubagentStart      Event = "SubagentStart"
+	EventSessionStart       Event = "SessionStart"
+	EventSessionEnd         Event = "SessionEnd"
+	EventPreCompact         Event = "PreCompact"
 )
+
+// firedEvents are the events gocode actually runs hooks for, in lifecycle
+// order. A hook configured for any other event name is loaded but never runs
+// (SubagentStop included: a subagent's loop runs no turn-end hooks).
+var firedEvents = []Event{
+	EventSessionStart,
+	EventUserPromptSubmit,
+	EventPreToolUse,
+	EventPermissionDenied,
+	EventPostToolUse,
+	EventPostToolUseFailure,
+	EventNotification,
+	EventSubagentStart,
+	EventPreCompact,
+	EventStop,
+	EventSessionEnd,
+}
+
+// FiredEvents returns the events gocode runs hooks for, in lifecycle order.
+func FiredEvents() []Event { return append([]Event(nil), firedEvents...) }
+
+// IsFired reports whether gocode runs hooks configured for ev.
+func IsFired(ev Event) bool {
+	for _, e := range firedEvents {
+		if e == ev {
+			return true
+		}
+	}
+	return false
+}
 
 // HookType discriminates the kinds of hook. The config schema validates a hook
 // only as an opaque object; the type discrimination happens at dispatch time,
@@ -44,8 +76,15 @@ const (
 	HookTypeMCPPrompt HookType = "mcp_prompt"
 )
 
-// OnFailure selects what happens when a command hook fails (exits non-zero in a
-// way that is not the dedicated blocking code 2). The schema default is "block".
+// OnFailure selects what happens when a command or http hook fails to give
+// any answer: it timed out, could not be started, was killed by a signal, or
+// (http) its request could not be sent. With "block" (the default) such a
+// failure blocks the action of a blocking event (PreToolUse,
+// UserPromptSubmit, PreCompact; see BlocksOnFailure) with a message naming
+// the hook; with "continue" the failure is only reported and the action
+// proceeds. A hook that ran and answered with an error (a non-zero exit other
+// than 2, a non-2xx HTTP status, unreadable JSON) is a non-blocking error
+// either way, and exit code 2 always blocks. See CommandHook.FailureBlocks.
 type OnFailure string
 
 const (
@@ -81,12 +120,16 @@ type CommandHook struct {
 	// (command, http, mcp_tool and prompt executors).
 	TimeoutSeconds int `json:"timeout,omitempty"`
 
-	// OnFailure governs non-blocking failures. Defaults to OnFailureBlock when
-	// empty (see NormalizeOnFailure).
-	OnFailure OnFailure `json:"on_failure,omitempty"`
+	// OnFailure governs a hook that failed to answer (see OnFailure). Defaults
+	// to OnFailureBlock when empty (see NormalizeOnFailure).
+	//
+	// The multi-word keys are spelled camelCase (the Claude Code-compatible
+	// form the /hooks editor writes); the snake_case spellings are accepted
+	// too (see UnmarshalJSON).
+	OnFailure OnFailure `json:"onFailure,omitempty"`
 
 	// StatusMessage is shown to the user while the hook runs.
-	StatusMessage string `json:"status_message,omitempty"`
+	StatusMessage string `json:"statusMessage,omitempty"`
 
 	// Once, when true, runs the hook at most once per session (see
 	// OnceTracker and hookhost's dedupe).
@@ -100,9 +143,9 @@ type CommandHook struct {
 	// delivered: when the background run finishes, its decision is fed back
 	// into the (possibly stopped) session — a "rewake" — carrying RewakeMessage
 	// and RewakeSummary. See runner.go (RewakeSink) and hookhost.
-	AsyncRewake   bool   `json:"async_rewake,omitempty"`
-	RewakeMessage string `json:"rewake_message,omitempty"`
-	RewakeSummary string `json:"rewake_summary,omitempty"`
+	AsyncRewake   bool   `json:"asyncRewake,omitempty"`
+	RewakeMessage string `json:"rewakeMessage,omitempty"`
+	RewakeSummary string `json:"rewakeSummary,omitempty"`
 
 	// URL is the endpoint an http hook POSTs its payload to.
 	URL string `json:"url,omitempty"`
@@ -124,8 +167,47 @@ type CommandHook struct {
 	// (optionally templated) argument object.
 	Server     string          `json:"server,omitempty"`
 	Tool       string          `json:"tool,omitempty"`
-	PromptName string          `json:"prompt_name,omitempty"`
+	PromptName string          `json:"promptName,omitempty"`
 	Input      json.RawMessage `json:"input,omitempty"`
+}
+
+// hookKeyAliases pairs each multi-word hook key's camelCase spelling (the
+// Claude Code-compatible one, written by the /hooks editor and used in plugin
+// hooks files) with the snake_case spelling gocode also accepts. When a hook
+// object carries both, the camelCase value wins.
+var hookKeyAliases = []struct{ camel, snake string }{
+	{"onFailure", "on_failure"},
+	{"statusMessage", "status_message"},
+	{"asyncRewake", "async_rewake"},
+	{"rewakeMessage", "rewake_message"},
+	{"rewakeSummary", "rewake_summary"},
+	{"promptName", "prompt_name"},
+	{"allowedEnvVars", "allowed_env_vars"},
+}
+
+// UnmarshalJSON decodes a hook object, accepting both the camelCase and the
+// snake_case spelling of its multi-word keys (see hookKeyAliases).
+func (h *CommandHook) UnmarshalJSON(b []byte) error {
+	type plain CommandHook
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	for _, a := range hookKeyAliases {
+		v, ok := raw[a.snake]
+		if !ok {
+			continue
+		}
+		delete(raw, a.snake)
+		if _, has := raw[a.camel]; !has {
+			raw[a.camel] = v
+		}
+	}
+	norm, err := json.Marshal(raw)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(norm, (*plain)(h))
 }
 
 // NormalizeType returns the hook's effective type, defaulting an empty Type to
@@ -143,6 +225,34 @@ func (h CommandHook) NormalizeOnFailure() OnFailure {
 		return OnFailureContinue
 	}
 	return OnFailureBlock
+}
+
+// FailureBlocks reports whether d, the outcome of running h, is a failure to
+// answer (Decision.Failed) that h's on_failure turns into a block. Only
+// command and http hooks have an on_failure setting; whether the block
+// applies also depends on the event (BlocksOnFailure).
+func (h CommandHook) FailureBlocks(d Decision) bool {
+	if !d.Failed || h.NormalizeOnFailure() != OnFailureBlock {
+		return false
+	}
+	switch h.NormalizeType() {
+	case HookTypeCommand, HookTypeHTTP:
+		return true
+	}
+	return false
+}
+
+// BlocksOnFailure reports whether a failed hook with on_failure "block"
+// blocks ev: the events whose block stops the action itself (the tool call,
+// the prompt, the compaction). On other events the failure is only reported,
+// since a block there would prevent nothing (a PostToolUse runs after the
+// tool) or would keep the turn going (Stop).
+func BlocksOnFailure(ev Event) bool {
+	switch ev {
+	case EventPreToolUse, EventUserPromptSubmit, EventPreCompact:
+		return true
+	}
+	return false
 }
 
 // MatcherGroup binds a matcher string to a list of hooks. In the normalized

@@ -24,18 +24,45 @@ type hookEventInfo struct {
 	summary string
 }
 
-// hookViewEvents are the events gocode runs hooks for, in lifecycle order.
+// hookViewEvents are the events gocode runs hooks for, in lifecycle order,
+// followed by the modelled events it does not fire (marked as such).
 var hookViewEvents = []hookEventInfo{
 	{hooks.EventPreToolUse, "Before tool execution"},
+	{hooks.EventPermissionDenied, "When a tool call is denied permission"},
 	{hooks.EventPostToolUse, "After tool execution"},
-	{hooks.EventNotification, "When notifications are sent"},
+	{hooks.EventPostToolUseFailure, "After a tool call fails"},
+	{hooks.EventNotification, "When gocode asks for permission or waits for input"},
 	{hooks.EventUserPromptSubmit, "When the user submits a prompt"},
 	{hooks.EventSessionStart, "When a new session is started"},
 	{hooks.EventStop, "Right before gocode concludes its response"},
 	{hooks.EventSubagentStart, "When a subagent (Agent tool call) is started"},
-	{hooks.EventSubagentStop, "Right before a subagent (Agent tool call) concludes its response"},
 	{hooks.EventPreCompact, "Before conversation compaction"},
 	{hooks.EventSessionEnd, "When a session is ending"},
+	{hooks.EventSubagentStop, unfiredEventSummary},
+}
+
+// unfiredEventSummary describes an event gocode does not fire.
+const unfiredEventSummary = "Not fired by gocode: hooks configured here never run"
+
+// hookViewList returns the events the /hooks view lists: hookViewEvents,
+// then any other configured event (gocode fires none of them), sorted.
+func hookViewList(byEvent map[hooks.Event][]hookhost.ConfiguredHook) []hookEventInfo {
+	list := append([]hookEventInfo(nil), hookViewEvents...)
+	known := map[hooks.Event]bool{}
+	for _, e := range list {
+		known[e.event] = true
+	}
+	var extra []string
+	for ev := range byEvent {
+		if !known[ev] {
+			extra = append(extra, string(ev))
+		}
+	}
+	sort.Strings(extra)
+	for _, ev := range extra {
+		list = append(list, hookEventInfo{hooks.Event(ev), unfiredEventSummary})
+	}
+	return list
 }
 
 // hooksReadOnlyNote heads the /hooks views.
@@ -59,7 +86,7 @@ func (d *interactiveDialogs) hooksView() {
 	for {
 		withHooks := 0
 		var items []ui.ListItem
-		for _, ev := range hookViewEvents {
+		for _, ev := range hookViewList(byEvent) {
 			n := len(byEvent[ev.event])
 			detail := ev.summary
 			if n > 0 {
@@ -100,7 +127,7 @@ func hookEventSummary(ev hooks.Event) string {
 			return e.summary
 		}
 	}
-	return ""
+	return unfiredEventSummary
 }
 
 // hookEventView shows an event's matchers (or straight its hooks when none of

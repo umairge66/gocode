@@ -11,8 +11,12 @@
 //
 //   - The hook *config* schema. The command-hook object
 //     is {type:"command", command, args?, if?, shell?, timeout?,
-//     on_failure:"continue"|"block" (default "block"), status_message?, once?,
-//     async?, ...}, and the normalized event map is an array of
+//     onFailure:"continue"|"block" (default "block"), statusMessage?, once?,
+//     async?, ...} (multi-word keys are camelCase; the snake_case spellings
+//     on_failure, status_message, ... are accepted too). onFailure decides
+//     whether a hook that gave no answer (timed out, could not start, was
+//     killed) blocks a PreToolUse / UserPromptSubmit / PreCompact action; see
+//     OnFailure. The normalized event map is an array of
 //     {event, matchers:[{matcher?, hooks:[...]}]}. The settings-file form keys
 //     the same matcher groups by event name. See config.go.
 //
@@ -36,9 +40,10 @@
 //
 // Scope. This package implements the generally-applicable core: the config
 // shape, tool-name matching, hook execution and the exit-code + JSON decision
-// model, for the lifecycle event set (PreToolUse,
-// PostToolUse, UserPromptSubmit, Notification, Stop, SubagentStop,
-// SubagentStart, SessionStart, SessionEnd, PreCompact). All four
+// model, for the lifecycle event set (PreToolUse, PostToolUse,
+// PostToolUseFailure, PermissionDenied, UserPromptSubmit, Notification, Stop,
+// SubagentStop, SubagentStart, SessionStart, SessionEnd, PreCompact; all but
+// SubagentStop are fired, see FiredEvents). All four
 // user-configurable hook types are modelled:
 //
 //   - command — a shell command: stdin JSON in, stdout JSON out, context

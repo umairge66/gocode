@@ -238,26 +238,27 @@ func (d *Dispatcher) dispatchExternal(ctx context.Context, call agent.ToolUse) (
 		}
 		hookDec = hd
 	}
+	// An external tool's rules are whole-tool rules (no content), so a
+	// rewrite changes no permission field; the checks and any prompt still
+	// see the input that runs.
+	checked, _ := rewrittenCall(call, hookDec)
 	decision := d.Decider.Decide(pc, d.CurrentMode(), d.SnapshotRules(), hookDec)
-	decision = d.modsCheck(ctx, call, decision)
+	decision = d.modsCheck(ctx, checked, decision)
 	switch decision.Behavior {
 	case toolreg.BehaviorAllow:
 		// fall through
 	case toolreg.BehaviorAsk:
-		if out := d.resolveAsk(ctx, pc, call.Input, desc, decision); !out.allowed {
-			return d.denied(call, out.denyMessage), nil
+		if out := d.resolveAsk(ctx, pc, checked.Input, desc, decision); !out.allowed {
+			return d.denied(ctx, checked, out.denyMessage), nil
 		}
 	default: // BehaviorDeny
 		msg := decision.Reason
 		if msg == "" {
 			msg = "Permission to use " + call.Name + " has been denied."
 		}
-		return d.denied(call, msg), nil
+		return d.denied(ctx, checked, msg), nil
 	}
-	input := call.Input
-	if decision.UpdatedInput != nil {
-		input = decision.UpdatedInput
-	}
+	input := checked.Input
 	if len(input) == 0 {
 		input = json.RawMessage(`{}`)
 	}

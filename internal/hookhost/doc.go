@@ -30,11 +30,19 @@
 //   - Default timeout is 600000 ms (10 minutes); UserPromptSubmit uses
 //     30000 ms. A hook's own `timeout` (seconds) overrides it, capped at
 //     2^31-1 ms.
-//   - The match query is tool_name for PreToolUse/PostToolUse, trigger for
-//     PreCompact, source for SessionStart, reason for SessionEnd and
-//     notification_type for Notification; UserPromptSubmit / Stop /
-//     SubagentStop have no match query, so every group runs regardless of its
-//     matcher.
+//   - The match query is tool_name for PreToolUse / PostToolUse /
+//     PostToolUseFailure / PermissionDenied, trigger for PreCompact, source
+//     for SessionStart, reason for SessionEnd, agent_type for SubagentStart
+//     and notification_type for Notification ("permission_prompt",
+//     "idle_prompt"); UserPromptSubmit / Stop / SubagentStop have no match
+//     query, so every group runs regardless of its matcher.
+//   - A hook that gives no answer (timed out, could not start, was killed;
+//     an http request that could not be sent) blocks a PreToolUse,
+//     UserPromptSubmit or PreCompact action under its onFailure "block" (the
+//     default), with a message naming the hook; onFailure "continue" only
+//     reports it. Other non-zero exits stay non-blocking errors.
+//   - Hooks configured for events gocode never fires load with one warning
+//     (LoadWarnings).
 //   - A plugin hook's command has ${GOCODE_PLUGIN_ROOT} (and the CLAUDE_
 //     spelling) substituted, and the child process gets GOCODE_PLUGIN_ROOT /
 //     GOCODE_PLUGIN_DATA (plus CLAUDE_* twins); every hook gets

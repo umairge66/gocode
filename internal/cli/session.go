@@ -432,6 +432,9 @@ func buildSession(ctx context.Context, env *Env, s *printSession, caller agent.M
 	for _, e := range r.hooks.LoadErrors() {
 		r.notices = append(r.notices, "Hook configuration error: "+e.Error())
 	}
+	for _, w := range r.hooks.LoadWarnings() {
+		r.notices = append(r.notices, "Hook configuration warning: "+w)
+	}
 
 	// (3) MCP.
 	dynamic, derrs := parseMCPConfigFlags(s.MCPConfig)
@@ -510,6 +513,9 @@ func buildSession(ctx context.Context, env *Env, s *printSession, caller agent.M
 	r.dispatcher = newSessionDispatcher(s.Mode, env, live, opts...)
 	r.wireChromeTabs(env, sessionID, cfg.interactive)
 	r.dispatcher.Hook = r.hooks.PreToolUseCall
+	// PermissionDenied and Notification (permission_prompt) hooks
+	// (hookevents.go).
+	wireDispatcherHookEvents(r.dispatcher, r.hooks)
 	// The auto mode safety classifier (automodeclassifier.go): same provider
 	// and key as the session.
 	r.dispatcher.SetAutoClassifier(newAutoModeClassifier(env, live, func() string { return r.projectMemory }))
@@ -722,6 +728,10 @@ func (r *sessionRuntime) wireAgentTools(env *Env, s *printSession, caller agent.
 	if r.mods != nil {
 		at.SpawnHooks = append(at.SpawnHooks, r.mods.SpawnHook())
 	}
+	// SubagentStart hooks run last, for a spawn no check refused.
+	if r.hooks != nil {
+		at.SpawnHooks = append(at.SpawnHooks, subagentStartHook(r.hooks))
+	}
 	wts := agenttool.NewGitWorktrees()
 	wts.Cwd = func() string { return paths.cwd }
 	at.Worktrees = wts
@@ -919,6 +929,8 @@ func (r *sessionRuntime) childDispatcherFrom(scopes []toolrun.InheritedScope, ro
 	opts = append(opts, extra...)
 	d := toolrun.New(parent.CurrentMode(), parent.PersistentRules(), opts...)
 	d.Hook = parent.Hook
+	d.PermissionDeniedHook = parent.PermissionDeniedHook
+	d.OnPermissionPrompt = parent.OnPermissionPrompt
 	d.Mods = parent.Mods
 	has := func(name string) bool {
 		for _, a := range allowed {
