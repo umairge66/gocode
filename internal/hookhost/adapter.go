@@ -11,7 +11,8 @@ import (
 )
 
 // LoopHooks adapts a Host to the agent loop's seams. It implements
-// agent.PermissionHook (Pre/PostToolUse) and agent.TurnEndHook.
+// agent.PermissionHook (Pre/PostToolUse), agent.ToolFailureHook
+// (PostToolUseFailure) and agent.TurnEndHook.
 //
 // The agent's TurnEndHook fires after every tool-result round (not when the
 // model ends its turn), so LoopHooks uses it to deliver PostToolUse feedback
@@ -34,8 +35,9 @@ type LoopHooks struct {
 }
 
 var (
-	_ agent.PermissionHook = (*LoopHooks)(nil)
-	_ agent.TurnEndHook    = (*LoopHooks)(nil)
+	_ agent.PermissionHook  = (*LoopHooks)(nil)
+	_ agent.TurnEndHook     = (*LoopHooks)(nil)
+	_ agent.ToolFailureHook = (*LoopHooks)(nil)
 )
 
 // PreToolUse implements agent.PermissionHook. A deny or ask becomes a denied
@@ -69,16 +71,31 @@ func (l *LoopHooks) PostToolUse(ctx context.Context, call agent.ToolUse, result 
 		return
 	}
 	resp, _ := json.Marshal(result.Content)
-	r := l.Host.PostToolUse(ctx, call, resp)
+	l.queue(hooks.EventPostToolUse, call, l.Host.PostToolUse(ctx, call, resp))
+}
+
+// PostToolUseFailure implements agent.ToolFailureHook: the PostToolUseFailure
+// hooks see the failed call's error text; their feedback is queued for
+// OnTurnEnd like PostToolUse's.
+func (l *LoopHooks) PostToolUseFailure(ctx context.Context, call agent.ToolUse, result agent.ToolResult) {
+	if l.Host == nil {
+		return
+	}
+	l.queue(hooks.EventPostToolUseFailure, call, l.Host.PostToolUseFailure(ctx, call, result.Content))
+}
+
+// queue records a post-tool hook result's feedback for OnTurnEnd.
+func (l *LoopHooks) queue(ev hooks.Event, call agent.ToolUse, r *Result) {
 	if r == nil {
 		return
 	}
+	label := string(ev) + ":" + call.Name
 	var notes []string
 	if r.Blocked() && r.Reason != "" {
-		notes = append(notes, "PostToolUse:"+call.Name+" hook blocking error: "+r.Reason)
+		notes = append(notes, label+" hook blocking error: "+r.Reason)
 	}
 	if r.AdditionalContext != "" {
-		notes = append(notes, "PostToolUse:"+call.Name+" hook additional context: "+r.AdditionalContext)
+		notes = append(notes, label+" hook additional context: "+r.AdditionalContext)
 	}
 	l.mu.Lock()
 	l.pending = append(l.pending, notes...)

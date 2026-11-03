@@ -20,8 +20,9 @@ func decision(r *Result) *hooks.Decision {
 
 // PreToolUse runs the PreToolUse hooks matching toolName. The returned
 // decision (nil = no hook matched) is in the shape toolreg.Decider merges:
-// Behavior deny/ask/allow/none, Reason, UpdatedInput. The error is always nil
-// (hook failures are non-blocking); it exists to match toolrun.PreToolUseFunc.
+// Behavior deny/ask/allow/none, Reason, UpdatedInput. A hook that failed to
+// answer comes back as a deny under its onFailure "block" (the default). The
+// error is always nil; it exists to match toolrun.PreToolUseFunc.
 func (h *Host) PreToolUse(ctx context.Context, toolName string, input json.RawMessage) (*hooks.Decision, error) {
 	return h.preToolUse(ctx, agent.ToolUse{Name: toolName, Input: input})
 }
@@ -45,6 +46,35 @@ func (h *Host) preToolUse(ctx context.Context, call agent.ToolUse) (*hooks.Decis
 func (h *Host) PostToolUse(ctx context.Context, call agent.ToolUse, response json.RawMessage) *Result {
 	p := hooks.Payload{HookEventName: hooks.EventPostToolUse, ToolName: call.Name, ToolInput: normInput(call.Input), ToolUseID: call.ID, ToolResponse: normInput(response)}
 	return h.Run(ctx, p, call.Name, true)
+}
+
+// PostToolUseFailure runs the PostToolUseFailure hooks matching call.Name
+// after a tool call failed (an is_error result that was not a permission
+// denial). errText is the failure as the model saw it, without the
+// <tool_use_error> brackets. Like PostToolUse, AdditionalContext and a
+// blocking Reason are feedback for the model; the call has already happened.
+func (h *Host) PostToolUseFailure(ctx context.Context, call agent.ToolUse, errText string) *Result {
+	errText = strings.TrimSuffix(strings.TrimPrefix(errText, "<tool_use_error>"), "</tool_use_error>")
+	p := hooks.Payload{HookEventName: hooks.EventPostToolUseFailure, ToolName: call.Name, ToolInput: normInput(call.Input), ToolUseID: call.ID, Error: errText}
+	return h.Run(ctx, p, call.Name, true)
+}
+
+// PermissionDenied runs the PermissionDenied hooks matching call.Name after
+// the permission check refused the call (a deny verdict, or an ask that was
+// not approved). reason is the denial message the model receives. The hooks
+// observe the denial; they cannot reverse it.
+func (h *Host) PermissionDenied(ctx context.Context, call agent.ToolUse, reason string) *Result {
+	p := hooks.Payload{HookEventName: hooks.EventPermissionDenied, ToolName: call.Name, ToolInput: normInput(call.Input), ToolUseID: call.ID, Reason: reason}
+	return h.Run(ctx, p, call.Name, true)
+}
+
+// SubagentStart runs the SubagentStart hooks matching agentType when a
+// subagent is about to be spawned. agentID is sent when already known.
+// Context(r) is additional context for the subagent; the hooks cannot block
+// the spawn.
+func (h *Host) SubagentStart(ctx context.Context, agentID, agentType string) *Result {
+	p := hooks.Payload{HookEventName: hooks.EventSubagentStart, AgentID: agentID, AgentType: agentType}
+	return h.Run(ctx, p, agentType, true)
 }
 
 // UserPromptSubmit runs the UserPromptSubmit hooks. When the result is
@@ -90,11 +120,19 @@ func (h *Host) PreCompact(ctx context.Context, trigger, customInstructions strin
 	return h.Run(ctx, p, trigger, true)
 }
 
-// Notification runs the Notification hooks. notificationType is the match
-// query (hooks.Payload has no notification_type field, so it is not sent on
-// stdin).
+// Notification types gocode sends.
+const (
+	// NotificationPermissionPrompt: a permission prompt is waiting for the user.
+	NotificationPermissionPrompt = "permission_prompt"
+	// NotificationIdlePrompt: the session has been waiting for input.
+	NotificationIdlePrompt = "idle_prompt"
+)
+
+// Notification runs the Notification hooks. notificationType is both the
+// match query and the payload's notification_type. Notification hooks cannot
+// block anything.
 func (h *Host) Notification(ctx context.Context, message, title, notificationType string) *Result {
-	p := hooks.Payload{HookEventName: hooks.EventNotification, Message: message, Title: title}
+	p := hooks.Payload{HookEventName: hooks.EventNotification, Message: message, Title: title, NotificationType: notificationType}
 	return h.Run(ctx, p, notificationType, notificationType != "")
 }
 

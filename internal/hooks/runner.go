@@ -35,12 +35,16 @@ type Payload struct {
 	ToolUseID    string          `json:"tool_use_id,omitempty"`
 	ToolResponse json.RawMessage `json:"tool_response,omitempty"` // PostToolUse
 
+	// PostToolUseFailure: the failed call's error text.
+	Error string `json:"error,omitempty"`
+
 	// UserPromptSubmit.
 	Prompt string `json:"prompt,omitempty"`
 
-	// Notification.
-	Message string `json:"message,omitempty"`
-	Title   string `json:"title,omitempty"`
+	// Notification ("permission_prompt" | "idle_prompt" | ...).
+	Message          string `json:"message,omitempty"`
+	Title            string `json:"title,omitempty"`
+	NotificationType string `json:"notification_type,omitempty"`
 
 	// Stop / SubagentStop.
 	StopHookActive       *bool  `json:"stop_hook_active,omitempty"`
@@ -54,7 +58,8 @@ type Payload struct {
 	CustomInstructions string `json:"custom_instructions,omitempty"`
 
 	// SessionEnd ("clear"|"resume"|"logout"|"prompt_input_exit"|"other"),
-	// SessionStart ("startup"|"resume"|...).
+	// SessionStart ("startup"|"resume"|...); PermissionDenied carries the
+	// denial message here.
 	Reason string `json:"reason,omitempty"`
 	Source string `json:"source,omitempty"` // SessionStart source
 }
@@ -174,9 +179,21 @@ func (r *Runner) Run(ctx context.Context, hook CommandHook, payload Payload, opt
 				Continue: true,
 				ErrKind:  ErrTimeout,
 				Err:      "hook timed out",
+				Failed:   true,
 			}, res, nil
 		case errors.As(runErr, &exitErr):
 			res.ExitCode = exitErr.ExitCode()
+			if res.ExitCode < 0 && ctx.Err() == nil {
+				// Killed by a signal (ExitCode -1): the hook crashed rather
+				// than answering with an exit status.
+				return Decision{
+					Behavior: BehaviorNone,
+					Continue: true,
+					ErrKind:  ErrExit,
+					Err:      "hook was killed: " + runErr.Error(),
+					Failed:   true,
+				}, res, nil
+			}
 		default:
 			// The shell itself could not be started.
 			res.SpawnFailed = true
@@ -186,6 +203,7 @@ func (r *Runner) Run(ctx context.Context, hook CommandHook, payload Payload, opt
 				Continue: true,
 				ErrKind:  ErrSpawnFailed,
 				Err:      runErr.Error(),
+				Failed:   true,
 			}, res, nil
 		}
 	}

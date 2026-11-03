@@ -96,12 +96,12 @@ func (r *HTTPRunner) Run(ctx context.Context, hook CommandHook, payload Payload,
 		if ctx.Err() != nil {
 			return Decision{
 				Behavior: BehaviorNone, Continue: true,
-				ErrKind: ErrTimeout, Err: "http hook timed out",
+				ErrKind: ErrTimeout, Err: "http hook timed out", Failed: true,
 			}, HTTPResult{Aborted: true, Duration: dur}, nil
 		}
 		return Decision{
 			Behavior: BehaviorNone, Continue: true,
-			ErrKind: ErrExit, Err: err.Error(),
+			ErrKind: ErrExit, Err: err.Error(), Failed: true,
 		}, HTTPResult{Duration: dur}, nil
 	}
 	defer resp.Body.Close()

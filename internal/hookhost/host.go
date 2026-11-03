@@ -227,6 +227,9 @@ type Host struct {
 	byEvent    map[hooks.Event][]registered
 	skillHooks map[string]bool
 	loadErrors []error
+	// warnings are non-fatal load notes (hooks on events gocode never
+	// fires), computed once at construction.
+	warnings []string
 
 	mu      sync.RWMutex
 	session SessionInfo
@@ -323,7 +326,24 @@ func New(opts Options) *Host {
 		}
 		h.loadPlugin(opts, p)
 	}
+	h.warnings = unfiredEventWarnings(h.byEvent)
 	return h
+}
+
+// unfiredEventWarnings returns one warning naming the configured events
+// gocode never fires (their hooks load but never run), or none.
+func unfiredEventWarnings(byEvent map[hooks.Event][]registered) []string {
+	var names []string
+	for ev, rs := range byEvent {
+		if len(rs) > 0 && !hooks.IsFired(ev) {
+			names = append(names, string(ev))
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	sort.Strings(names)
+	return []string{"hooks are configured for events gocode never fires, so they will not run: " + strings.Join(names, ", ")}
 }
 
 // loadPlugin reads a plugin's hooks file(s) and registers their hooks with
@@ -595,6 +615,10 @@ func (h *Host) Configured() []ConfiguredHook {
 
 // LoadErrors reports problems met while loading hook sources.
 func (h *Host) LoadErrors() []error { return append([]error(nil), h.loadErrors...) }
+
+// LoadWarnings reports non-fatal notes from loading the hook sources: hooks
+// configured for events gocode never fires (see hooks.FiredEvents).
+func (h *Host) LoadWarnings() []string { return append([]string(nil), h.warnings...) }
 
 // Disabled reports whether policy turned every hook off.
 func (h *Host) Disabled() bool { return h.disabled }

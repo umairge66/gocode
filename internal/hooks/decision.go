@@ -106,6 +106,12 @@ type Decision struct {
 	// ErrKind / Err describe a non-blocking failure. ErrKind is empty on success.
 	ErrKind ErrorKind
 	Err     string
+
+	// Failed marks a hook that gave no answer at all: it timed out, could not
+	// be started, was killed by a signal, or (http) its request could not be
+	// sent. The hook's on_failure decides whether that blocks (see
+	// CommandHook.FailureBlocks); the runner itself leaves Behavior none.
+	Failed bool
 }
 
 // DecisionOptions carries context that affects interpretation.

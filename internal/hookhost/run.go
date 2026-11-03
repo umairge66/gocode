@@ -18,9 +18,9 @@ type Result struct {
 	hooks.Decision
 	// Ran is the number of hooks executed synchronously.
 	Ran int
-	// Errors are the non-blocking failures (spawn failure, timeout, non-2
-	// exit, malformed JSON), one entry per failed hook, for surfacing to the
-	// user.
+	// Errors are the hook failures (spawn failure, timeout, non-2 exit,
+	// malformed JSON), one entry per failed hook, for surfacing to the user
+	// — including a failure that the hook's onFailure turned into a block.
 	Errors []string
 	// PlainOutputs are the trimmed plain-text (non-JSON) stdouts of hooks
 	// that exited 0, in configuration order.
@@ -128,8 +128,10 @@ func onceKey(ev hooks.Event, r registered) string {
 // toolEvents are the events whose input carries a tool name, so the only events
 // an "if" guard can be evaluated for.
 var toolEvents = map[hooks.Event]bool{
-	hooks.EventPreToolUse:  true,
-	hooks.EventPostToolUse: true,
+	hooks.EventPreToolUse:         true,
+	hooks.EventPostToolUse:        true,
+	hooks.EventPostToolUseFailure: true,
+	hooks.EventPermissionDenied:   true,
 }
 
 // guardAllows evaluates a hook's "if" guard for the event/query. It returns
@@ -295,6 +297,13 @@ func (h *Host) Run(ctx context.Context, payload hooks.Payload, query string, has
 				merged.ErrKind, merged.Err = d.ErrKind, d.Err
 			}
 		}
+		// A hook that gave no answer (timed out, could not start, crashed)
+		// blocks the action under its onFailure "block" (the default), so a
+		// broken guard never silently lets the action through.
+		if run[i].hook.FailureBlocks(d) && hooks.BlocksOnFailure(ev) {
+			d.Behavior = hooks.BehaviorDeny
+			d.Reason = failureBlockReason(ev, run[i], d)
+		}
 		if o.res.ExitCode == 0 && d.ErrKind == "" {
 			if t := strings.TrimSpace(o.res.Stdout); t != "" && !strings.HasPrefix(t, "{") {
 				merged.PlainOutputs = append(merged.PlainOutputs, t)
@@ -363,5 +372,27 @@ func hookLabel(ev hooks.Event, r registered) string {
 	if r.plugin != nil {
 		l += " (plugin " + r.plugin.ID() + ")"
 	}
-	return l + " `" + r.hook.Command + "`"
+	what := r.hook.Command
+	switch r.hook.NormalizeType() {
+	case hooks.HookTypeHTTP:
+		what = r.hook.URL
+	case hooks.HookTypeMCPTool:
+		what = r.hook.Server + "/" + r.hook.Tool
+	case hooks.HookTypeMCPPrompt:
+		what = r.hook.Server + "/" + r.hook.PromptName
+	case hooks.HookTypePrompt:
+		what = "prompt"
+	}
+	return l + " `" + what + "`"
+}
+
+// failureBlockReason is the block message of a hook that failed to answer
+// under onFailure "block".
+func failureBlockReason(ev hooks.Event, r registered, d hooks.Decision) string {
+	why := string(d.ErrKind)
+	if d.Err != "" {
+		why += ": " + d.Err
+	}
+	return hookLabel(ev, r) + " failed (" + why + `) and its onFailure is "block" (the default), so the action was blocked. ` +
+		`Fix the hook, or set "onFailure": "continue" on it to let the action proceed when it fails.`
 }

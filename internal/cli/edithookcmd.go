@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/umairge66/gocode/internal/fsfacade"
+	"github.com/umairge66/gocode/internal/hooks"
 	"github.com/umairge66/gocode/internal/settingsload"
 	"github.com/umairge66/gocode/internal/settingspolicy"
 )
@@ -36,8 +37,28 @@ const (
 // session.
 const editHookSessionRefusal = "This setting cannot be changed from an editor started inside a gocode session. Start the editor outside the session and try again."
 
-// hookEvents is the list of known hook events.
-var hookEvents = []string{"PreToolUse", "PostToolUse", "PostToolUseFailure", "PostToolBatch", "Notification", "UserPromptSubmit", "UserPromptExpansion", "SessionStart", "SessionEnd", "Stop", "StopFailure", "SubagentStart", "SubagentStop", "PreCompact", "PostCompact", "PreModelSwitch", "PostModelSwitch", "PermissionRequest", "PermissionDenied", "Setup", "TeammateIdle", "TaskCreated", "TaskCompleted", "Elicitation", "ElicitationResult", "ConfigChange", "WorktreeCreate", "WorktreeRemove", "InstructionsLoaded", "CwdChanged", "FileChanged", "DirectoryAdded", "MessageDisplay"}
+// hookEvents is the list of known hook events: the events gocode fires
+// (hooks.FiredEvents, in lifecycle order) first, then the events a settings
+// file may name that gocode never fires. An edit for one of the latter is
+// applied with a warning (hookEventWarning).
+var hookEvents = append(firedHookEventNames(), "PostToolBatch", "UserPromptExpansion", "StopFailure", "SubagentStop", "PostCompact", "PreModelSwitch", "PostModelSwitch", "PermissionRequest", "Setup", "TeammateIdle", "TaskCreated", "TaskCompleted", "Elicitation", "ElicitationResult", "ConfigChange", "WorktreeCreate", "WorktreeRemove", "InstructionsLoaded", "CwdChanged", "FileChanged", "DirectoryAdded", "MessageDisplay")
+
+func firedHookEventNames() []string {
+	var out []string
+	for _, ev := range hooks.FiredEvents() {
+		out = append(out, string(ev))
+	}
+	return out
+}
+
+// hookEventWarning is the warning for an edit on an event gocode never
+// fires, or "".
+func hookEventWarning(ev string) string {
+	if hooks.IsFired(hooks.Event(ev)) {
+		return ""
+	}
+	return fmt.Sprintf("edit_hook: gocode never fires %s, so this hook will not run", ev)
+}
 
 // hookSchemaKeys lists the fields of each hook type's schema; parsing keeps
 // only these (the rest is dropped), which is what the equality checks see.
@@ -62,8 +83,11 @@ var editHookSources = []string{"userSettings", "projectSettings", "localSettings
 
 // editHookReply is the JSON reply.
 type editHookReply struct {
-	OK      bool            `json:"ok"`
-	Error   string          `json:"error,omitempty"`
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
+	// Warning, on a successful edit, is a non-fatal note (the event is one
+	// gocode never fires).
+	Warning string          `json:"warning,omitempty"`
 	Code    string          `json:"code,omitempty"`
 	Refusal *editHookRefuse `json:"refusal,omitempty"`
 }
@@ -128,6 +152,11 @@ func runEditHookCmd(env *Env, t []string) int {
 		fmt.Fprintln(env.Stderr, reply.Error)
 		return 1
 	}
+	if reply.Warning != "" {
+		writeJSONLine(env.Stdout, reply)
+		fmt.Fprintln(env.Stderr, reply.Warning)
+		return 0
+	}
 	fmt.Fprintln(env.Stdout, `{"ok":true}`)
 	return 0
 }
@@ -176,7 +205,10 @@ func runHookEdit(env *Env, edit any) editHookReply {
 	}
 	switch outcome {
 	case "applied":
-		return editHookReply{OK: true}
+		if req.Op == "remove" {
+			return editHookReply{OK: true}
+		}
+		return editHookReply{OK: true, Warning: hookEventWarning(req.Event)}
 	case "duplicate":
 		return editHookFail("duplicate", fmt.Sprintf("edit_hook: an identical hook is already configured for %s in %s", req.Event, req.Source), nil)
 	case "twin-by-headers":
