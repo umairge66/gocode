@@ -26,9 +26,17 @@ it refuses to publish a version that has no section here.
   `--agents <json>`.
 - MCP: image results reach the model, read-only tools run in parallel,
   `alwaysLoad` keeps a server's tools out of tool search, and a server's tool
-  list is refreshed when it changes.
-- Hook events PostToolUseFailure, PermissionDenied, SubagentStart and
-  Notification. `/hooks` warns about events gocode never fires.
+  list is refreshed when it changes. With tool search on, servers whose tools
+  are deferred connect in the background, and ToolSearch waits for them.
+- Hook events PostToolUseFailure, PermissionDenied, SubagentStart,
+  SubagentStop and Notification. `/hooks` warns about events gocode never
+  fires.
+- Print mode forwards subagent messages with `parent_tool_use_id`, a host's
+  approval can change the call's input (it is re-checked), and `initialize`
+  reports the available models and where the API key comes from.
+- The daemon's `permission-response` op answers a background session's open
+  permission prompt.
+- The status line's `session_name` shows the `/rename` title.
 - A PreToolUse hook can return `permissionDecision: "defer"`: the turn ends
   without running the call, print mode reports `stop_reason: "tool_deferred"`
   with the call in `deferred_tool_use`, and `gocode -p --resume <id>` (no
@@ -37,13 +45,18 @@ it refuses to publish a version that has no section here.
 ### Changed
 
 - **Prompt caching in the main loop and subagents.** The system prompt and
-  the conversation are cached on Anthropic, so later turns cost less.
+  the conversation are cached on Anthropic, Bedrock and OpenRouter, so later
+  turns cost less.
+- The auto-mode classifier is told when an MCP tool declares itself
+  destructive or read-only.
+- A `Skill(name)` deny rule also refuses the skill when you type `/name`.
+- `/memory` lists only the memory files of the selected setting sources.
 - Session cost now includes subagents, compaction and side queries, and is
   restored on resume.
 - Large MCP output is saved to a file in full instead of being cut at about
   100,000 characters.
-- MCP tool results, MCP prompts and subagent reports have harness tags and fake turn
-  markers neutralized before the model reads them.
+- MCP tool results, tool definitions and prompts, and subagent reports, have
+  harness tags and fake turn markers neutralized before the model reads them.
 
 ### Fixed
 
