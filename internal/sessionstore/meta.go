@@ -285,7 +285,7 @@ func (s *Store) LoadAt(cwd, id, at string) ([]agent.Message, error) {
 	if err != nil {
 		return nil, err
 	}
-	chain, ok := activeEntries(parseEntries(s.rewriteMovedPaths(data)), at)
+	chain, ok := activeEntries(parseEntriesLazy(s.rewriteMovedPaths(data)), at)
 	if !ok {
 		return nil, fmt.Errorf("%w: message %s in session %s", ErrNotFound, at, id)
 	}

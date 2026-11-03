@@ -133,6 +133,25 @@ type entry struct {
 
 	// DeferredToolUse is a deferred-tool-use line's call (deferred.go).
 	DeferredToolUse *deferredToolUse `json:"deferredToolUse,omitempty"`
+
+	// line is the entry's raw transcript line when it was read lazily
+	// (parseEntriesLazy) and its Message is not decoded yet; see msg.
+	line []byte
+}
+
+// msg returns the entry's message, decoding it from the raw line on first
+// use when the entry was read lazily.
+func (e *entry) msg() *agent.Message {
+	if e.Message == nil && e.line != nil {
+		var w struct {
+			Message *agent.Message `json:"message"`
+		}
+		if json.Unmarshal(e.line, &w) == nil {
+			e.Message = w.Message
+		}
+		e.line = nil
+	}
+	return e.Message
 }
 
 // compactMetadata is a compact_boundary's metadata (userContext is never set,
@@ -301,25 +320,12 @@ func (s *Store) OpenAt(cwd, id, atUUID string, seededLen int) (*Session, error) 
 	// Continue the parent-uuid chain from the last line already on disk, so the
 	// resumed turns link to the transcript they extend.
 	if sess.created {
-		if data, err := s.fs.ReadFile(sess.path); err == nil {
-			sess.lastUUID = lastChainUUID(data)
-		}
+		sess.lastUUID = s.lastChainUUIDAt(sess.path)
 	}
 	if atUUID != "" {
 		sess.lastUUID = atUUID
 	}
 	return sess, nil
-}
-
-// lastChainUUID returns the uuid of the last well-formed line that carries one.
-func lastChainUUID(data []byte) string {
-	last := ""
-	forEachEntry(data, func(e entry) {
-		if e.UUID != "" {
-			last = e.UUID
-		}
-	})
-	return last
 }
 
 // AppendMessages appends msgs as transcript lines and flushes. It is safe to call
@@ -548,7 +554,7 @@ func jsonEscapedPath(p string) []byte {
 // the model sees, tolerating blank and malformed lines (a truncated last line
 // from a crash is simply skipped) and restarting at each compact_boundary.
 func decodeMessages(data []byte) []agent.Message {
-	chain, _ := activeEntries(parseEntries(data), "")
+	chain, _ := activeEntries(parseEntriesLazy(data), "")
 	return chainMessages(chain)
 }
 
@@ -556,11 +562,12 @@ func decodeMessages(data []byte) []agent.Message {
 // meta lines.
 func chainMessages(chain []entry) []agent.Message {
 	var out []agent.Message
-	for _, e := range chain {
-		if e.Message == nil || e.Message.Role == "" {
+	for i := range chain {
+		m := chain[i].msg()
+		if m == nil || m.Role == "" {
 			continue
 		}
-		out = append(out, *e.Message)
+		out = append(out, *m)
 	}
 	return out
 }
@@ -572,22 +579,65 @@ func parseEntries(data []byte) []entry {
 	return out
 }
 
-// forEachEntry decodes each well-formed JSONL line in order, skipping blank
-// and corrupt ones.
-func forEachEntry(data []byte, fn func(entry)) {
-	sc := bufio.NewScanner(bytes.NewReader(data))
-	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-	for sc.Scan() {
-		line := bytes.TrimSpace(sc.Bytes())
-		if len(line) == 0 {
-			continue
+// parseEntriesLazy is parseEntries without the message bodies: each entry
+// keeps its raw line and decodes its message only when msg is called. A long
+// transcript is mostly messages that a compaction already summarized, and
+// decoding them all just to follow the active chain multiplied the memory a
+// resume needed.
+func parseEntriesLazy(data []byte) []entry {
+	var out []entry
+	eachLine(data, func(line []byte) {
+		var le struct {
+			entry
+			Message lazyMessage `json:"message"`
 		}
+		if err := json.Unmarshal(line, &le); err != nil {
+			return
+		}
+		e := le.entry
+		if le.Message {
+			e.line = line
+		}
+		out = append(out, e)
+	})
+	return out
+}
+
+// lazyMessage records that a line has a non-null message without decoding it.
+type lazyMessage bool
+
+func (m *lazyMessage) UnmarshalJSON(b []byte) error {
+	*m = lazyMessage(string(b) != "null")
+	return nil
+}
+
+// eachLine calls fn with each non-blank line of data, split in place.
+func eachLine(data []byte, fn func([]byte)) {
+	for len(data) > 0 {
+		var line []byte
+		if i := bytes.IndexByte(data, '\n'); i >= 0 {
+			line, data = data[:i], data[i+1:]
+		} else {
+			line, data = data, nil
+		}
+		if line = bytes.TrimSpace(line); len(line) > 0 {
+			fn(line)
+		}
+	}
+}
+
+// forEachEntry decodes each well-formed JSONL line in order, skipping blank
+// and corrupt ones. Lines are split in place, with no length limit: a
+// bufio.Scanner cap used to end the scan at the first oversized line, which
+// silently dropped every later line of the transcript.
+func forEachEntry(data []byte, fn func(entry)) {
+	eachLine(data, func(line []byte) {
 		var e entry
 		if err := json.Unmarshal(line, &e); err != nil {
-			continue // skip a corrupt line rather than failing the whole load
+			return // skip a corrupt line rather than failing the whole load
 		}
 		fn(e)
-	}
+	})
 }
 
 // Meta summarizes one stored session for the picker and for latest-resolution.
@@ -636,9 +686,10 @@ func (s *Store) readMeta(cwd, id, path string) (Meta, bool) {
 		return Meta{}, false
 	}
 	m := Meta{ID: id, Cwd: cwd, Path: path}
-	entries := parseEntries(data)
+	entries := parseEntriesLazy(data)
 	var firstUser, summary, aiTitle string
-	for _, e := range entries {
+	for i := range entries {
+		e := &entries[i]
 		if ts := parseTime(e.Timestamp); !ts.IsZero() {
 			if m.Created.IsZero() {
 				m.Created = ts
@@ -667,10 +718,15 @@ func (s *Store) readMeta(cwd, id, path string) (Meta, bool) {
 			m.Tags = e.tagSet()
 			continue
 		}
-		if e.Message == nil || e.Message.Role == "" {
+		// Only the first prompt (the title) needs a message decoded.
+		if firstUser != "" {
 			continue
 		}
-		if e.Message.Role == agent.RoleUser && e.IsMeta != nil && *e.IsMeta {
+		msg := e.msg()
+		if msg == nil || msg.Role == "" {
+			continue
+		}
+		if msg.Role == agent.RoleUser && e.IsMeta != nil && *e.IsMeta {
 			// A slash command's injected prompt never titles the session; a
 			// custom command run with arguments titles it as typed.
 			if firstUser == "" && e.Command != "" {
@@ -678,9 +734,9 @@ func (s *Store) readMeta(cwd, id, path string) (Meta, bool) {
 			}
 			continue
 		}
-		if e.Message.Role == agent.RoleUser && firstUser == "" && !e.IsCompactSummary &&
-			!compaction.IsSummaryMessage(compaction.Message{Role: e.Message.Role, Content: e.Message.Content}) {
-			firstUser = promptTitle(*e.Message)
+		if msg.Role == agent.RoleUser && !e.IsCompactSummary &&
+			!compaction.IsSummaryMessage(compaction.Message{Role: msg.Role, Content: msg.Content}) {
+			firstUser = promptTitle(*msg)
 		}
 	}
 	// Count only what a resume will load: the history restarts at a
@@ -727,6 +783,15 @@ func (s *Store) Latest(cwd string) (Meta, bool) {
 // then substring; case-insensitive), then a case-insensitive substring of the
 // title. ok is false when nothing (or more than one id prefix) matches.
 func (s *Store) Find(cwd, value string) (Meta, bool) {
+	// An exact session id needs only that file, not a read of every session
+	// in the project (List parses each transcript in full).
+	if v := strings.TrimSpace(value); v != "" && !strings.ContainsAny(v, `/\\`) && v != "." && v != ".." {
+		if p := s.sessionPath(cwd, v); fileExists(s.fs, p) {
+			if m, ok := s.readMeta(cwd, v, p); ok {
+				return m, true
+			}
+		}
+	}
 	metas, err := s.List(cwd)
 	if err != nil {
 		return Meta{}, false

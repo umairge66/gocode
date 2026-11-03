@@ -1,7 +1,6 @@
 package sessionstore
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"time"
@@ -66,27 +65,22 @@ func (s *Store) LoadCostState(cwd, id string) (cost.State, bool) {
 	if s == nil || s.base == "" {
 		return cost.State{}, false
 	}
-	data, err := s.fs.ReadFile(s.sessionPath(cwd, id))
-	if err != nil {
-		return cost.State{}, false
-	}
 	var (
 		last cost.State
 		ok   bool
 	)
 	marker := []byte(`"type":"` + typeCostState + `"`)
-	sc := bufio.NewScanner(bytes.NewReader(data))
-	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-	for sc.Scan() {
-		line := sc.Bytes()
+	// The latest totals are the last cost-state line: read from the end.
+	s.scanLinesBackward(s.sessionPath(cwd, id), func(line []byte) bool {
 		if !bytes.Contains(line, marker) {
-			continue
+			return false
 		}
 		var l costStateLine
 		if json.Unmarshal(line, &l) != nil || l.Type != typeCostState || l.CostState == nil {
-			continue
+			return false
 		}
 		last, ok = *l.CostState, true
-	}
+		return true
+	})
 	return last, ok
 }

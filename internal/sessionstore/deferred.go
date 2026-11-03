@@ -59,6 +59,11 @@ func (s *Store) PendingDeferred(cwd, id string, history []agent.Message) (agent.
 	if s == nil || s.base == "" {
 		return agent.ToolUse{}, false
 	}
+	// Only a history that ends with an unanswered tool call can hold one;
+	// skip reading the transcript otherwise.
+	if n := len(history); n == 0 || history[n-1].Role != agent.RoleAssistant || len(history[n-1].ToolUseBlocks()) == 0 {
+		return agent.ToolUse{}, false
+	}
 	data, err := s.fs.ReadFile(s.sessionPath(cwd, id))
 	if err != nil {
 		return agent.ToolUse{}, false
