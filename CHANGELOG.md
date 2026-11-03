@@ -6,6 +6,8 @@ it refuses to publish a version that has no section here.
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-11-03
+
 ### Added
 
 - **`gocode auth login [provider]` and `gocode auth logout [provider]`.**
@@ -136,7 +138,8 @@ it refuses to publish a version that has no section here.
 
 First public release.
 
-[Unreleased]: https://github.com/umairge66/gocode/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/umairge66/gocode/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/umairge66/gocode/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/umairge66/gocode/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/umairge66/gocode/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/umairge66/gocode/compare/v0.1.1...v0.1.2
