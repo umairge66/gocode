@@ -1,13 +1,16 @@
 package mcphost
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"math"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/umairge66/gocode/internal/agent"
 	"github.com/umairge66/gocode/internal/mcp"
 )
 
@@ -136,17 +139,42 @@ func TruncateOutput(text string, maxTokens int) (string, bool) {
 // blocks verbatim; image/audio blocks as a short placeholder; embedded
 // resources as their text when they carry text, else a placeholder;
 // resource_link blocks as a placeholder naming the URI. When there is no
-// content but structuredContent is present, its JSON is returned.
+// content but structuredContent is present, its JSON is returned; a text block
+// that only repeats structuredContent (the serialized copy the MCP spec asks
+// servers to include) is replaced by structuredContent itself, once.
 func FlattenContent(res *mcp.CallToolResult) string {
+	text, _ := renderContent(res, false)
+	return text
+}
+
+// renderContent is FlattenContent that, with keepImages, returns image blocks
+// (and embedded image resources) as images instead of placeholders. Audio and
+// other binary content stay placeholders.
+func renderContent(res *mcp.CallToolResult, keepImages bool) (string, []agent.ToolResultImage) {
 	if res == nil {
-		return ""
+		return "", nil
 	}
+	var structured any
+	hasStructured := len(res.StructuredContent) > 0 && json.Unmarshal(res.StructuredContent, &structured) == nil
+	structuredSent := false
 	parts := make([]string, 0, len(res.Content))
+	var images []agent.ToolResultImage
 	for _, b := range res.Content {
 		switch b.Type {
 		case "text":
+			if hasStructured && sameJSON(b.Text, structured) {
+				if !structuredSent {
+					parts = append(parts, compactJSON(res.StructuredContent))
+					structuredSent = true
+				}
+				continue
+			}
 			parts = append(parts, b.Text)
 		case "image":
+			if keepImages && b.Data != "" {
+				images = append(images, agent.ToolResultImage{Base64: b.Data, MediaType: b.MimeType})
+				continue
+			}
 			parts = append(parts, placeholder("Image", b.MimeType, ""))
 		case "audio":
 			parts = append(parts, placeholder("Audio", b.MimeType, ""))
@@ -155,11 +183,15 @@ func FlattenContent(res *mcp.CallToolResult) string {
 				URI      string  `json:"uri"`
 				MimeType string  `json:"mimeType"`
 				Text     *string `json:"text"`
+				Blob     string  `json:"blob"`
 			}
 			_ = json.Unmarshal(b.Resource, &r)
-			if r.Text != nil {
+			switch {
+			case r.Text != nil:
 				parts = append(parts, *r.Text)
-			} else {
+			case keepImages && r.Blob != "" && strings.HasPrefix(r.MimeType, "image/"):
+				images = append(images, agent.ToolResultImage{Base64: r.Blob, MediaType: r.MimeType})
+			default:
 				parts = append(parts, placeholder("Resource", r.MimeType, r.URI))
 			}
 		case "resource_link":
@@ -168,10 +200,33 @@ func FlattenContent(res *mcp.CallToolResult) string {
 			parts = append(parts, placeholder("Unsupported content: "+b.Type, "", ""))
 		}
 	}
-	if len(parts) == 0 && len(res.StructuredContent) > 0 {
-		return string(res.StructuredContent)
+	if len(parts) == 0 && len(images) == 0 && len(res.StructuredContent) > 0 {
+		return string(res.StructuredContent), nil
 	}
-	return strings.Join(parts, "\n")
+	return strings.Join(parts, "\n"), images
+}
+
+// sameJSON reports whether text is a JSON serialization of v.
+func sameJSON(text string, v any) bool {
+	t := strings.TrimSpace(text)
+	if t == "" || (t[0] != '{' && t[0] != '[') {
+		return false
+	}
+	var got any
+	if err := json.Unmarshal([]byte(t), &got); err != nil {
+		return false
+	}
+	return reflect.DeepEqual(got, v)
+}
+
+// compactJSON returns raw without insignificant whitespace (raw itself when
+// it cannot be compacted).
+func compactJSON(raw json.RawMessage) string {
+	var b bytes.Buffer
+	if err := json.Compact(&b, raw); err != nil {
+		return string(raw)
+	}
+	return b.String()
 }
 
 func placeholder(kind, mime, uri string) string {

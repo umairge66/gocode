@@ -654,6 +654,38 @@ func (h *Host) Has(modelToolName string) bool {
 // isError=true and a nil err; err is reserved for routing, transport, protocol
 // and timeout failures.
 func (h *Host) Call(ctx context.Context, modelToolName string, input json.RawMessage) (text string, isError bool, err error) {
+	res, err := h.callTool(ctx, modelToolName, input)
+	if err != nil {
+		return "", false, err
+	}
+	text, _ = TruncateOutput(FlattenContent(res), h.maxTokens)
+	return text, res.IsError, nil
+}
+
+// CallContent is Call for the tool dispatcher: image content (image blocks
+// and embedded image resources) is returned as images rather than
+// placeholders, and the text is NOT cut to the output budget — the
+// dispatcher saves text over MaxResultChars to a file and shows a preview, and
+// truncates only when it cannot be saved. Images are the server's raw base64;
+// the caller fits them to its transport budget.
+func (h *Host) CallContent(ctx context.Context, modelToolName string, input json.RawMessage) (agent.ToolResult, error) {
+	res, err := h.callTool(ctx, modelToolName, input)
+	if err != nil {
+		return agent.ToolResult{}, err
+	}
+	text, images := renderContent(res, true)
+	return agent.ToolResult{Content: text, IsError: res.IsError, Images: images}, nil
+}
+
+// MaxResultChars is the inline budget of a tool result's text in characters:
+// the output budget in tokens (MAX_MCP_OUTPUT_TOKENS) at ~4 characters each.
+func (h *Host) MaxResultChars() int {
+	return h.maxTokens * charsPerToken
+}
+
+// callTool routes one call to the owning server with the per-call timeout and
+// returns the server's raw result.
+func (h *Host) callTool(ctx context.Context, modelToolName string, input json.RawMessage) (*mcp.CallToolResult, error) {
 	h.mu.RLock()
 	rt, ok := h.tools[modelToolName]
 	var s *server
@@ -673,15 +705,15 @@ func (h *Host) Call(ctx context.Context, modelToolName string, input json.RawMes
 
 	switch {
 	case closed:
-		return "", false, errors.New("mcp host is closed")
+		return nil, errors.New("mcp host is closed")
 	case !ok:
-		return "", false, fmt.Errorf("unknown MCP tool %q", modelToolName)
+		return nil, fmt.Errorf("unknown MCP tool %q", modelToolName)
 	case client == nil && state == StateNeedsAuth:
-		return "", false, needsAuthCallErr(rt.server)
+		return nil, needsAuthCallErr(rt.server)
 	case client == nil && state == StateReconnecting:
-		return "", false, fmt.Errorf("MCP server %q is reconnecting; try again shortly", rt.server)
+		return nil, fmt.Errorf("MCP server %q is reconnecting; try again shortly", rt.server)
 	case client == nil:
-		return "", false, fmt.Errorf("MCP server %q is not connected", rt.server)
+		return nil, fmt.Errorf("MCP server %q is not connected", rt.server)
 	}
 
 	if len(input) == 0 || string(input) == "null" {
@@ -694,15 +726,14 @@ func (h *Host) Call(ctx context.Context, modelToolName string, input json.RawMes
 	if err != nil {
 		if errors.Is(err, mcp.ErrNeedsAuth) {
 			h.markNeedsAuth(rt.server, client)
-			return "", false, needsAuthCallErr(rt.server)
+			return nil, needsAuthCallErr(rt.server)
 		}
 		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
-			return "", false, fmt.Errorf("MCP server %q tool %q timed out after %ds", rt.server, rt.tool.Name, int(timeout/time.Second))
+			return nil, fmt.Errorf("MCP server %q tool %q timed out after %ds", rt.server, rt.tool.Name, int(timeout/time.Second))
 		}
-		return "", false, err
+		return nil, err
 	}
-	text, _ = TruncateOutput(FlattenContent(res), h.maxTokens)
-	return text, res.IsError, nil
+	return res, nil
 }
 
 // needsAuthCallErr is the model-facing error for a call to a server that

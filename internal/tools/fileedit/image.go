@@ -104,6 +104,30 @@ func (r ReadTool) readImage(path, mediaType string, info os.FileInfo) (ReadResul
 	return singleImageResult(path, ri, info.Size()), nil
 }
 
+// TransportImage fits image bytes from another source (an MCP tool result) to
+// the same transport budget a Read applies: decodable images (PNG, JPEG, GIF)
+// are resized and re-encoded like a read image file; a format this build
+// cannot decode is passed through only when the model accepts it as is (WebP)
+// and it already fits the byte budget. Anything else is an error, which the
+// caller shows as a text note instead of the image.
+func TransportImage(data []byte, mediaType string) (ReadImage, error) {
+	mediaType = strings.ToLower(strings.TrimSpace(mediaType))
+	if len(data) == 0 {
+		return ReadImage{}, fmt.Errorf("empty image")
+	}
+	if len(data) > imageMaxReadBytes {
+		return ReadImage{}, fmt.Errorf("image is too large (the limit is %s)", formatBytes(imageMaxReadBytes))
+	}
+	img, srcFormat, err := decodeImage(data)
+	if err != nil {
+		if mediaType == "image/webp" && len(data) <= imageByteBudget {
+			return ReadImage{Base64: b64(data), MediaType: mediaType}, nil
+		}
+		return ReadImage{}, fmt.Errorf("unsupported or undecodable image (%s)", mediaType)
+	}
+	return encodeImageForTransport(data, img, srcFormat, mediaType)
+}
+
 // decodeImage sniffs and decodes an image. It guards against pixel bombs via
 // DecodeConfig before fully decoding.
 func decodeImage(data []byte) (image.Image, string, error) {
