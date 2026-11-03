@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -348,6 +349,8 @@ const ctx = vm.createContext({ chrome, console: { log() {} }, setTimeout, clearT
 const fastTimeouts = {
   CDP_TIMEOUT_MS: 300, SCREENSHOT_TIMEOUT_MS: 300, HIDDEN_SCREENSHOT_TIMEOUT_MS: 150, DELIVERY_GRACE_MS: 40, SCRIPT_TIMEOUT_MS: 300, JS_TIMEOUT_MS: 300, JS_GRACE_MS: 50,
   DEBUGGER_WAIT_MS: 600, LOAD_TIMEOUT_MS: 300, MAX_WAIT_SECONDS: 0.05, MAX_REPLY_BYTES: 20000,
+  // The idle grace: 0 (detach after every command) unless a test asks for one.
+  DEBUGGER_HOLD_MS: Number(process.env.HARNESS_HOLD_MS || 0), SETTLE_FRAME_MS: 20, SETTLE_NAV_MS: 150,
 };
 let src = fs.readFileSync(process.argv[2], "utf8");
 for (const [name, v] of Object.entries(fastTimeouts)) {
@@ -374,8 +377,17 @@ function finish() {
 }
 `
 
-// runExtensionHarness runs the prelude plus script against the real extension.
+// runExtensionHarness runs the prelude plus script against the real extension,
+// with the debugger detached after every command (no idle grace).
 func runExtensionHarness(t *testing.T, script string) {
+	t.Helper()
+	runExtensionHarnessHold(t, script, 0)
+}
+
+// runExtensionHarnessHold is runExtensionHarness with the extension keeping an
+// attachment for holdMs after each command (DEBUGGER_HOLD_MS). It returns what
+// the script printed.
+func runExtensionHarnessHold(t *testing.T, script string, holdMs int) string {
 	t.Helper()
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -389,10 +401,13 @@ func runExtensionHarness(t *testing.T, script string) {
 	if err := os.WriteFile(path, []byte(fakeChromePrelude+script), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	out, err := exec.Command(node, path, bg).CombinedOutput()
+	cmd := exec.Command(node, path, bg)
+	cmd.Env = append(os.Environ(), "HARNESS_HOLD_MS="+strconv.Itoa(holdMs))
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("extension harness failed:\n%s", strings.TrimSpace(string(out)))
 	}
+	return string(out)
 }
 
 // keyHarness checks the CDP Input.dispatchKeyEvent events the computer tool's

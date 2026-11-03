@@ -73,6 +73,23 @@ type inputDelivery struct {
 	Background    bool   `json:"background"`
 	Scrolled      *bool  `json:"scrolled"`
 	KeysCancelled bool   `json:"keysCancelled"`
+	// ScreenshotError is why the screenshot asked for after the action was
+	// not taken (the action itself was done).
+	ScreenshotError string `json:"screenshotError"`
+}
+
+// shotLine is what the result says about the screenshot after the action:
+// that it is attached, or why there is none ("" when none was asked for).
+// The error is the extension's own text (it may name a site or a tab, never
+// page content).
+func (d inputDelivery) shotLine(attached bool) string {
+	switch {
+	case attached:
+		return " Screenshot after the action attached."
+	case d.ScreenshotError != "":
+		return " No screenshot after the action: " + sanitizePageText(strings.TrimSuffix(d.ScreenshotError, ".")) + "."
+	}
+	return ""
 }
 
 // outcome is the action's short status: "done", "done with DOM events, not
@@ -322,12 +339,20 @@ func stepDetail(name string, raw json.RawMessage) (string, bool) {
 		if json.Unmarshal(raw, &r) != nil {
 			return "", false
 		}
+		shot := strings.TrimSpace(r.shotLine(false))
+		detail := ""
 		if note := r.note(); note != "" {
-			return r.outcome() + ": " + note, false
+			detail = r.outcome() + ": " + note
+		} else if r.Drag != "" {
+			detail = "done as a " + r.Drag
 		}
-		if r.Drag != "" {
-			return "done as a " + r.Drag, false
+		switch {
+		case detail != "" && shot != "":
+			return detail + " " + shot, false
+		case shot != "":
+			return shot, false
 		}
+		return detail, false
 	case "resize_window":
 		var r struct {
 			Width  int `json:"width"`

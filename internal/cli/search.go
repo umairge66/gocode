@@ -34,21 +34,22 @@ import (
 // session. Nothing here touches the network.
 
 // mergedEffectiveSettings merges the active settings sources (low→high
-// precedence, last wins). The "search" object is merged key by key so a
-// project file can override one search key without dropping the others.
+// precedence, last wins). The "search" and "chrome" objects are merged key by
+// key so a project file can override one of their keys without dropping the
+// others.
 func mergedEffectiveSettings(env *Env) map[string]any {
 	settings := map[string]any{}
-	search := map[string]any{}
+	nested := map[string]map[string]any{"search": {}, "chrome": {}}
 	ctx := settingsContext(env)
 	for _, or := range settingsload.EffectiveSources(fsfacade.OSFS{}, ctx, settingsload.CanonicalSourceOrder) {
 		if or.Result.LoadState != settingspolicy.LoadLoaded {
 			continue
 		}
 		for k, v := range or.Result.Settings {
-			if k == "search" {
+			if obj, ok := nested[k]; ok {
 				if m, ok := v.(map[string]any); ok {
 					for sk, sv := range m {
-						search[sk] = sv
+						obj[sk] = sv
 					}
 				}
 				continue
@@ -56,8 +57,10 @@ func mergedEffectiveSettings(env *Env) map[string]any {
 			settings[k] = v
 		}
 	}
-	if len(search) > 0 {
-		settings["search"] = search
+	for k, obj := range nested {
+		if len(obj) > 0 {
+			settings[k] = obj
+		}
 	}
 	return settings
 }

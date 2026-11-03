@@ -246,6 +246,13 @@ type Dispatcher struct {
 	// differs from the one built into gocode. Optional (WithBrowserNotice).
 	BrowserNotice func(ctx context.Context) string
 
+	// BrowserNoScreenshotAfterActions turns off the screenshot a
+	// page-changing computer action (and the last step of a browser_batch)
+	// returns after itself by default (browser.ComputerTool.AutoScreenshot).
+	// The model can still ask for one with screenshot:true.
+	// WithBrowserScreenshotAfterActions.
+	BrowserNoScreenshotAfterActions bool
+
 	// SearchEngine backs the Grep and Glob tools: ugrep-accelerated or the
 	// built-in Go engine, per the session's search settings. nil runs the
 	// built-in engine with default settings. Optional (WithSearchEngine).
@@ -582,6 +589,13 @@ func WithBrowserClient(c browser.Client) Option {
 // WithBrowserNotice installs Dispatcher.BrowserNotice.
 func WithBrowserNotice(fn func(ctx context.Context) string) Option {
 	return func(d *Dispatcher) { d.BrowserNotice = fn }
+}
+
+// WithBrowserScreenshotAfterActions sets whether page-changing computer
+// actions return a screenshot after themselves by default (on unless turned
+// off; see Dispatcher.BrowserNoScreenshotAfterActions).
+func WithBrowserScreenshotAfterActions(on bool) Option {
+	return func(d *Dispatcher) { d.BrowserNoScreenshotAfterActions = !on }
 }
 
 // New returns a Dispatcher with the default Registry (built-in descriptors) and

@@ -21,8 +21,9 @@ import (
 // COVERAGE / APPROXIMATION:
 //   - The known-key set below is the full top-level settings field set (185
 //     keys incl. "$schema"), plus
-//     gocode's own "search" object (Grep/Glob engine) and "ui" object (the
-//     full-screen look); their sub-keys are checked by knownNestedKeys.
+//     gocode's own "search" object (Grep/Glob engine), "chrome" object (gocode
+//     in Chrome) and "ui" object (the full-screen look); their sub-keys are
+//     checked by knownNestedKeys.
 //   - Each key carries its basic JSON type expectation: string (incl. enums),
 //     boolean, number, array, object (shape / record / policy-helper). A
 //     handful of union fields accept more than one type (e.g. forceLoginOrgUUID
@@ -78,6 +79,7 @@ var knownSettingKeys = map[string][]string{
 	"blockedMarketplaces":               {"object"},
 	"breakReminder":                     {"object"},
 	"channelsEnabled":                   {"boolean"},
+	"chrome":                            {"object"},
 	"cleanupPeriodDays":                 {"number"},
 	"companyAnnouncements":              {"array"},
 	"crossSessionInbound":               {"string"},
@@ -313,6 +315,12 @@ var knownNestedKeys = map[string]map[string][]string{
 		"ugrepPath":         {"string"},
 		"preferSystemUgrep": {"boolean"},
 		"includeHidden":     {"boolean"},
+	},
+	// "chrome": gocode in Chrome (internal/cli/chromesettings.go):
+	// "screenshotAfterActions" (default true) returns a screenshot after each
+	// page-changing computer action.
+	"chrome": {
+		"screenshotAfterActions": {"boolean"},
 	},
 	// "ui": the full-screen look (internal/ui): "style" is "modern" (the
 	// default), "cards" or "classic"; "icons" is "unicode", "nerd" or

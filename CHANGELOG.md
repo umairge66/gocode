@@ -75,6 +75,20 @@ it refuses to publish a version that has no section here.
   100,000 characters.
 - MCP tool results, tool definitions and prompts, and subagent reports, have
   harness tags and fake turn markers neutralized before the model reads them.
+- **Chrome: fewer round trips (extension 0.4.2).** A `computer` click, type,
+  key, scroll, drag or hover now returns a screenshot of the page once it has
+  settled (a JPEG, in the same coordinate frame as `screenshot`), so the model
+  sees what happened without a second call; in `browser_batch` only the last
+  step does. Pass `screenshot: false` to skip one, or turn it off with
+  `"chrome": {"screenshotAfterActions": false}` in the settings or
+  `GOCODE_CHROME_SCREENSHOT_AFTER_ACTIONS=0`. The `--gocode-in-chrome-mcp`
+  server keeps answering clicks with text only.
+- Chrome: the extension keeps the debugger attached for 1.5 s after an
+  action, so back-to-back actions on a tab attach once instead of every time.
+  The debugging banner still goes away within 1.5 s of the last action, and
+  at once when the tab closes, leaves the gocode group or goes to a page
+  gocode may not use, or the action failed or was cancelled. `computer` also
+  takes `middle_click`.
 
 ### Fixed
 

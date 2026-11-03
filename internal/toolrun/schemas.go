@@ -102,7 +102,7 @@ var toolInputSchemas = map[protocol.Tool]json.RawMessage{
 	// coordinate/text/scroll/ref fields; find
 	// {query,tabId}; form_input {ref,value,tabId}; browser_batch {actions}.
 	protocol.ToolBrowserComputer: json.RawMessage(`{"type":"object","properties":{` +
-		`"action":{"type":"string","enum":["left_click","right_click","double_click","triple_click","type","key","scroll","left_click_drag","hover","mouse_move","scroll_to","screenshot","zoom","wait"],"description":"The gesture to perform."},` +
+		`"action":{"type":"string","enum":["left_click","right_click","middle_click","double_click","triple_click","type","key","scroll","left_click_drag","hover","mouse_move","scroll_to","screenshot","zoom","wait"],"description":"The gesture to perform."},` +
 		`"coordinate":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2,"description":"(x, y) viewport pixels. Required for click/scroll/hover; the end position for left_click_drag."},` +
 		`"start_coordinate":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2,"description":"(x, y) starting position for left_click_drag."},` +
 		`"text":{"type":"string","description":"The text to type (type action) or the key(s) to press (key action): space-separated keys (e.g. \"Backspace Backspace Delete\"), chords joined with + (e.g. \"ctrl+a\", \"shift+Tab\", \"alt+x\", \"ctrl+shift+t\"), numeric keypad keys as Numpad0-Numpad9, NumpadEnter, NumpadAdd, NumpadSubtract, NumpadMultiply, NumpadDivide, NumpadDecimal. Use \"cmd\" on Mac and \"ctrl\" on Windows/Linux for shortcuts. Page zoom shortcuts (e.g. \"cmd+=\", \"ctrl+-\", \"cmd+0\") are not supported and return an error - use the zoom action instead."},` +
@@ -115,6 +115,7 @@ var toolInputSchemas = map[protocol.Tool]json.RawMessage{
 		`"modifiers":{"type":"string","description":"Modifier keys for click actions: \"ctrl\", \"shift\", \"alt\", \"cmd\" (or \"meta\"), \"win\" (or \"windows\"), combined with + (e.g. \"ctrl+shift\")."},` +
 		`"repeat":{"type":"number","minimum":1,"maximum":100,"description":"Number of times to repeat the key sequence (key action only, 1-100, default 1)."},` +
 		`"tabId":{"type":"number","description":"A gocode tab to act on; omit to use gocode's current tab."},` +
+		`"screenshot":{"type":"boolean","description":"For clicks, type, key, scroll, scroll_to, left_click_drag and hover: return a screenshot of the page after the action (default true, unless turned off in the settings). Set false to skip it when you will not need to see the result."},` +
 		`"save_to_disk":{"type":"boolean","description":"` + saveToDiskDescription + `"},` +
 		`"save_to":{"type":"string","description":"` + saveToDescription + `"}` +
 		`},"required":["action"]}`),
@@ -191,11 +192,25 @@ var toolDescriptions = map[protocol.Tool]string{
 	protocol.ToolBrowserTabsClose:   "Close one of gocode's tabs by its id via the local gocode browser extension. Use to clean up tabs you're done with. Only tabs in gocode's \"gocode\" tab group are closable; call tabs_context first to get valid ids. If you close the group's last tab, Chrome removes the group — the next tab you open starts a fresh one.",
 	protocol.ToolBrowserScreenshot:  "Capture a screenshot of gocode's current tab via the local gocode browser extension; returns the image so you can see the page.",
 
-	protocol.ToolBrowserComputer:  "Use a mouse and keyboard to interact with a Chrome tab (click/type/key/scroll/hover/drag), and take screenshots, via chrome.debugger in the user's real browser. Coordinates are viewport pixels; consult a screenshot first. Omit tabId to use gocode's current tab.",
+	protocol.ToolBrowserComputer:  computerDescription,
 	protocol.ToolBrowserFind:      "Find visible elements on a Chrome tab by label, text, placeholder or name and by kind (\"input\", \"text field\", \"button\", \"link\", \"checkbox\", \"dropdown\", \"form\", ...); a label finds the field it labels. Returns the best matches first (up to 20) with reference ids and center coordinates you can pass to computer/form_input. Refs belong to the current page: after a navigation or reload, run find again. Omit tabId to use gocode's current tab.",
 	protocol.ToolBrowserFormInput: "Set the value of a form field in a Chrome tab by its element reference id (from find) and fire input/change events: text, textarea, contenteditable, select (option value or text; comma-separated for a multiple select), checkbox (true/false), radio (true, or the option's value or label), date (YYYY-MM-DD). Fails if the field did not take the value. Omit tabId to use gocode's current tab.",
-	protocol.ToolBrowserBatch:     "Run a sequence of browser tool calls (computer/navigate/find/form_input/...) in ONE round trip; they execute sequentially and stop on the first error, and each step's result (find refs, page text, javascript values, new tab ids, images) is returned. Use when you can predict two or more steps ahead. Cannot be nested.",
+	protocol.ToolBrowserBatch:     batchDescription,
 }
+
+// The computer and browser_batch descriptions, with the screenshot a
+// page-changing action returns after itself (the default) and without it
+// (turned off in the settings, see WithBrowserScreenshotAfterActions).
+const (
+	computerDescriptionBase = "Use a mouse and keyboard to interact with a Chrome tab (click/type/key/scroll/hover/drag), and take screenshots, via chrome.debugger in the user's real browser. Coordinates are viewport pixels; consult a screenshot first. Omit tabId to use gocode's current tab."
+	computerDescription     = computerDescriptionBase + " After a click, type, key, scroll, scroll_to, left_click_drag or hover, a screenshot of the page (taken once it settled) is returned with the result, in the same coordinate frame as the screenshot action, so you do not need a separate screenshot call to see what happened; pass screenshot:false to skip it."
+	// computerDescriptionNoAutoShot is used when the setting turns the
+	// screenshot after actions off.
+	computerDescriptionNoAutoShot = computerDescriptionBase + " Pass screenshot:true on a click, type, key, scroll, scroll_to, left_click_drag or hover to also get a screenshot of the page after it."
+	batchDescriptionBase          = "Run a sequence of browser tool calls (computer/navigate/find/form_input/...) in ONE round trip; they execute sequentially and stop on the first error, and each step's result (find refs, page text, javascript values, new tab ids, images) is returned. Use when you can predict two or more steps ahead. Cannot be nested."
+	batchDescription              = batchDescriptionBase + " When the last step is a computer click, type, key, scroll or similar, a screenshot of the page after it is returned (only for the last step); no extra screenshot step is needed."
+	batchDescriptionNoAutoShot    = batchDescriptionBase
+)
 
 // Schemas returns the tool schema (name, description, input schema) of every
 // dispatchable tool registered on this Dispatcher that has an input schema. It
