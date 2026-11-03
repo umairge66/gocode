@@ -342,22 +342,25 @@ func saveImages(saver *ScreenshotSaver, images []Image, saveToDisk bool, saveTo 
 // ComputerInput is the computer verb's parameters. action selects the gesture;
 // the other fields are action-specific (coordinate/start_coordinate for mouse
 // gestures, text for type/key, scroll_direction/scroll_amount for scroll, ref
-// as an alternative element target, region for zoom, duration for wait). tabId
-// targets a specific tab (omit for the active tab). Shapes follow the gocode
-// `computer` tool.
+// as an alternative element target, region (and scale) for zoom, scale for
+// screenshot, duration for wait). tabId targets a specific tab (omit for the
+// active tab). Shapes follow the gocode `computer` tool. Pixel values and
+// counts are numbers in the schema; a fractional one is rounded (Num).
 type ComputerInput struct {
 	Action          string  `json:"action"`
-	Coordinate      []int   `json:"coordinate,omitempty"`
-	StartCoordinate []int   `json:"start_coordinate,omitempty"`
+	Coordinate      []Num   `json:"coordinate,omitempty"`
+	StartCoordinate []Num   `json:"start_coordinate,omitempty"`
 	Text            string  `json:"text,omitempty"`
 	Duration        float64 `json:"duration,omitempty"`
 	ScrollDirection string  `json:"scroll_direction,omitempty"`
-	ScrollAmount    int     `json:"scroll_amount,omitempty"`
-	Region          []int   `json:"region,omitempty"`
-	Ref             string  `json:"ref,omitempty"`
-	Modifiers       string  `json:"modifiers,omitempty"`
+	ScrollAmount    Num     `json:"scroll_amount,omitempty"`
+	Region          []Num   `json:"region,omitempty"`
+	// Scale shrinks a screenshot / zoom image to this fraction (0.1-1).
+	Scale     float64 `json:"scale,omitempty"`
+	Ref       string  `json:"ref,omitempty"`
+	Modifiers string  `json:"modifiers,omitempty"`
 	// Repeat presses the key sequence of a key action this many times (1-100).
-	Repeat int  `json:"repeat,omitempty"`
+	Repeat Num  `json:"repeat,omitempty"`
 	TabID  *int `json:"tabId,omitempty"`
 	// SaveToDisk / SaveTo: see ScreenshotInput. Only screenshot / zoom use them;
 	// neither is sent to the extension.
@@ -398,45 +401,53 @@ func (t ComputerTool) Execute(ctx context.Context, in ComputerInput) (Result, er
 	if err != nil {
 		return Result{}, err
 	}
+	var notes struct {
+		Notes []string `json:"notes"`
+	}
+	_ = json.Unmarshal(raw, &notes)
 	if isScreenshotAction(in.Action) {
-		var r struct {
-			DataURL string `json:"dataUrl"`
-		}
+		var r captureInfo
 		_ = json.Unmarshal(raw, &r)
 		img, err := decodeDataURL(r.DataURL)
 		if err != nil {
 			return Result{}, err
 		}
 		nBytes := base64.StdEncoding.DecodedLen(len(img.Base64))
-		text := fmt.Sprintf("Captured %s (%s, ~%d bytes).\n\n%s", in.Action, img.MediaType, nBytes, UntrustedImageNotice)
+		text := fmt.Sprintf("Captured %s (%s, ~%d bytes).", in.Action, img.MediaType, nBytes)
+		if note := r.frameNote(); note != "" {
+			text += " " + note
+		}
+		text += "\n\n" + UntrustedImageNotice + pageNotes(notes.Notes, true)
 		text = appendLines(text, saveImages(t.Saver, []Image{img}, saveToDisk, saveTo))
 		return Result{Text: text, Images: []Image{img}}, nil
 	}
-	return Result{Text: fmt.Sprintf("computer: %s done.", in.Action)}, nil
+	var r struct {
+		Drag string `json:"drag"`
+	}
+	_ = json.Unmarshal(raw, &r)
+	text := fmt.Sprintf("computer: %s done.", in.Action)
+	if r.Drag != "" {
+		text = fmt.Sprintf("computer: %s done (as a %s).", in.Action, r.Drag)
+	}
+	return Result{Text: text + pageNotes(notes.Notes, true)}, nil
 }
 
 // --- find (milestone 3, CDP element lookup) ---------------------------------
 
 // FindInput is the find verb's parameters: a natural-language query plus the
-// tab to search. Shapes follow the gocode `find` tool.
+// tab to search. Shapes follow the gocode `find` tool. Limit caps the matches
+// (default 20, at most 100); IncludeHidden also returns elements that are not
+// visible.
 type FindInput struct {
-	Query string `json:"query"`
-	TabID *int   `json:"tabId,omitempty"`
+	Query         string `json:"query"`
+	TabID         *int   `json:"tabId,omitempty"`
+	Limit         Num    `json:"limit,omitempty"`
+	IncludeHidden bool   `json:"includeHidden,omitempty"`
 }
 
-// match is one located element: a stable ref usable with computer/form_input,
-// its visible text/role, and the center coordinates to click.
-type match struct {
-	Ref  string `json:"ref"`
-	Text string `json:"text"`
-	Role string `json:"role"`
-	X    int    `json:"x"`
-	Y    int    `json:"y"`
-}
-
-// FindTool locates elements matching a query and returns their refs + center
-// coordinates. It is a READ (it only observes the DOM) and leans auto-allow like
-// Read.
+// FindTool locates elements matching a query (by label, role or type words,
+// placeholder, text) and returns their refs + center coordinates. It is a READ
+// (it only observes the DOM) and leans auto-allow like Read.
 type FindTool struct{ Client Client }
 
 func (t FindTool) Execute(ctx context.Context, in FindInput) (Result, error) {
@@ -461,16 +472,8 @@ func (t FindTool) Execute(ctx context.Context, in FindInput) (Result, error) {
 	}
 	// The element text/roles come from the page, so the match list is fenced as
 	// untrusted content; the refs and coordinates remain usable for clicks.
-	var b strings.Builder
-	for _, m := range r.Matches {
-		role := m.Role
-		if role == "" {
-			role = "element"
-		}
-		fmt.Fprintf(&b, "- %s [%s] %q at (%d, %d)\n", m.Ref, role, m.Text, m.X, m.Y)
-	}
-	header := fmt.Sprintf("%d match(es) for %q:\n", len(r.Matches), in.Query)
-	text := header + wrapUntrusted("", strings.TrimRight(b.String(), "\n"))
+	header := fmt.Sprintf("%d match(es) for %q, best first:\n", len(r.Matches), in.Query)
+	text := header + wrapUntrusted("", renderMatches(r.Matches))
 	if r.Truncated {
 		text += "\n[more matches exist — refine the query]"
 	}
@@ -505,14 +508,21 @@ func (t FormInputTool) Execute(ctx context.Context, in FormInputInput) (Result, 
 		return Result{}, err
 	}
 	var r struct {
-		Ref string `json:"ref"`
+		Ref   string   `json:"ref"`
+		Value *string  `json:"value"`
+		Notes []string `json:"notes"`
 	}
 	_ = json.Unmarshal(raw, &r)
 	ref := r.Ref
 	if ref == "" {
 		ref = in.Ref
 	}
-	return Result{Text: fmt.Sprintf("Set %s to %s.", ref, string(in.Value))}, nil
+	if r.Value == nil {
+		return Result{Text: fmt.Sprintf("Set %s to %s.", ref, string(in.Value)) + pageNotes(r.Notes, true)}, nil
+	}
+	// The extension checked that the value took; it reports what the field
+	// holds now (as the page shows it).
+	return Result{Text: fmt.Sprintf("Set %s to %s; it now holds %q.", ref, string(in.Value), sanitizePageText(*r.Value)) + pageNotes(r.Notes, true)}, nil
 }
 
 // --- browser_batch (milestone 3, sequenced sub-commands) --------------------
@@ -534,13 +544,18 @@ type BatchInput struct {
 }
 
 // batchResult is one sub-command's outcome as returned by the extension: the
-// tool name, an ok flag or error string, and (for screenshot/zoom sub-commands)
-// a data URL that is surfaced as an interleaved image.
+// tool name, an ok flag or error string, the step's own result (find's refs,
+// read_page's text, a javascript value, a new tab's id), notes (a dismissed
+// dialog), and (for screenshot/zoom sub-commands) a data URL that is surfaced
+// as an interleaved image — or why it was left out.
 type batchResult struct {
-	Name    string `json:"name"`
-	OK      bool   `json:"ok"`
-	Error   string `json:"error,omitempty"`
-	DataURL string `json:"dataUrl,omitempty"`
+	Name         string          `json:"name"`
+	OK           bool            `json:"ok"`
+	Error        string          `json:"error,omitempty"`
+	DataURL      string          `json:"dataUrl,omitempty"`
+	ImageOmitted string          `json:"imageOmitted,omitempty"`
+	Result       json.RawMessage `json:"result,omitempty"`
+	Notes        []string        `json:"notes,omitempty"`
 }
 
 // ApproveFunc asks the user to allow the browser tools on a site the extension
@@ -643,6 +658,7 @@ func (t BatchTool) Execute(ctx context.Context, in BatchInput) (Result, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "browser_batch ran %d of %d step(s):\n", len(all), len(in.Actions))
 	var images []Image
+	fenced := false
 	for i, res := range all {
 		switch {
 		case res.Error != "":
@@ -650,15 +666,40 @@ func (t BatchTool) Execute(ctx context.Context, in BatchInput) (Result, error) {
 		case res.DataURL != "":
 			if img, derr := decodeDataURL(res.DataURL); derr == nil {
 				images = append(images, img)
-				fmt.Fprintf(&b, "%d. %s: image captured\n", i+1, res.Name)
+				line := "image captured"
+				var ci captureInfo
+				if json.Unmarshal(res.Result, &ci) == nil {
+					if note := ci.frameNote(); note != "" {
+						line += ". " + note
+					}
+				}
+				fmt.Fprintf(&b, "%d. %s: %s\n", i+1, res.Name, line)
 			} else {
 				fmt.Fprintf(&b, "%d. %s: ok\n", i+1, res.Name)
 			}
+		case res.ImageOmitted != "":
+			fmt.Fprintf(&b, "%d. %s: ok (%s)\n", i+1, res.Name, res.ImageOmitted)
 		default:
-			fmt.Fprintf(&b, "%d. %s: ok\n", i+1, res.Name)
+			detail, page := stepDetail(res.Name, res.Result)
+			fenced = fenced || page
+			switch {
+			case detail == "":
+				fmt.Fprintf(&b, "%d. %s: ok\n", i+1, res.Name)
+			case strings.Contains(detail, "\n"):
+				fmt.Fprintf(&b, "%d. %s: ok\n%s\n", i+1, res.Name, detail)
+			default:
+				fmt.Fprintf(&b, "%d. %s: ok: %s\n", i+1, res.Name, detail)
+			}
+		}
+		if len(res.Notes) > 0 {
+			fenced = true
+			b.WriteString(strings.TrimPrefix(pageNotes(res.Notes, false), "\n\n") + "\n")
 		}
 	}
 	text := strings.TrimRight(b.String(), "\n")
+	if fenced {
+		text += "\n\n" + UntrustedTextNotice
+	}
 	if len(images) > 0 {
 		text += "\n\n" + UntrustedImageNotice
 		if wantsSave {

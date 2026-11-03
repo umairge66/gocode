@@ -174,7 +174,11 @@ func siteAskCall(tool protocol.Tool, host string) (toolreg.Call, toolreg.ToolDes
 
 // navigationTargets returns the URLs a call navigates to (navigate, a
 // tabs_create url, a browser_batch's navigate / tabs_create items), skipping
-// back/forward. bad is set when an input that names a navigation cannot be read.
+// back/forward: their destination is only known once there, so the extension
+// checks the page they land on (and goes back again when it is refused; a
+// site that needs approval comes back as "needs approval" and is prompted for
+// like any other). bad is set when an input that names a navigation cannot be
+// read.
 func navigationTargets(tool protocol.Tool, input json.RawMessage) (urls []string, bad bool) {
 	type navIn struct {
 		URL *string `json:"url"`

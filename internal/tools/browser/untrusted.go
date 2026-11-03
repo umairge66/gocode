@@ -65,11 +65,17 @@ func sanitizeAttr(s string) string {
 // notice. source identifies where it came from (a URL, or "tab N"); it may be
 // empty.
 func wrapUntrusted(source, body string) string {
+	return fenceUntrusted(source, body) + "\n\n" + UntrustedTextNotice
+}
+
+// fenceUntrusted fences page-derived text without the notice, for a result
+// that holds several fenced blocks and states the notice once.
+func fenceUntrusted(source, body string) string {
 	open := "<" + untrustedTag + ">"
 	if src := sanitizeAttr(source); src != "" {
 		open = fmt.Sprintf("<%s source=%q>", untrustedTag, src)
 	}
-	return open + "\n" + sanitizePageText(body) + "\n</" + untrustedTag + ">\n\n" + UntrustedTextNotice
+	return open + "\n" + sanitizePageText(body) + "\n</" + untrustedTag + ">"
 }
 
 // tabSource returns the best available source label for a tab.

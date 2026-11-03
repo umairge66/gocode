@@ -49,8 +49,8 @@ import (
 // gif_creator, upload_image, read_console_messages, read_network_requests,
 // shortcuts_list, shortcuts_execute, file_upload. read_page returns the page
 // text; the accessibility-tree options (filter, depth, ref_id, max_chars)
-// are accepted and ignored, as is computer's scale (extensions without scale
-// support return the full image).
+// are accepted and ignored. computer's zoom region and scale are honoured
+// (extensions before 0.4.0 return the full viewport image).
 //
 // Site rules: the gocodeInChromeDomain allow/deny rules from the settings
 // apply. A denied site is refused (here and in the extension); a site with no

@@ -104,9 +104,10 @@ var toolInputSchemas = map[protocol.Tool]json.RawMessage{
 		`"text":{"type":"string","description":"The text to type (type action) or the key(s) to press (key action): space-separated keys (e.g. \"Backspace Backspace Delete\"), chords joined with + (e.g. \"ctrl+a\", \"shift+Tab\", \"alt+x\", \"ctrl+shift+t\"), numeric keypad keys as Numpad0-Numpad9, NumpadEnter, NumpadAdd, NumpadSubtract, NumpadMultiply, NumpadDivide, NumpadDecimal. Use \"cmd\" on Mac and \"ctrl\" on Windows/Linux for shortcuts. Page zoom shortcuts (e.g. \"cmd+=\", \"ctrl+-\", \"cmd+0\") are not supported and return an error - use the zoom action instead."},` +
 		`"scroll_direction":{"type":"string","enum":["up","down","left","right"],"description":"Direction to scroll. Required for scroll."},` +
 		`"scroll_amount":{"type":"number","minimum":1,"maximum":10,"description":"Scroll wheel ticks (default 3)."},` +
-		`"duration":{"type":"number","minimum":0,"description":"Seconds to wait. Required for wait."},` +
-		`"region":{"type":"array","items":{"type":"number"},"minItems":4,"maxItems":4,"description":"(x0,y0,x1,y1) region to capture for zoom."},` +
-		`"ref":{"type":"string","description":"Element reference id from read_page or find; alternative to coordinate for clicks, required for scroll_to."},` +
+		`"duration":{"type":"number","minimum":0,"maximum":30,"description":"Seconds to wait (at most 30). Required for wait."},` +
+		`"region":{"type":"array","items":{"type":"number"},"minItems":4,"maxItems":4,"description":"(x0,y0,x1,y1) viewport region to capture for zoom, magnified for a closer look. Required for zoom."},` +
+		`"scale":{"type":"number","minimum":0.1,"maximum":1,"description":"For screenshot and zoom: shrink the returned image to this fraction (default 1). Coordinates for clicks stay in the full viewport frame, never in the image's own pixels."},` +
+		`"ref":{"type":"string","description":"Element reference id from find; alternative to coordinate for clicks (the element is scrolled into view first), required for scroll_to."},` +
 		`"modifiers":{"type":"string","description":"Modifier keys for click actions: \"ctrl\", \"shift\", \"alt\", \"cmd\" (or \"meta\"), \"win\" (or \"windows\"), combined with + (e.g. \"ctrl+shift\")."},` +
 		`"repeat":{"type":"number","minimum":1,"maximum":100,"description":"Number of times to repeat the key sequence (key action only, 1-100, default 1)."},` +
 		`"tabId":{"type":"number","description":"A gocode tab to act on; omit to use gocode's current tab."},` +
@@ -114,7 +115,9 @@ var toolInputSchemas = map[protocol.Tool]json.RawMessage{
 		`"save_to":{"type":"string","description":"` + saveToDescription + `"}` +
 		`},"required":["action"]}`),
 	protocol.ToolBrowserFind: json.RawMessage(`{"type":"object","properties":{` +
-		`"query":{"type":"string","description":"Natural-language description of what to find (e.g. \"search bar\", \"add to cart button\")."},` +
+		`"query":{"type":"string","description":"What to find: a label, text, placeholder or name, optionally with the kind of element (e.g. \"search bar\", \"add to cart button\", \"email field\", \"country dropdown\", \"input fields\")."},` +
+		`"limit":{"type":"number","minimum":1,"maximum":100,"description":"At most this many matches (default 20)."},` +
+		`"includeHidden":{"type":"boolean","description":"Also return elements that are not visible (default false)."},` +
 		`"tabId":{"type":"number","description":"A gocode tab to search; omit to use gocode's current tab."}` +
 		`},"required":["query"]}`),
 	protocol.ToolBrowserFormInput: json.RawMessage(`{"type":"object","properties":{` +
@@ -185,9 +188,9 @@ var toolDescriptions = map[protocol.Tool]string{
 	protocol.ToolBrowserScreenshot:  "Capture a screenshot of gocode's current tab via the local gocode browser extension; returns the image so you can see the page.",
 
 	protocol.ToolBrowserComputer:  "Use a mouse and keyboard to interact with a Chrome tab (click/type/key/scroll/hover/drag), and take screenshots, via chrome.debugger in the user's real browser. Coordinates are viewport pixels; consult a screenshot first. Omit tabId to use gocode's current tab.",
-	protocol.ToolBrowserFind:      "Find elements on a Chrome tab using a natural-language query; returns up to 20 matches with reference ids and center coordinates you can pass to computer/form_input. Omit tabId to use gocode's current tab.",
-	protocol.ToolBrowserFormInput: "Set the value of a form field in a Chrome tab by its element reference id (from read_page or find) and fire input/change events. Omit tabId to use gocode's current tab.",
-	protocol.ToolBrowserBatch:     "Run a sequence of browser tool calls (computer/navigate/find/form_input/...) in ONE round trip; they execute sequentially and stop on the first error. Use when you can predict two or more steps ahead. Cannot be nested.",
+	protocol.ToolBrowserFind:      "Find visible elements on a Chrome tab by label, text, placeholder or name and by kind (\"input\", \"text field\", \"button\", \"link\", \"checkbox\", \"dropdown\", \"form\", ...); a label finds the field it labels. Returns the best matches first (up to 20) with reference ids and center coordinates you can pass to computer/form_input. Refs belong to the current page: after a navigation or reload, run find again. Omit tabId to use gocode's current tab.",
+	protocol.ToolBrowserFormInput: "Set the value of a form field in a Chrome tab by its element reference id (from find) and fire input/change events: text, textarea, contenteditable, select (option value or text; comma-separated for a multiple select), checkbox (true/false), radio (true, or the option's value or label), date (YYYY-MM-DD). Fails if the field did not take the value. Omit tabId to use gocode's current tab.",
+	protocol.ToolBrowserBatch:     "Run a sequence of browser tool calls (computer/navigate/find/form_input/...) in ONE round trip; they execute sequentially and stop on the first error, and each step's result (find refs, page text, javascript values, new tab ids, images) is returned. Use when you can predict two or more steps ahead. Cannot be nested.",
 }
 
 // Schemas returns the tool schema (name, description, input schema) of every
