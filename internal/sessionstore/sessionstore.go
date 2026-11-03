@@ -28,9 +28,17 @@
 // writers may also add non-turn meta lines (type:"summary"/"custom-title"/"ai-title"/…).
 // The fields needed to rebuild the model context are `type`,
 // `message` ({role,content}), `uuid`/`parentUuid` (the turn chain) and
-// `timestamp`; the rest are carried for compatibility. A `{"type":"summary",...}` line,
-// when present, supplies the picker title (priority: summary → firstPrompt →
-// id[:8]).
+// `timestamp`; the rest are carried for compatibility. Meta lines supply the
+// picker title (priority: custom-title → ai-title → summary → firstPrompt →
+// id[:8]) and tags; see meta.go. Meta lines are append-only and the latest
+// one of each kind wins.
+//
+// # Branches
+//
+// The turn lines normally form one linear chain in file order. Resuming at an
+// earlier message (OpenAt) appends turns whose parentUuid points back at that
+// message, so the file then holds a tree; Load follows the parentUuid chain of
+// the last line instead of file order (see activeEntries).
 //
 // # Retention
 //
@@ -116,6 +124,12 @@ type entry struct {
 	// Command is the "/name args" a custom command's expanded prompt (an
 	// isMeta user line) came from; it can title the session.
 	Command string `json:"command,omitempty"`
+
+	// Meta-line fields (read only; meta.go writes these lines).
+	CustomTitle string   `json:"customTitle,omitempty"`
+	AITitle     string   `json:"aiTitle,omitempty"`
+	Tag         *string  `json:"tag,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
 }
 
 // compactMetadata is a compact_boundary's metadata (userContext is never set,
@@ -267,6 +281,14 @@ func (s *Store) Create(cwd, id string) (*Session, error) {
 // continuation appends only the new turns). The file is assumed to exist; writes
 // still create the dir/file if it was removed.
 func (s *Store) Open(cwd, id string, seededLen int) (*Session, error) {
+	return s.OpenAt(cwd, id, "", seededLen)
+}
+
+// OpenAt is Open for a session resumed at an earlier message (LoadAt): the
+// next appended turn links to atUUID rather than to the last line, branching
+// the transcript there. The lines after atUUID stay on disk; Load follows the
+// new branch. An empty atUUID is Open.
+func (s *Store) OpenAt(cwd, id, atUUID string, seededLen int) (*Session, error) {
 	sess, err := s.Create(cwd, id)
 	if err != nil {
 		return nil, err
@@ -279,6 +301,9 @@ func (s *Store) Open(cwd, id string, seededLen int) (*Session, error) {
 		if data, err := s.fs.ReadFile(sess.path); err == nil {
 			sess.lastUUID = lastChainUUID(data)
 		}
+	}
+	if atUUID != "" {
+		sess.lastUUID = atUUID
 	}
 	return sess, nil
 }
@@ -520,17 +545,27 @@ func jsonEscapedPath(p string) []byte {
 // the model sees, tolerating blank and malformed lines (a truncated last line
 // from a crash is simply skipped) and restarting at each compact_boundary.
 func decodeMessages(data []byte) []agent.Message {
+	chain, _ := activeEntries(parseEntries(data), "")
+	return chainMessages(chain)
+}
+
+// chainMessages is the model turns of a chain, skipping summary / system /
+// meta lines.
+func chainMessages(chain []entry) []agent.Message {
 	var out []agent.Message
-	forEachEntry(data, func(e entry) {
-		if e.isCompactBoundary() {
-			out = nil
-			return
-		}
+	for _, e := range chain {
 		if e.Message == nil || e.Message.Role == "" {
-			return // summary / system / meta line: no model turn
+			continue
 		}
 		out = append(out, *e.Message)
-	})
+	}
+	return out
+}
+
+// parseEntries decodes every well-formed line (see forEachEntry).
+func parseEntries(data []byte) []entry {
+	var out []entry
+	forEachEntry(data, func(e entry) { out = append(out, e) })
 	return out
 }
 
@@ -562,6 +597,15 @@ type Meta struct {
 	Modified     time.Time
 	MessageCount int
 	GitBranch    string
+
+	// CustomTitle is the latest custom-title (/rename); "" when never renamed.
+	CustomTitle string
+	// Summary is the transcript's summary line, FirstPrompt the first prompt
+	// that titles it ("" when absent).
+	Summary     string
+	FirstPrompt string
+	// Tags is the session's current tag set (latest tag line), sorted.
+	Tags []string
 }
 
 // List returns every stored session for cwd, most-recently-modified first, each
@@ -572,28 +616,8 @@ func (s *Store) List(cwd string) ([]Meta, error) {
 	if s == nil || s.base == "" {
 		return nil, ErrNoConfigHome
 	}
-	dir := s.ProjectDir(cwd)
-	ents, err := s.fs.ReadDir(dir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, nil // tolerate an unreadable project dir as "no sessions"
-	}
-	var out []Meta
-	for _, de := range ents {
-		name := de.Name()
-		if de.IsDir() || !strings.HasSuffix(name, ".jsonl") {
-			continue
-		}
-		id := strings.TrimSuffix(name, ".jsonl")
-		path := join(dir, name)
-		m, ok := s.readMeta(cwd, id, path)
-		if !ok {
-			continue
-		}
-		out = append(out, m)
-	}
+	// A missing or unreadable project dir lists as "no sessions".
+	out := s.listDir(s.ProjectDir(cwd), cwd)
 	sort.SliceStable(out, func(i, j int) bool {
 		return out[i].Modified.After(out[j].Modified)
 	})
@@ -601,15 +625,17 @@ func (s *Store) List(cwd string) ([]Meta, error) {
 }
 
 // readMeta derives a session's Meta from its transcript. An empty or unreadable
-// file is skipped (ok=false).
+// file is skipped (ok=false). A "" cwd is filled from the transcript's lines
+// (the escaped directory name cannot be turned back into a path).
 func (s *Store) readMeta(cwd, id, path string) (Meta, bool) {
 	data, err := s.fs.ReadFile(path)
 	if err != nil {
 		return Meta{}, false
 	}
 	m := Meta{ID: id, Cwd: cwd, Path: path}
-	var firstUser, summary string
-	forEachEntry(data, func(e entry) {
+	entries := parseEntries(data)
+	var firstUser, summary, aiTitle string
+	for _, e := range entries {
 		if ts := parseTime(e.Timestamp); !ts.IsZero() {
 			if m.Created.IsZero() {
 				m.Created = ts
@@ -619,32 +645,46 @@ func (s *Store) readMeta(cwd, id, path string) (Meta, bool) {
 		if e.GitBranch != "" {
 			m.GitBranch = e.GitBranch
 		}
-		if e.Type == typeSummary && summary == "" {
-			summary = strings.TrimSpace(e.Summary)
+		if m.Cwd == "" && e.Cwd != "" {
+			m.Cwd = e.Cwd
 		}
-		if e.isCompactBoundary() {
-			// The resumable history restarts at a boundary; count only what a
-			// resume will load (the title keeps the session's first prompt).
-			m.MessageCount = 0
-			return
+		switch e.Type {
+		case typeSummary:
+			if summary == "" {
+				summary = strings.TrimSpace(e.Summary)
+			}
+			continue
+		case typeCustomTitle:
+			m.CustomTitle = strings.TrimSpace(e.CustomTitle)
+			continue
+		case typeAITitle:
+			aiTitle = strings.TrimSpace(e.AITitle)
+			continue
+		case typeTag:
+			m.Tags = e.tagSet()
+			continue
 		}
 		if e.Message == nil || e.Message.Role == "" {
-			return
+			continue
 		}
-		m.MessageCount++
 		if e.Message.Role == agent.RoleUser && e.IsMeta != nil && *e.IsMeta {
 			// A slash command's injected prompt never titles the session; a
 			// custom command run with arguments titles it as typed.
 			if firstUser == "" && e.Command != "" {
 				firstUser = firstLine(e.Command)
 			}
-			return
+			continue
 		}
 		if e.Message.Role == agent.RoleUser && firstUser == "" && !e.IsCompactSummary &&
 			!compaction.IsSummaryMessage(compaction.Message{Role: e.Message.Role, Content: e.Message.Content}) {
 			firstUser = promptTitle(*e.Message)
 		}
-	})
+	}
+	// Count only what a resume will load: the history restarts at a
+	// compaction boundary and follows the active branch (the title keeps the
+	// session's first prompt).
+	chain, _ := activeEntries(entries, "")
+	m.MessageCount = len(chainMessages(chain))
 	if m.MessageCount == 0 && summary == "" {
 		return Meta{}, false // empty transcript — nothing to resume
 	}
@@ -657,7 +697,15 @@ func (s *Store) readMeta(cwd, id, path string) (Meta, bool) {
 			}
 		}
 	}
-	m.Title = pickTitle(summary, firstUser, id)
+	m.Summary, m.FirstPrompt = summary, firstUser
+	title := m.CustomTitle
+	if title == "" {
+		title = aiTitle
+	}
+	if title == "" {
+		title = summary
+	}
+	m.Title = pickTitle(title, firstUser, id)
 	return m, true
 }
 
@@ -672,15 +720,23 @@ func (s *Store) Latest(cwd string) (Meta, bool) {
 }
 
 // Find resolves a user-supplied resume value to a session for cwd. It matches,
-// in order: an exact session id, a unique id prefix, then a case-insensitive
-// substring of the title. ok is false when nothing (or more than one id prefix)
-// matches.
+// in order: an exact session id, a unique id prefix, a custom title (exact,
+// then substring; case-insensitive), then a case-insensitive substring of the
+// title. ok is false when nothing (or more than one id prefix) matches.
 func (s *Store) Find(cwd, value string) (Meta, bool) {
 	metas, err := s.List(cwd)
-	if err != nil || len(metas) == 0 {
+	if err != nil {
 		return Meta{}, false
 	}
+	return findIn(metas, value)
+}
+
+// findIn is Find over an already-listed, most-recent-first slice.
+func findIn(metas []Meta, value string) (Meta, bool) {
 	v := strings.TrimSpace(value)
+	if v == "" || len(metas) == 0 {
+		return Meta{}, false
+	}
 	for _, m := range metas {
 		if m.ID == v {
 			return m, true
@@ -689,17 +745,28 @@ func (s *Store) Find(cwd, value string) (Meta, bool) {
 	// Unique id prefix.
 	var pfx []Meta
 	for _, m := range metas {
-		if v != "" && strings.HasPrefix(m.ID, v) {
+		if strings.HasPrefix(m.ID, v) {
 			pfx = append(pfx, m)
 		}
 	}
 	if len(pfx) == 1 {
 		return pfx[0], true
 	}
-	// Title substring (first, i.e. most recent, match).
+	// A name given with /rename wins over a derived title: exact first, then
+	// substring (first, i.e. most recent, match).
 	lv := strings.ToLower(v)
 	for _, m := range metas {
-		if lv != "" && strings.Contains(strings.ToLower(m.Title), lv) {
+		if m.CustomTitle != "" && strings.ToLower(m.CustomTitle) == lv {
+			return m, true
+		}
+	}
+	for _, m := range metas {
+		if m.CustomTitle != "" && strings.Contains(strings.ToLower(m.CustomTitle), lv) {
+			return m, true
+		}
+	}
+	for _, m := range metas {
+		if strings.Contains(strings.ToLower(m.Title), lv) {
 			return m, true
 		}
 	}
@@ -813,8 +880,8 @@ func firstLine(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// pickTitle chooses a display title: a transcript summary if present, else the
-// first user message (truncated), else a short form of the id.
+// pickTitle chooses a display title: a custom title / summary if present, else
+// the first user message (truncated), else a short form of the id.
 func pickTitle(summary, firstUser, id string) string {
 	title := summary
 	if title == "" {

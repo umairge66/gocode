@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/umairge66/gocode/internal/agent"
 	"github.com/umairge66/gocode/internal/confighome"
 	"github.com/umairge66/gocode/internal/conversation"
 	"github.com/umairge66/gocode/internal/ids"
@@ -27,7 +28,7 @@ import (
 // Nothing here touches the network: the only effect is reading and writing JSONL
 // transcripts under <configHome>/projects (the layout is defined in
 // internal/sessionstore). Options: -c/--continue, -r/--resume [value],
-// --session-id, --fork-session, --no-session-persistence.
+// --session-id, --fork-session, --resume-session-at, --no-session-persistence.
 
 // resumeIntent is the parsed launch-time resume request.
 type resumeIntent struct {
@@ -37,6 +38,7 @@ type resumeIntent struct {
 	sessionID      string // --session-id for a fresh session
 	fork           bool   // --fork-session: resume into a new id
 	noPersistence  bool   // --no-session-persistence
+	at             string // --resume-session-at: the message uuid to resume at
 }
 
 // resumeIntentFrom extracts the resume request from the dispatch defaults.
@@ -51,6 +53,7 @@ func resumeIntentFrom(d *DispatchDefaults) resumeIntent {
 		sessionID:      strings.TrimSpace(d.SessionID),
 		fork:           d.ForkSession,
 		noPersistence:  d.NoSessionPersistence,
+		at:             strings.TrimSpace(d.ResumeSessionAt),
 	}
 }
 
@@ -125,10 +128,25 @@ func (r *sessionRuntime) wireSessionStore(env *Env, paths sessionPaths, sessionI
 // untouched). It returns the loaded session meta and ok=false when the session
 // could not be read.
 func (r *sessionRuntime) resumeInto(id string, fork bool) (sessionstore.Meta, bool) {
+	return r.resumeIntoAt(id, fork, "")
+}
+
+// resumeIntoAt is resumeInto truncated at the message with uuid at
+// (--resume-session-at; "" loads the whole history). Without fork the
+// continuation branches the original transcript at that message (its later
+// lines stay on disk); with fork the truncated history seeds the new session.
+// ok=false also when at is not in the session.
+func (r *sessionRuntime) resumeIntoAt(id string, fork bool, at string) (sessionstore.Meta, bool) {
 	if r.store == nil {
 		return sessionstore.Meta{}, false
 	}
-	msgs, err := r.store.Load(r.storeCwd, id)
+	var msgs []agent.Message
+	var err error
+	if at != "" {
+		msgs, err = r.store.LoadAt(r.storeCwd, id, at)
+	} else {
+		msgs, err = r.store.Load(r.storeCwd, id)
+	}
 	if err != nil {
 		return sessionstore.Meta{}, false
 	}
@@ -148,7 +166,7 @@ func (r *sessionRuntime) resumeInto(id string, fork bool) (sessionstore.Meta, bo
 			}
 		}
 	} else {
-		if sess, err := r.store.Open(r.storeCwd, id, len(msgs)); err == nil {
+		if sess, err := r.store.OpenAt(r.storeCwd, id, at, len(msgs)); err == nil {
 			rec = sess
 		}
 	}
@@ -178,7 +196,7 @@ func (r *sessionRuntime) allowResumedToolResults(id string) {
 
 // resumeLatest resumes the most-recent session for the cwd (the --continue /
 // `-c` target). ok=false when there is none.
-func (r *sessionRuntime) resumeLatest(fork bool) (sessionstore.Meta, bool) {
+func (r *sessionRuntime) resumeLatest(fork bool, at string) (sessionstore.Meta, bool) {
 	if r.store == nil {
 		return sessionstore.Meta{}, false
 	}
@@ -186,12 +204,12 @@ func (r *sessionRuntime) resumeLatest(fork bool) (sessionstore.Meta, bool) {
 	if !ok {
 		return sessionstore.Meta{}, false
 	}
-	return r.resumeInto(latest.ID, fork)
+	return r.resumeIntoAt(latest.ID, fork, at)
 }
 
 // resumeByValue resumes the session named by value (an id, a unique id prefix,
 // or a title substring). ok=false when nothing resolves.
-func (r *sessionRuntime) resumeByValue(value string, fork bool) (sessionstore.Meta, bool) {
+func (r *sessionRuntime) resumeByValue(value string, fork bool, at string) (sessionstore.Meta, bool) {
 	if r.store == nil {
 		return sessionstore.Meta{}, false
 	}
@@ -199,7 +217,7 @@ func (r *sessionRuntime) resumeByValue(value string, fork bool) (sessionstore.Me
 	if !ok {
 		return sessionstore.Meta{}, false
 	}
-	return r.resumeInto(m.ID, fork)
+	return r.resumeIntoAt(m.ID, fork, at)
 }
 
 // currentSessionID is the id of the session this conversation records to: the
@@ -222,18 +240,27 @@ const defaultCleanupDays = 30
 // bare --resume (no id) reports guidance. It returns a user-facing notice ("" =
 // nothing requested).
 func (r *sessionRuntime) applyPrintResume(intent resumeIntent) string {
+	if intent.at != "" && !intent.wants() {
+		return "--resume-session-at needs --resume <session> or --continue."
+	}
 	switch {
 	case intent.continueLatest:
-		if m, ok := r.resumeLatest(intent.fork); ok {
+		if m, ok := r.resumeLatest(intent.fork, intent.at); ok {
 			return fmt.Sprintf("Continuing conversation %s (%d messages).", shortID(m.ID), m.MessageCount)
+		}
+		if intent.at != "" {
+			return fmt.Sprintf("No conversation with message %s found to resume.", intent.at)
 		}
 		return "No conversations found to resume."
 	case intent.resume:
 		if intent.value == "" {
 			return "--resume needs a session id in print mode (the interactive picker is unavailable); use --continue for the most recent conversation."
 		}
-		if m, ok := r.resumeByValue(intent.value, intent.fork); ok {
+		if m, ok := r.resumeByValue(intent.value, intent.fork, intent.at); ok {
 			return fmt.Sprintf("Resumed conversation %s (%d messages).", shortID(m.ID), m.MessageCount)
+		}
+		if intent.at != "" {
+			return fmt.Sprintf("No conversation matching %q with message %s found to resume.", intent.value, intent.at)
 		}
 		return fmt.Sprintf("No conversation matching %q found to resume.", intent.value)
 	}
@@ -268,7 +295,7 @@ func applyInteractiveLaunchResume(d *interactiveDialogs, intent resumeIntent) {
 // --- picker presentation ---------------------------------------------------
 
 // resumeDetail renders the dimmed trailing subtitle for a session picker row:
-// "<relative-modified> · N messages[ · <branch>]".
+// "<relative-modified> · N messages[ · <branch>][ · #tag…]".
 func resumeDetail(m sessionstore.Meta) string {
 	parts := []string{humanizeSince(m.Modified)}
 	if m.MessageCount == 1 {
@@ -278,6 +305,9 @@ func resumeDetail(m sessionstore.Meta) string {
 	}
 	if m.GitBranch != "" {
 		parts = append(parts, m.GitBranch)
+	}
+	for _, t := range m.Tags {
+		parts = append(parts, "#"+t)
 	}
 	return strings.Join(parts, " · ")
 }

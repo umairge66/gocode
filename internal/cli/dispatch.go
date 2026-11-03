@@ -351,6 +351,8 @@ func runSubcommand(env *Env, cmd *Command, t []string, d *DispatchDefaults) int 
 		return runProjectCmd(env, t)
 	case "purge":
 		return runPurgeCmd(env, t, false)
+	case "sessions":
+		return runSessionsCmd(env, t)
 	case "trust":
 		return runTrustCmd(env, t)
 	}

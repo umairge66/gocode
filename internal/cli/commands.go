@@ -53,6 +53,7 @@ var RootProgram = Command{
 		{Spec: "-n, --name <name>"},
 		{Spec: "--session-id <uuid>"},
 		{Spec: "--fork-session"},
+		{Spec: "--resume-session-at <message-uuid>", Help: "With --resume/--continue: resume the conversation truncated at this message (its uuid, from `gocode sessions show`); with --fork-session the truncated history starts a new session"},
 		{Spec: "--no-session-persistence", Help: "Disable session persistence - sessions will not be saved to disk and cannot be resumed (only works with --print)"},
 		{Spec: "-w, --worktree [name]"},
 		{Spec: "--tmux"},
@@ -265,6 +266,19 @@ var RootProgram = Command{
 				{Spec: "-y, --yes", Help: "Skip confirmation prompt"},
 				{Spec: "-i, --interactive", Help: "Prompt for each item before deleting"},
 				{Spec: "--all", Help: "Purge state for every project (mutually exclusive with [path])"},
+			},
+		},
+		{
+			Name:        "sessions",
+			Description: "List, show, rename and delete saved conversations",
+			Flags: []Flag{
+				{Spec: "--all-projects", Help: "List and look up sessions of every project, not only the current directory's"},
+			},
+			Subcommands: []Command{
+				{Name: "list", Description: "List saved sessions, most recent first (id, title, cwd, branch, times, message count, tags)", Flags: []Flag{{Spec: "--json", Help: "Print the listing as JSON"}, {Spec: "--all-projects", Help: "Include every project"}}},
+				{Name: "show", Args: "<session>", Description: "Show a session's messages (with their uuids, for --resume-session-at): the history a resume loads, after the last compaction", Flags: []Flag{{Spec: "--json", Help: "Print as JSON"}, {Spec: "--full", Help: "Every transcript line, including those before a compaction and on abandoned branches"}, {Spec: "--all-projects", Help: "Look the session up in every project"}}},
+				{Name: "rename", Args: "<session-id> <title>", Description: "Set a session's custom title (as /rename does)", Flags: []Flag{{Spec: "--all-projects", Help: "Look the session up in every project"}}},
+				{Name: "delete", Args: "<session-id>", Description: "Delete a session's transcript and per-session state", Flags: []Flag{{Spec: "-y, --yes", Help: "Skip confirmation prompt"}, {Spec: "--all-projects", Help: "Look the session up in every project"}}},
 			},
 		},
 		{

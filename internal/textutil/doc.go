@@ -4,7 +4,8 @@
 // block-marker parser (pasteblocks.go), the 32-bit string hash (hash.go),
 // HTML/JSON/control-character escaping and label/path validation guards
 // (sanitize.go), flexible number parsing (numbers.go), language-name
-// normalization (language.go) and lodash snakeCase (snakecase.go).
+// normalization (language.go), lodash snakeCase (snakecase.go) and the
+// neutralization of harness control tags in model-read text (harnesstags.go).
 //
 // Unicode note: several helpers are specified in terms of UTF-16 code units
 // (what JavaScript's String.prototype.length and slice() measure). Go strings

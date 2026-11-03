@@ -258,6 +258,22 @@ func defaultBuiltins() []*Builtin {
 			Handler:     func(args string) Effect { return dialogEffect("resume", args) },
 		},
 		{
+			// "/rename <title>" names the current session (shown by /resume
+			// and `gocode sessions list`, matched first by --resume <name>);
+			// a bare /rename shows the current name.
+			Name: "rename", Kind: "local",
+			Description: "Rename the current conversation",
+			Handler:     func(args string) Effect { return dialogEffect("rename", args) },
+		},
+		{
+			// "/tag <name>" toggles a tag on the current session; a bare /tag
+			// lists them, "/tag --remove <name>" removes one, "/tag --clear"
+			// removes all.
+			Name: "tag", Kind: "local",
+			Description: "Toggle a searchable tag on the current conversation",
+			Handler:     func(args string) Effect { return dialogEffect("tag", args) },
+		},
+		{
 			Name: "rewind", Aliases: []string{"checkpoint", "undo"}, Kind: "local-jsx",
 			Description: "Restore the code and/or conversation to a previous point",
 			Handler:     func(args string) Effect { return dialogEffect("rewind", args) },
