@@ -227,7 +227,7 @@ gocode -p "fix the failing test" --output-format json
 gocode -p "…" --output-format stream-json --verbose
 ```
 
-Headless runs (`-p`) print text, a JSON result or a JSON event stream, and save a transcript you can `--resume`.
+Headless runs (`-p`) print text, a JSON result or a JSON event stream, and save a transcript you can `--resume`. With `--input-format stream-json` a program can drive a session over stdin and stdout: send messages while it works, interrupt it, switch model or permission mode, and answer its permission prompts. See [`docs/headless.md`](docs/headless.md).
 
 ## Providers
 
