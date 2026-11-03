@@ -256,6 +256,7 @@ func settingsContext(env *Env) *settingsload.Context {
 	if env != nil {
 		ctx.ManagedBaseDirOverride = env.ManagedSettingsDir
 		ctx.FlagPath = flagSettingsPath(env.FlagSettings, ctx.Cwd)
+		ctx.SourcesSet, ctx.Sources = env.SettingSourcesSet, env.SettingSources
 	}
 	if ctx.Cwd != "" && env != nil {
 		// Workspace trust (trust.go): an untrusted folder's project/local

@@ -48,7 +48,7 @@ var RootProgram = Command{
 		{Spec: "--mcp-config <configs...>"},
 		{Spec: "--strict-mcp-config"},
 		{Spec: "--settings <file-or-json>"},
-		{Spec: "--setting-sources <sources>"},
+		{Spec: "--setting-sources <sources>", Help: "Comma-separated list of setting sources to load (user, project, local); \"\" loads none. Managed settings and --settings always apply."},
 		{Spec: "--plugin-dir <path>"},
 		{Spec: "-n, --name <name>"},
 		{Spec: "--session-id <uuid>"},

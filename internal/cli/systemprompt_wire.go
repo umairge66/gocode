@@ -15,6 +15,7 @@ import (
 	"github.com/umairge66/gocode/internal/fsfacade"
 	"github.com/umairge66/gocode/internal/projectmemory"
 	"github.com/umairge66/gocode/internal/protocol"
+	"github.com/umairge66/gocode/internal/settingspolicy"
 	"github.com/umairge66/gocode/internal/subagent"
 	"github.com/umairge66/gocode/internal/systemprompt"
 	"github.com/umairge66/gocode/internal/toolreg"
@@ -83,6 +84,10 @@ func buildSystemPrompt(ctx context.Context, env *Env, s *printSession, paths ses
 		ConfigDir:  paths.configDir,
 		ManagedDir: settingsContext(env).ManagedBaseDir(),
 		FS:         fsfacade.OSFS{},
+		// --setting-sources (settingsources.go).
+		SkipUser:    !settingSourceEnabled(env, settingspolicy.SourceUser),
+		SkipProject: !settingSourceEnabled(env, settingspolicy.SourceProject),
+		SkipLocal:   !settingSourceEnabled(env, settingspolicy.SourceLocal),
 	}
 	mem := projectmemory.Load(cfg)
 	if text := strings.TrimSpace(mem.Text); text != "" {

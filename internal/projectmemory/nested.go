@@ -68,15 +68,23 @@ func (n *Nested) ForFile(target string) []Entry {
 	if n.cfg.ManagedDir != "" {
 		found = append(found, l.conditionalRules(managedRulesDir(n.cfg.ManagedDir), KindManaged, target, cwd)...)
 	}
-	if n.cfg.ConfigDir != "" {
+	if n.cfg.ConfigDir != "" && !n.cfg.SkipUser {
 		found = append(found, l.conditionalRules(userRulesDir(n.cfg.ConfigDir), KindUser, target, cwd)...)
 	}
 	// Memory files and rules for each directory strictly below cwd on the way
 	// to the file.
 	for _, dir := range nestedDirs(target, cwd) {
+		if n.cfg.SkipProject {
+			if !n.cfg.SkipLocal {
+				found = append(found, l.collect(join(dir, localFileName), KindLocal, "", 0, false)...)
+			}
+			continue
+		}
 		found = append(found, l.collect(join(dir, projectFileName), KindProject, "", 0, false)...)
 		found = append(found, l.collect(join(dir, nestedFileName), KindProject, "", 0, false)...)
-		found = append(found, l.collect(join(dir, localFileName), KindLocal, "", 0, false)...)
+		if !n.cfg.SkipLocal {
+			found = append(found, l.collect(join(dir, localFileName), KindLocal, "", 0, false)...)
+		}
 		// The unconditional pass runs on a copy of the processed set so it
 		// does not hide the conditional rules from the pass after it.
 		rules := projectRulesDir(dir)
@@ -93,6 +101,9 @@ func (n *Nested) ForFile(target string) []Entry {
 	// Conditional project rules of cwd and its ancestors, each matched
 	// relative to the directory that owns the rules.
 	for _, dir := range cwdLevelDirs(cwd) {
+		if n.cfg.SkipProject {
+			break
+		}
 		found = append(found, l.conditionalRules(projectRulesDir(dir), KindProject, target, dir)...)
 	}
 

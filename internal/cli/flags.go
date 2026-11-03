@@ -227,6 +227,11 @@ type RootConfig struct {
 	// Chrome is "on" for --chrome, "off" for --no-chrome, "" when neither
 	// was given (the last one wins).
 	Chrome string
+
+	// SettingSources is the raw --setting-sources value (SettingSourcesSet
+	// when given, even empty).
+	SettingSources    string
+	SettingSourcesSet bool
 }
 
 // RootParse is the result of the root pre-parse.
@@ -248,7 +253,7 @@ func parseRootConfig(args []string) RootParse {
 		"--cwd":               func(v string) { r.CwdFilter, r.CwdFilterSet = v, true },
 		"--settings":          func(v string) { cfg.Settings = v },
 		"--managed-settings":  func(v string) { cfg.ManagedSettings = v },
-		"--setting-sources":   func(string) {},
+		"--setting-sources":   func(v string) { cfg.SettingSources, cfg.SettingSourcesSet = v, true },
 		"--add-dir":           func(v string) { cfg.AddDir = append(cfg.AddDir, v) },
 		"--plugin-dir":        func(v string) { cfg.PluginDir = append(cfg.PluginDir, v) },
 		"--plugin-dir-no-mcp": func(v string) { cfg.PluginDirNoMcp = append(cfg.PluginDirNoMcp, v) },

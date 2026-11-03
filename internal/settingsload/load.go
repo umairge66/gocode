@@ -109,7 +109,13 @@ func ParseContent(path, content string) settingspolicy.LoadResult {
 // managed-settings.json with its drop-ins, and the HKCU fallback — produced
 // by ComposePolicy, so every consumer reading the policy source through here
 // sees the composed result.
+//
+// A source the --setting-sources selection leaves out (Context.SourceEnabled)
+// loads as absent.
 func LoadSource(fsys fsfacade.FS, ctx *Context, src settingspolicy.Source) settingspolicy.LoadResult {
+	if !ctx.SourceEnabled(src) {
+		return absentResult()
+	}
 	if src == settingspolicy.SourcePolicy || src == settingspolicy.SourceManaged {
 		return ComposePolicy(fsys, ctx).Result()
 	}

@@ -44,11 +44,15 @@
 //     nested.go).
 //   - Per-agent memory (an agent definition's `memory: user|project|local`)
 //     is built by AgentMemoryPrompt (see agentmemory.go).
+//   - Setting-source gates: Config.SkipUser / SkipProject / SkipLocal leave
+//     out the User tier, the Project files and rules, and the gocode.local.md
+//     files (the --setting-sources selection), at startup and in Nested. The
+//     Managed tier always loads.
 //   - Not supported: managed-policy injected gocodeMd, AutoMem pinned memory,
 //     AGENTS.md fallback/merge modes, an external-include approval flow (links
 //     leading out of the working directory are simply not followed outside the
 //     User tier), per-type "Contents of" suffixes, --add-dir memory
-//     directories, setting-source gates and a gocodeMdExcludes glob matcher.
+//     directories and a gocodeMdExcludes glob matcher.
 //     The Managed tier is an optional <ManagedDir>/gocode.md plus its rules
 //     directory.
 //   - Besides the 4 MiB per-file cap, a total cap (DefaultMaxTotalBytes)

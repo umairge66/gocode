@@ -9,6 +9,7 @@ import (
 	"github.com/umairge66/gocode/internal/agentsdef"
 	"github.com/umairge66/gocode/internal/fsfacade"
 	"github.com/umairge66/gocode/internal/settingsload"
+	"github.com/umairge66/gocode/internal/settingspolicy"
 )
 
 // `gocode agents [--json] [--setting-sources user,project]`: list the agent
@@ -108,17 +109,19 @@ func parseSettingSources(v string, set bool) (map[string]bool, error) {
 	if !set {
 		return out, nil
 	}
+	srcs, err := settingsload.ParseSettingSources(v)
+	if err != nil {
+		return nil, err
+	}
 	out = map[string]bool{}
-	for _, s := range strings.Split(v, ",") {
-		s = strings.TrimSpace(s)
-		if s == "" {
-			continue
-		}
+	for _, s := range srcs {
 		switch s {
-		case "user", "project", "local":
-			out[s] = true
-		default:
-			return nil, fmt.Errorf("Invalid setting source: %s. Valid options are: user, project, local", s)
+		case settingspolicy.SourceUser:
+			out["user"] = true
+		case settingspolicy.SourceProject:
+			out["project"] = true
+		case settingspolicy.SourceLocal:
+			out["local"] = true
 		}
 	}
 	return out, nil

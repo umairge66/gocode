@@ -315,3 +315,44 @@ func TestRawKeyPresence(t *testing.T) {
 		t.Errorf("attribution exclusion: got %q", v)
 	}
 }
+
+// TestSourceSelection: a --setting-sources selection loads the sources it
+// leaves out as absent; the flag and policy sources always load.
+func TestSourceSelection(t *testing.T) {
+	ctx := newCtx()
+	fsys := fsfacade.NewMemFS()
+	userPath, _ := ctx.PathForSource(settingspolicy.SourceUser)
+	projPath, _ := ctx.PathForSource(settingspolicy.SourceProject)
+	fsys.WriteFile(userPath, []byte(`{"model":"user-model"}`))
+	fsys.WriteFile(projPath, []byte(`{"model":"project-model"}`))
+
+	ctx.SourcesSet, ctx.Sources = true, []settingspolicy.Source{settingspolicy.SourceProject}
+	if r := LoadSource(fsys, ctx, settingspolicy.SourceUser); r.LoadState != settingspolicy.LoadAbsent {
+		t.Errorf("user source: %s, want absent", r.LoadState)
+	}
+	if r := LoadSource(fsys, ctx, settingspolicy.SourceProject); r.LoadState != settingspolicy.LoadLoaded {
+		t.Errorf("project source: %s, want loaded", r.LoadState)
+	}
+	for _, src := range []settingspolicy.Source{settingspolicy.SourceFlag, settingspolicy.SourcePolicy} {
+		if !ctx.SourceEnabled(src) {
+			t.Errorf("%s must always be enabled", src)
+		}
+	}
+	if !(&Context{}).SourceEnabled(settingspolicy.SourceUser) {
+		t.Error("no selection enables every source")
+	}
+	if p, _ := NewStore(fsys, ctx, CanonicalSourceOrder).RawKeyPresence("model"); p != "present" {
+		t.Errorf("project model presence = %s", p)
+	}
+	ctx.Sources = nil
+	if p, _ := NewStore(fsys, ctx, CanonicalSourceOrder).RawKeyPresence("model"); p != "absent" {
+		t.Errorf("isolated presence = %s", p)
+	}
+
+	if _, err := ParseSettingSources("user,policy"); err == nil || err.Error() != "Invalid setting source: policy. Valid options are: user, project, local" {
+		t.Errorf("err = %v", err)
+	}
+	if got, err := ParseSettingSources(""); err != nil || got == nil || len(got) != 0 {
+		t.Errorf("empty = %#v, %v", got, err)
+	}
+}
