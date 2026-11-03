@@ -148,6 +148,9 @@ type server struct {
 	starting bool
 	// provider is the server's OAuth client (lazily built).
 	provider *mcp.OAuthProvider
+	// listGen numbers tools/list refreshes after list_changed, so a slower,
+	// older listing never overwrites a newer one.
+	listGen uint64
 }
 
 // Host owns the connections to a set of MCP servers and exposes their tools.
@@ -465,6 +468,11 @@ func (h *Host) connectOne(ctx context.Context, name string, cfg mcp.ServerConfig
 		sr.SetStateListener(h.stateListener(name, tr))
 	}
 	client := mcp.NewClient(tr, h.opts.ClientInfo, mcp.ClientCapabilities{})
+	client.OnNotification(func(method string, _ json.RawMessage) {
+		if method == mcp.MethodToolsListChangedNotif {
+			h.refreshTools(name, client)
+		}
+	})
 
 	cctx, cancel := context.WithTimeout(ctx, h.connectTO)
 	defer cancel()
@@ -493,22 +501,7 @@ func (h *Host) connectOne(ctx context.Context, name string, cfg mcp.ServerConfig
 		if r.init.Capabilities.Tools == nil {
 			return // server offers no tools
 		}
-		cursor := ""
-		for range maxToolPages {
-			var p *mcp.ListToolsParams
-			if cursor != "" {
-				p = &mcp.ListToolsParams{Cursor: cursor}
-			}
-			var page *mcp.ListToolsResult
-			if page, r.err = client.ListTools(cctx, p); r.err != nil {
-				return
-			}
-			r.cat.tools = append(r.cat.tools, page.Tools...)
-			if page.NextCursor == "" || page.NextCursor == cursor {
-				break
-			}
-			cursor = page.NextCursor
-		}
+		r.cat.tools, r.err = listTools(cctx, client)
 	}()
 
 	select {
@@ -529,6 +522,61 @@ func (h *Host) connectOne(ctx context.Context, name string, cfg mcp.ServerConfig
 		}
 		return nil, nil, nil, catalog{}, cctx.Err()
 	}
+}
+
+// listTools fetches a server's whole tool catalog, following tools/list
+// pagination (at most maxToolPages pages).
+func listTools(ctx context.Context, client *mcp.Client) ([]mcp.Tool, error) {
+	var tools []mcp.Tool
+	cursor := ""
+	for range maxToolPages {
+		var p *mcp.ListToolsParams
+		if cursor != "" {
+			p = &mcp.ListToolsParams{Cursor: cursor}
+		}
+		page, err := client.ListTools(ctx, p)
+		if err != nil {
+			return nil, err
+		}
+		tools = append(tools, page.Tools...)
+		if page.NextCursor == "" || page.NextCursor == cursor {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	return tools, nil
+}
+
+// refreshTools re-lists a connected server's tools after it sent
+// notifications/tools/list_changed and rebuilds the tool table. A failed
+// listing keeps the catalog the server had; a client that is no longer the
+// server's live one is ignored.
+func (h *Host) refreshTools(name string, client *mcp.Client) {
+	h.mu.Lock()
+	s := h.servers[name]
+	if h.closed || s == nil || s.client != client {
+		h.mu.Unlock()
+		return
+	}
+	s.listGen++
+	gen := s.listGen
+	h.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(h.lifeCtx, h.connectTO)
+	defer cancel()
+	tools, err := listTools(ctx, client)
+	if err != nil {
+		return
+	}
+	h.mu.Lock()
+	if h.closed || s.client != client || s.listGen != gen {
+		h.mu.Unlock()
+		return
+	}
+	s.tools = tools
+	s.status.Tools = len(tools)
+	h.mu.Unlock()
+	h.rebuildTools()
 }
 
 func (h *Host) connectTimeoutErr(name string) error {

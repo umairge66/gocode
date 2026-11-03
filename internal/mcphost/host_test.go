@@ -32,6 +32,29 @@ type fakeServer struct {
 	prompts    []mcp.Prompt
 	getPrompt  func(p mcp.GetPromptParams) (*mcp.GetPromptResult, error)
 	closeCount atomic.Int32
+
+	// mu guards tools (replaced by setTools) and live.
+	mu   sync.Mutex
+	live *fakeTransport // the most recent transport
+}
+
+// setTools replaces the catalog later tools/list calls return.
+func (s *fakeServer) setTools(tools []mcp.Tool) {
+	s.mu.Lock()
+	s.tools = tools
+	s.mu.Unlock()
+}
+
+// notify sends a server notification on the live transport.
+func (s *fakeServer) notify(method string) {
+	s.mu.Lock()
+	f := s.live
+	s.mu.Unlock()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.closed {
+		f.msgs <- mcp.Message{Notification: &mcp.Notification{JSONRPC: mcp.JSONRPCVersion, Method: method}}
+	}
 }
 
 type fakeTransport struct {
@@ -44,7 +67,11 @@ type fakeTransport struct {
 
 func (s *fakeServer) factory() TransportFactory {
 	return func(string, mcp.ServerConfig) (mcp.Transport, error) {
-		return &fakeTransport{srv: s, msgs: make(chan mcp.Message, 16), done: make(chan struct{})}, nil
+		f := &fakeTransport{srv: s, msgs: make(chan mcp.Message, 16), done: make(chan struct{})}
+		s.mu.Lock()
+		s.live = f
+		s.mu.Unlock()
+		return f, nil
 	}
 }
 
@@ -110,7 +137,9 @@ func (f *fakeTransport) Send(_ context.Context, msg any) error {
 	case mcp.MethodToolsList:
 		var p mcp.ListToolsParams
 		_ = json.Unmarshal(req.Params, &p)
+		f.srv.mu.Lock()
 		tools := f.srv.tools
+		f.srv.mu.Unlock()
 		res := mcp.ListToolsResult{Tools: tools}
 		if n := f.srv.pageSize; n > 0 {
 			start := 0

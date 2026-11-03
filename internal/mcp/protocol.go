@@ -27,6 +27,10 @@ const (
 	MethodResourcesList    = "resources/list"
 	MethodPromptsList      = "prompts/list"
 	MethodPing             = "ping"
+
+	// MethodToolsListChangedNotif is the server notification that its tool
+	// catalog changed (servers advertising tools.listChanged send it).
+	MethodToolsListChangedNotif = "notifications/tools/list_changed"
 )
 
 // Implementation identifies a party (client or server) in the handshake.

@@ -336,3 +336,23 @@ func TestStdioTransportFraming(t *testing.T) {
 		t.Fatal("timed out waiting for stdio message")
 	}
 }
+
+func TestClientDeliversNotifications(t *testing.T) {
+	ft := newFakeTransport()
+	c := NewClient(ft, Implementation{}, ClientCapabilities{})
+	got := make(chan string, 1)
+	c.OnNotification(func(method string, _ json.RawMessage) { got <- method })
+	if err := c.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	ft.msgs <- Message{Notification: &Notification{JSONRPC: JSONRPCVersion, Method: MethodToolsListChangedNotif}}
+	select {
+	case m := <-got:
+		if m != MethodToolsListChangedNotif {
+			t.Fatalf("method = %q", m)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("notification not delivered")
+	}
+}
