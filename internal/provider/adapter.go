@@ -400,10 +400,24 @@ func (m *ModelCaller) toChatRequest(req agent.ModelRequest, stream bool) ChatReq
 		DeferredTools: toChatTools(req.DeferredTools),
 		Effort:        m.effortFor(model, caps),
 		CacheSystem:   req.CacheSystemPrompt && req.System != "",
+		CacheMessages: req.CacheMessages,
 	}
 
-	if req.System != "" {
-		out.Messages = append(out.Messages, ChatMessage{Role: RoleSystem, Content: req.System})
+	// The system prompt travels as one message: System, then the changing
+	// SystemContext. A caching provider splits it back at SystemCacheSplit.
+	system := req.System
+	if req.SystemContext != "" {
+		if system != "" {
+			out.SystemCacheSplit = len(system)
+			system += "\n\n"
+		}
+		system += req.SystemContext
+	}
+	if !out.CacheSystem {
+		out.SystemCacheSplit = 0
+	}
+	if system != "" {
+		out.Messages = append(out.Messages, ChatMessage{Role: RoleSystem, Content: system})
 	}
 	for _, msg := range req.Messages {
 		out.Messages = append(out.Messages, toChatMessages(msg, imagesOff)...)

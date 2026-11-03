@@ -303,8 +303,25 @@ func TestAnthropicLoopEndToEnd(t *testing.T) {
 				"stop_reason":"tool_use","usage":{"input_tokens":10,"output_tokens":5}}`)
 			return
 		}
-		if body.System != "sys" {
-			t.Errorf("system = %q", body.System)
+		// The loop caches the system prompt and the conversation: the system
+		// block and the trailing tool_result carry breakpoints.
+		var cached struct {
+			System []struct {
+				Text         string          `json:"text"`
+				CacheControl json.RawMessage `json:"cache_control"`
+			} `json:"system"`
+			Messages []struct {
+				Content []struct {
+					CacheControl json.RawMessage `json:"cache_control"`
+				} `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal(raw, &cached); err != nil || len(cached.System) != 1 ||
+			cached.System[0].Text != "sys" || string(cached.System[0].CacheControl) != `{"type":"ephemeral"}` {
+			t.Errorf("system = %s (%v)", raw, err)
+		}
+		if n := len(cached.Messages); n == 0 || string(cached.Messages[n-1].Content[len(cached.Messages[n-1].Content)-1].CacheControl) != `{"type":"ephemeral"}` {
+			t.Errorf("last message has no cache breakpoint: %s", raw)
 		}
 		last := body.Messages[len(body.Messages)-1]
 		if last.Role != "user" || len(last.Content) != 1 || last.Content[0].Type != "tool_result" ||

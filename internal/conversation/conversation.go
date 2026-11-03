@@ -727,7 +727,7 @@ func (c *Conversation) runModelTurnBlocks(ctx context.Context, content []agent.C
 	}
 
 	// --- (c) inject the skills listing into the turn context -----------------
-	system := c.turnSystem()
+	system, systemContext := c.turnSystem()
 
 	// --- (d) append the user turn and run the agent loop ---------------------
 	blocks := append([]agent.ContentBlock(nil), content...)
@@ -745,17 +745,18 @@ func (c *Conversation) runModelTurnBlocks(ctx context.Context, content []agent.C
 	turnStart := len(c.History)
 
 	loop := agent.Loop{
-		Model:       c.fallbackModel(c.costModel()),
-		Tools:       c.toolsDispatcher(),
-		Hooks:       c.Hooks,
-		System:      system,
-		ToolSchemas: c.ToolSchemas,
-		MaxTokens:   c.MaxTokens,
-		MaxTurns:    c.MaxTurns,
-		LoopGuard:   c.LoopGuard,
-		MidTurn:     c.takeMidTurnContext,
-		OnMessage:   c.OnMessage,
-		Done:        c.TurnDone,
+		Model:         c.fallbackModel(c.costModel()),
+		Tools:         c.toolsDispatcher(),
+		Hooks:         c.Hooks,
+		System:        system,
+		SystemContext: systemContext,
+		ToolSchemas:   c.ToolSchemas,
+		MaxTokens:     c.MaxTokens,
+		MaxTurns:      c.MaxTurns,
+		LoopGuard:     c.LoopGuard,
+		MidTurn:       c.takeMidTurnContext,
+		OnMessage:     c.OnMessage,
+		Done:          c.TurnDone,
 	}
 	// Thread the optional streaming callbacks into the loop. Nil callbacks leave
 	// the loop's StreamHandler nil, so the turn behaves exactly as before.
@@ -812,7 +813,7 @@ func (c *Conversation) ResumeWithQueuedContext(ctx context.Context) (res Result,
 		return Result{History: c.History}, false, err
 	}
 
-	system := c.turnSystem()
+	system, systemContext := c.turnSystem()
 
 	// Build the user turn from the queued context alone (no prompt block).
 	var blocks []agent.ContentBlock
@@ -832,17 +833,18 @@ func (c *Conversation) ResumeWithQueuedContext(ctx context.Context) (res Result,
 	turnStart := len(c.History)
 
 	loop := agent.Loop{
-		Model:       c.fallbackModel(c.costModel()),
-		Tools:       c.toolsDispatcher(),
-		Hooks:       c.Hooks,
-		System:      system,
-		ToolSchemas: c.ToolSchemas,
-		MaxTokens:   c.MaxTokens,
-		MaxTurns:    c.MaxTurns,
-		LoopGuard:   c.LoopGuard,
-		MidTurn:     c.takeMidTurnContext,
-		OnMessage:   c.OnMessage,
-		Done:        c.TurnDone,
+		Model:         c.fallbackModel(c.costModel()),
+		Tools:         c.toolsDispatcher(),
+		Hooks:         c.Hooks,
+		System:        system,
+		SystemContext: systemContext,
+		ToolSchemas:   c.ToolSchemas,
+		MaxTokens:     c.MaxTokens,
+		MaxTurns:      c.MaxTurns,
+		LoopGuard:     c.LoopGuard,
+		MidTurn:       c.takeMidTurnContext,
+		OnMessage:     c.OnMessage,
+		Done:          c.TurnDone,
 	}
 	if c.OnDelta != nil || c.OnThinkingDelta != nil {
 		loop.StreamHandler = &agent.StreamHandler{
@@ -1190,21 +1192,22 @@ func (c *Conversation) maybeCompact(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-// turnSystem builds the system prompt for this turn: the base System with the
-// available-skills listing appended.
-func (c *Conversation) turnSystem() string {
+// turnSystem builds the system prompt for this turn: the base System, which
+// stays byte-identical for the session so providers can cache it as a prompt
+// prefix, and the available-skills listing as the trailing context, which
+// changes when skills are added or invoked and so is sent after the cached
+// prefix (agent.Loop.SystemContext). A provider without explicit caching
+// receives the two joined, exactly as when the listing was appended to the
+// system prompt.
+func (c *Conversation) turnSystem() (system, context string) {
 	if c.Skills == nil {
-		return c.System
+		return c.System, ""
 	}
 	listing := c.Skills.Listing()
 	if listing == "" {
-		return c.System
+		return c.System, ""
 	}
-	block := skills.ListingHeader + "\n\n" + listing
-	if c.System == "" {
-		return block
-	}
-	return c.System + "\n\n" + block
+	return c.System, skills.ListingHeader + "\n\n" + listing
 }
 
 // toCompaction / fromCompaction convert between the agent loop's Message type

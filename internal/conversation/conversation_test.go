@@ -88,13 +88,17 @@ func TestSubmitAppendsTurns(t *testing.T) {
 	}
 
 	// The skills listing must be injected into the system prompt the model saw,
-	// after the base system prompt, and not stored in the message history.
-	sys := model.lastReq.System
-	if !strings.Contains(sys, "base system") {
-		t.Fatalf("system prompt missing base: %q", sys)
+	// after the base system prompt (as its trailing context, outside the
+	// cached prefix), and not stored in the message history.
+	if sys := model.lastReq.System; sys != "base system" {
+		t.Fatalf("system prompt = %q, want the base alone", sys)
 	}
+	if !model.lastReq.CacheSystemPrompt {
+		t.Fatalf("system prompt not marked cacheable")
+	}
+	sys := model.lastReq.SystemContext
 	if !strings.Contains(sys, skills.ListingHeader) || !strings.Contains(sys, "- my-skill: does things (project)") {
-		t.Fatalf("system prompt missing skills listing: %q", sys)
+		t.Fatalf("system context missing skills listing: %q", sys)
 	}
 }
 

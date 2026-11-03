@@ -118,6 +118,8 @@ type antBlock struct {
 	Input     json.RawMessage `json:"input,omitempty"`
 	ToolUseID string          `json:"tool_use_id,omitempty"`
 	Content   any             `json:"content,omitempty"`
+	// CacheControl is a rolling prompt-cache breakpoint (CacheMessages).
+	CacheControl *antCacheControl `json:"cache_control,omitempty"`
 }
 
 // antToolResultPart is one element of a structured tool_result content array:
@@ -367,10 +369,20 @@ func buildAnthropicBody(req ChatRequest, stream, native bool) ([]byte, error) {
 	}
 	if sys := strings.Join(system, "\n\n"); sys != "" {
 		if req.CacheSystem {
-			body.System = []antSystemBlock{{Type: "text", Text: sys, CacheControl: &antCacheControl{Type: "ephemeral"}}}
+			// The breakpoint closes the stable prefix (tools + system); text
+			// that may change between calls follows it, uncached.
+			head, tail := splitCachedSystem(sys, req.SystemCacheSplit)
+			blocks := []antSystemBlock{{Type: "text", Text: head, CacheControl: &antCacheControl{Type: "ephemeral"}}}
+			if tail != "" {
+				blocks = append(blocks, antSystemBlock{Type: "text", Text: tail})
+			}
+			body.System = blocks
 		} else {
 			body.System = sys
 		}
+	}
+	if req.CacheMessages {
+		markMessageBreakpoints(body.Messages)
 	}
 
 	toAnt := func(t ChatTool, deferLoading bool) antTool {
@@ -410,6 +422,42 @@ func buildAnthropicBody(req ChatRequest, stream, native bool) ([]byte, error) {
 	sort.SliceStable(deferred, func(i, j int) bool { return deferred[i].Name < deferred[j].Name })
 	body.Tools = append(body.Tools, deferred...)
 	return json.Marshal(body)
+}
+
+// splitCachedSystem splits a system prompt at its stable prefix of n bytes
+// (ChatRequest.SystemCacheSplit) into the cached head and the uncached tail;
+// the blank line joining them is dropped. An n outside the prompt caches all
+// of it.
+func splitCachedSystem(sys string, n int) (head, tail string) {
+	if n <= 0 || n >= len(sys) {
+		return sys, ""
+	}
+	return sys[:n], strings.TrimLeft(sys[n:], "\n")
+}
+
+// markMessageBreakpoints puts the rolling prompt-cache breakpoints on the
+// conversation: the last block of the last message, which the next round
+// reads back, and the last block of the user turn before it, so a round
+// that appended more blocks than the API looks back over still finds the
+// previous round's entry. With the system breakpoint that is three of the
+// four the API allows.
+func markMessageBreakpoints(msgs []antMessage) {
+	n := len(msgs)
+	if n == 0 {
+		return
+	}
+	mark := func(m *antMessage) {
+		if k := len(m.Content); k > 0 {
+			m.Content[k-1].CacheControl = &antCacheControl{Type: "ephemeral"}
+		}
+	}
+	mark(&msgs[n-1])
+	for i := n - 2; i >= 0; i-- {
+		if msgs[i].Role == RoleUser {
+			mark(&msgs[i])
+			return
+		}
+	}
 }
 
 // hasDeferral reports whether the request defers any tool.

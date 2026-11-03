@@ -278,7 +278,16 @@ func buildConverseBody(req provider.ChatRequest, modelID string) ([]byte, error)
 	if sys := strings.Join(system, "\n\n"); sys != "" {
 		body.System = []cvSystemBlock{{Text: sys}}
 		if req.CacheSystem && supportsPromptCache(modelID) {
-			body.System = append(body.System, cvSystemBlock{CachePoint: &cvCachePoint{Type: "default"}})
+			// The cache point closes the stable prefix; text that may change
+			// between calls (SystemCacheSplit) follows it.
+			head, tail := sys, ""
+			if n := req.SystemCacheSplit; n > 0 && n < len(sys) {
+				head, tail = sys[:n], strings.TrimLeft(sys[n:], "\n")
+			}
+			body.System = []cvSystemBlock{{Text: head}, {CachePoint: &cvCachePoint{Type: "default"}}}
+			if tail != "" {
+				body.System = append(body.System, cvSystemBlock{Text: tail})
+			}
 		}
 	}
 

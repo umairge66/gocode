@@ -99,6 +99,19 @@ type ChatRequest struct {
 	// provider/model ignores it (their caching is automatic), so their body
 	// is unchanged.
 	CacheSystem bool
+	// SystemCacheSplit, with CacheSystem, is the byte length of the stable
+	// prefix of the system prompt (agent.ModelRequest.System) when trailing
+	// text that may change follows it (SystemContext). A provider with
+	// explicit breakpoints caches only that prefix and sends the rest as a
+	// separate, uncached part; 0 caches the whole system prompt. Providers
+	// that do not cache explicitly ignore it, so their body is unchanged.
+	SystemCacheSplit int
+	// CacheMessages asks for rolling prompt-cache breakpoints on the latest
+	// messages (agent.ModelRequest.CacheMessages): Anthropic marks the last
+	// block of the last message and of the previous user turn; OpenRouter
+	// does the same for an Anthropic model when the last message is a user
+	// text turn. Every other provider ignores it.
+	CacheMessages bool
 	// DeferredTools are the deferred tools the conversation has not loaded
 	// (agent.ModelRequest.DeferredTools). Only a provider with native
 	// deferred loading sends them (marked for on-demand loading); the others

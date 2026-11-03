@@ -46,8 +46,14 @@ type Loop struct {
 	// Hooks runs the PreToolUse / PostToolUse checkpoints (optional).
 	Hooks PermissionHook
 
-	// System is the system prompt passed on every model request.
+	// System is the system prompt passed on every model request. It is
+	// marked as a cacheable prefix (ModelRequest.CacheSystemPrompt), so it
+	// must stay byte-identical across the rounds of a run; text that may
+	// change goes in SystemContext.
 	System string
+	// SystemContext is trailing system text sent after System but outside
+	// its cached prefix (ModelRequest.SystemContext).
+	SystemContext string
 	// ToolSchemas advertises the available tools to the model.
 	ToolSchemas []ToolSchema
 	// MaxTokens caps each response (0 → caller/model default).
@@ -210,12 +216,19 @@ func (l *Loop) Run(ctx context.Context, initial []Message) Result {
 		// the always-loaded tools plus those loaded so far.
 		messages = AnnounceDeferredTools(messages, l.ToolSchemas)
 		tools, deferred := SelectTools(l.ToolSchemas, messages)
+		// Prompt caching: tools + System form a stable prefix, and the
+		// conversation carries rolling breakpoints, so every round after the
+		// first reads what the previous round wrote. Providers without
+		// explicit caching ignore both flags.
 		resp, err := l.callModel(ctx, ModelRequest{
-			Messages:      messages,
-			System:        l.System,
-			Tools:         tools,
-			MaxTokens:     l.MaxTokens,
-			DeferredTools: deferred,
+			Messages:          messages,
+			System:            l.System,
+			SystemContext:     l.SystemContext,
+			Tools:             tools,
+			MaxTokens:         l.MaxTokens,
+			DeferredTools:     deferred,
+			CacheSystemPrompt: l.System != "",
+			CacheMessages:     true,
 		})
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
