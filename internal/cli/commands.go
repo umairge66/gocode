@@ -269,6 +269,19 @@ var RootProgram = Command{
 			},
 		},
 		{
+			Name:        "sessions",
+			Description: "List, show, rename and delete saved conversations",
+			Flags: []Flag{
+				{Spec: "--all-projects", Help: "List and look up sessions of every project, not only the current directory's"},
+			},
+			Subcommands: []Command{
+				{Name: "list", Description: "List saved sessions, most recent first (id, title, cwd, branch, times, message count, tags)", Flags: []Flag{{Spec: "--json", Help: "Print the listing as JSON"}, {Spec: "--all-projects", Help: "Include every project"}}},
+				{Name: "show", Args: "<session>", Description: "Show a session's messages (with their uuids, for --resume-session-at): the history a resume loads, after the last compaction", Flags: []Flag{{Spec: "--json", Help: "Print as JSON"}, {Spec: "--full", Help: "Every transcript line, including those before a compaction and on abandoned branches"}, {Spec: "--all-projects", Help: "Look the session up in every project"}}},
+				{Name: "rename", Args: "<session-id> <title>", Description: "Set a session's custom title (as /rename does)", Flags: []Flag{{Spec: "--all-projects", Help: "Look the session up in every project"}}},
+				{Name: "delete", Args: "<session-id>", Description: "Delete a session's transcript and per-session state", Flags: []Flag{{Spec: "-y, --yes", Help: "Skip confirmation prompt"}, {Spec: "--all-projects", Help: "Look the session up in every project"}}},
+			},
+		},
+		{
 			Name:        "trust",
 			Args:        "[path]",
 			Description: "Trust a folder (default: the current one) so its project settings — hooks, MCP servers, permissions, plugins — apply; needed for -p, mcp serve and background sessions, which never ask",
