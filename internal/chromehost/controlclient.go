@@ -11,9 +11,10 @@ import (
 )
 
 // DefaultClientTimeout bounds a single Call when the caller's context carries no
-// earlier deadline. It matches DefaultControlCallTimeout so a long screenshot
-// capture is not cut short by the client before the host's own bound.
-const DefaultClientTimeout = DefaultControlCallTimeout
+// earlier deadline. It is DefaultControlCallTimeout plus a few seconds, so a
+// long screenshot capture or batch is not cut short by the client before the
+// host's own bound, and the host's in-band "timed out" reply arrives first.
+const DefaultClientTimeout = DefaultControlCallTimeout + 5*time.Second
 
 // Client is the session side of the chrome-host control socket. It opens a
 // short-lived connection per Call (like the daemon control client), writes one
@@ -116,6 +117,9 @@ func (c *Client) Call(ctx context.Context, method string, params any) (json.RawM
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
+		}
+		if !time.Now().Before(deadline) {
+			return nil, fmt.Errorf("chromehost: %s timed out with no reply from Chrome", method)
 		}
 		// A dropped connection before any reply means the host went away
 		// mid-request; treat it as not-connected so the user is told to reconnect.

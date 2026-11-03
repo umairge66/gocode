@@ -132,8 +132,21 @@ and then answers the commands the host sends (`ping`, `navigate`, `read_page`
 / `get_page_text`, `tabs_context`, `tabs_create`, `tabs_close`, `screenshot`,
 `computer`, `find`, `form_input`, `browser_batch`, `javascript_tool`,
 `resize_window`). Interaction commands attach `chrome.debugger` to the target
-tab only while they run. If the host disconnects, the worker reconnects with
-backoff.
+tab only while they run, one command per tab at a time. If the host
+disconnects, the worker stops its commands and reconnects with backoff; a
+reply for a command from a host that has gone is dropped.
+
+Every CDP call and page script has a timeout, so a hung page fails the call
+instead of wedging the tab. A JavaScript dialog that opens while gocode holds
+the debugger is dismissed (Cancel for `confirm()`) and reported in the result.
+When gocode stops waiting for a command (the call was cancelled or timed out
+after 120 seconds), the host sends `{"method":"cancel","params":{"id":…}}` and
+the extension aborts what is left of it — the remaining steps of a batch — and
+detaches.
+
+`find` tags the elements it returns with refs (`ref_<n>`) that are unique per
+tab; they live in the extension's isolated world, not in the page's DOM, and a
+ref from before a navigation or reload is reported as stale.
 
 ## Tab groups per session
 
@@ -150,7 +163,9 @@ group. It never closes:
 
 - a tab **you** dragged into the gocode group (the extension records which
   tabs gocode opened itself — with `tabs_create`, `navigate`, or a link
-  followed from a gocode tab — and lists that as `openedByGocode`);
+  gocode's own click followed from a gocode tab — and lists that as
+  `openedByGocode`); a tab you open from a gocode tab yourself (a middle- or
+  ctrl-click) is not gocode's at all;
 - a tab the model marked `keep_open` (an optional flag on `navigate` and
   `tabs_create`, used when you asked to see a page or keep it open; listed as
   `keepOpen`).

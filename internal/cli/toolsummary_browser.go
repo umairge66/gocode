@@ -147,7 +147,7 @@ func computerArgs(in browser.ComputerInput) string {
 	case "scroll":
 		s := in.ScrollDirection
 		if in.ScrollAmount > 0 {
-			s += " ×" + strconv.Itoa(in.ScrollAmount)
+			s += " ×" + strconv.Itoa(int(in.ScrollAmount))
 		}
 		return strings.TrimSpace(s)
 	case "wait":

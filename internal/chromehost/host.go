@@ -3,6 +3,7 @@ package chromehost
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -11,8 +12,15 @@ import (
 )
 
 // DefaultRequestTimeout bounds a Send call that is not otherwise cancelled by
-// its context, so a wedged extension cannot hang the host indefinitely.
-const DefaultRequestTimeout = 60 * time.Second
+// its context, so a wedged extension cannot hang the host indefinitely. It is
+// the same bound the control socket applies to a relayed call
+// (DefaultControlCallTimeout), so a browser_batch gets the time the client and
+// server document, not less.
+const DefaultRequestTimeout = 120 * time.Second
+
+// maxCancelled bounds how many cancelled command ids the host remembers (to
+// drop their late replies quietly).
+const maxCancelled = 1024
 
 // EventHandler is invoked for each extension-initiated message (Hello and, in
 // later milestones, tab events). It runs serially on the serve goroutine, so a
@@ -43,6 +51,9 @@ type Host struct {
 	seq     uint64
 	pending map[string]chan *Response
 	closed  bool
+	// cancelled holds ids of commands whose Send gave up (cancel sent); a
+	// reply that still arrives for one is dropped without an error.
+	cancelled map[string]bool
 
 	done chan struct{} // closed when the read loop stops
 
@@ -56,11 +67,12 @@ type Host struct {
 // frames to w. Call Serve to run the read/dispatch loops.
 func NewHost(r io.Reader, w io.Writer) *Host {
 	return &Host{
-		r:       r,
-		w:       w,
-		pending: make(map[string]chan *Response),
-		done:    make(chan struct{}),
-		q:       newEventQueue(),
+		r:         r,
+		w:         w,
+		pending:   make(map[string]chan *Response),
+		cancelled: make(map[string]bool),
+		done:      make(chan struct{}),
+		q:         newEventQueue(),
 	}
 }
 
@@ -90,12 +102,20 @@ func (h *Host) Serve(ctx context.Context) error {
 
 // readLoop is the single reader. It classifies each frame: a Response is routed
 // to the waiting Send by id; an Event is queued for the dispatch loop. A clean
-// EOF ends the loop with a nil error.
+// EOF ends the loop with a nil error. An oversized frame is skipped and
+// reported, not fatal: the stream stays in sync, so the host keeps serving.
 func (h *Host) readLoop() error {
 	var retErr error
 	for {
 		raw, err := ReadMessage(h.r)
 		if err != nil {
+			var big *FrameTooLargeError
+			if errors.As(err, &big) {
+				if _, derr := io.CopyN(io.Discard, h.r, int64(big.Size)); derr == nil {
+					h.reportError(fmt.Errorf("%w; frame skipped", err))
+					continue
+				}
+			}
 			if err != io.EOF {
 				retErr = err
 			}
@@ -149,7 +169,12 @@ func (h *Host) routeResponse(resp *Response) {
 	if ok {
 		delete(h.pending, resp.ID)
 	}
+	late := h.cancelled[resp.ID]
+	delete(h.cancelled, resp.ID)
 	h.mu.Unlock()
+	if late {
+		return // the Send already gave up and told the extension to cancel
+	}
 	if !ok {
 		h.reportError(fmt.Errorf("chromehost: response for unknown command id %q", resp.ID))
 		return
@@ -200,10 +225,10 @@ func (h *Host) Send(ctx context.Context, method string, params any) (json.RawMes
 
 	select {
 	case <-ctx.Done():
-		h.clearPending(id)
+		h.cancel(id)
 		return nil, ctx.Err()
 	case <-timer.C:
-		h.clearPending(id)
+		h.cancel(id)
 		return nil, fmt.Errorf("chromehost: %s request timed out after %s", method, timeout)
 	case <-h.done:
 		return nil, fmt.Errorf("chromehost: connection closed")
@@ -222,6 +247,39 @@ func (h *Host) clearPending(id string) {
 	h.mu.Lock()
 	delete(h.pending, id)
 	h.mu.Unlock()
+}
+
+// cancel abandons command id: its Send stops waiting, and the extension is
+// told (MethodCancel) to abort what is left of it — the remaining steps of a
+// batch, a pending CDP call — and detach the debugger, so nothing keeps
+// clicking after the caller has been told the call failed.
+func (h *Host) cancel(id string) {
+	h.mu.Lock()
+	_, waiting := h.pending[id]
+	delete(h.pending, id)
+	if waiting && !h.closed {
+		if len(h.cancelled) >= maxCancelled {
+			clear(h.cancelled)
+		}
+		h.cancelled[id] = true
+	}
+	closed := h.closed
+	h.mu.Unlock()
+	if !waiting || closed {
+		return
+	}
+	// No "id" of its own: an extension that predates cancel ignores a
+	// message without one instead of answering it as an unknown command.
+	notice := struct {
+		Method string            `json:"method"`
+		Params map[string]string `json:"params"`
+	}{MethodCancel, map[string]string{"id": id}}
+	h.writeMu.Lock()
+	err := WriteMessage(h.w, notice)
+	h.writeMu.Unlock()
+	if err != nil {
+		h.reportError(fmt.Errorf("chromehost: send cancel for %s: %w", id, err))
+	}
 }
 
 func (h *Host) reportError(err error) {

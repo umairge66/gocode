@@ -35,6 +35,34 @@ func dispatchBrowser(t *testing.T, mode toolreg.Mode, c *fakeBrowserClient, name
 	return res
 }
 
+type recordingBrowserClient struct {
+	fakeBrowserClient
+	params []json.RawMessage
+}
+
+func (r *recordingBrowserClient) Call(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	b, _ := json.Marshal(params)
+	r.params = append(r.params, b)
+	return r.fakeBrowserClient.Call(ctx, method, params)
+}
+
+// The computer schema declares coordinates as numbers: a fractional one is
+// rounded, not refused as a type error.
+func TestDispatch_ComputerAcceptsFractionalCoordinates(t *testing.T) {
+	c := &recordingBrowserClient{fakeBrowserClient: fakeBrowserClient{byMethod: map[string]json.RawMessage{
+		chromehost.MethodComputer: json.RawMessage(`{"action":"left_click","ok":true}`),
+	}}}
+	d := New(toolreg.ModeBypassPermissions, nil, WithBrowserClient(c))
+	res, err := d.Dispatch(context.Background(), agent.ToolUse{Name: string(protocol.ToolBrowserComputer),
+		Input: json.RawMessage(`{"action":"left_click","coordinate":[120.6,48.2],"scroll_amount":2.5}`)})
+	if err != nil || res.IsError {
+		t.Fatalf("dispatch: %v %+v", err, res)
+	}
+	if len(c.params) == 0 || !strings.Contains(string(c.params[0]), `"coordinate":[121,48]`) {
+		t.Fatalf("sent %s", c.params)
+	}
+}
+
 func TestDispatch_BrowserReadsMapResults(t *testing.T) {
 	c := &fakeBrowserClient{byMethod: map[string]json.RawMessage{
 		chromehost.MethodReadPage:    json.RawMessage(`{"text":"page body"}`),

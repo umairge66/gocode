@@ -93,6 +93,31 @@ it refuses to publish a version that has no section here.
   session was resumed.
 - With background connect, calling a tool of an MCP server that was still
   connecting failed as an unknown tool; it now waits for the server.
+- Chrome (extension 0.4.0; run `gocode chrome install` and reload it):
+  - `find` refs no longer collide: two finds could hand out the same ref, so
+    `form_input` wrote every value into the first field. Refs are unique per
+    tab, and a ref from before a navigation is reported as stale.
+  - `find` matches what models ask for — "email field", "input fields",
+    "Full name input", "country dropdown" — by label, role, type,
+    placeholder and name, returns the field rather than its label, ranks
+    the best match first, and searches open shadow roots and same-origin
+    iframes.
+  - `form_input` works on React-controlled inputs, contenteditable, multiple
+    selects, radios by label and date inputs, takes `"false"` for a
+    checkbox, and fails when the page did not keep the value.
+  - A click by ref scrolls the element into view and refuses when something
+    covers it, naming what.
+  - A hanging script, a click that opens `alert()`/`confirm()` (now
+    dismissed and reported), or a cancelled or timed-out call no longer
+    wedges the tab or keeps clicking after the call failed; parallel
+    screenshots of one tab no longer fail.
+  - `browser_batch` returns each step's result; `zoom` crops to its region
+    and `scale` shrinks screenshots; `left_click_drag` works with HTML5
+    drag-and-drop; `ctrl+C` no longer adds Shift.
+  - Back/forward, a page that is still loading, `about:blank` popups and
+    `blob:`/`file:` pages are checked against the site rules.
+  - A tab the user opens from a gocode tab is no longer adopted (and closed
+    at the end of the session).
 
 ## [0.1.5] - 2026-11-03
 

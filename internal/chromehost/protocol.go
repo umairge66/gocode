@@ -73,6 +73,12 @@ const (
 	// (Runtime.evaluate); resize_window resizes the window of a gocode tab.
 	MethodJavascript   = "javascript_tool"
 	MethodResizeWindow = "resize_window"
+
+	// MethodCancel is a host -> extension notice, not a command: it carries
+	// no id of its own and gets no reply. params {"id": "<command id>"} names
+	// a command whose caller gave up (cancelled or timed out); the extension
+	// aborts what is left of it and detaches the debugger.
+	MethodCancel = "cancel"
 )
 
 // Hello is the handshake the extension sends immediately after connectNative.
