@@ -6,6 +6,52 @@ it refuses to publish a version that has no section here.
 
 ## [Unreleased]
 
+### Added
+
+- **Spend and delegation limits.** `--max-budget-usd` caps what a session
+  spends, subagents included; the turn stops after the response that crosses
+  it, and print mode reports `error_max_budget_usd`. At most 20 subagents run
+  at once (`GOCODE_MAX_CONCURRENT_SUBAGENTS`).
+- **A control protocol for print mode.** With `--input-format stream-json`,
+  a host can interrupt a turn, change the model or permission mode, and ask
+  for MCP status and context usage. With `--permission-prompt-tool stdio` (or
+  an MCP tool) the host answers permission prompts. The stream now also
+  reports compaction, API retries, background tasks, and streamed tool calls
+  and thinking. See `docs/headless.md`.
+- **`gocode sessions list|show|rename|delete`**, `/rename`, `/tag`, and
+  `--resume-session-at <uuid>` to resume or fork from a given message.
+- **Skills can be run by typing `/name`**, and project skills are found from
+  the current directory up to the repository root.
+- `--system-prompt`, `--append-system-prompt` (and their `-file` forms) and
+  `--agents <json>`.
+- MCP: image results reach the model, read-only tools run in parallel,
+  `alwaysLoad` keeps a server's tools out of tool search, and a server's tool
+  list is refreshed when it changes.
+- Hook events PostToolUseFailure, PermissionDenied, SubagentStart and
+  Notification. `/hooks` warns about events gocode never fires.
+
+### Changed
+
+- **Prompt caching in the main loop and subagents.** The system prompt and
+  the conversation are cached on Anthropic, so later turns cost less.
+- Session cost now includes subagents, compaction and side queries, and is
+  restored on resume.
+- Large MCP output is saved to a file in full instead of being cut at about
+  100,000 characters.
+- MCP tool text and subagent reports have harness tags and fake turn
+  markers neutralized before the model reads them.
+
+### Fixed
+
+- A PreToolUse hook that rewrites a tool's input no longer skips the
+  permission checks; the rewritten input is checked and shown in the prompt.
+- A hook that times out, cannot start or is killed now blocks the call
+  (`"onFailure": "continue"` opts out) instead of letting it run.
+- Hook options written in camelCase (`onFailure`, `statusMessage`, …), as the
+  `/hooks` editor writes them, were ignored.
+- `--setting-sources` was accepted but ignored; it now selects which
+  settings, memory files, skills, agents and commands load.
+
 ## [0.1.5] - 2026-11-03
 
 ### Added
