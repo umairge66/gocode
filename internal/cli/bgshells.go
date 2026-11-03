@@ -24,12 +24,21 @@ func (r *sessionRuntime) wireBackgroundShells() {
 		return
 	}
 	r.conv.BackgroundTasks.SetOnComplete(func(info bgtask.TaskInfo, notified bool) {
+		if f := r.bgObserver.Load(); f != nil {
+			(*f)(info)
+		}
 		if !notified {
 			return
 		}
 		r.emit(info.Summary())
 		r.triggerResume()
 	})
+}
+
+// setBackgroundObserver installs f, told about every background command
+// that ended (print mode's task_notification records).
+func (r *sessionRuntime) setBackgroundObserver(f func(bgtask.TaskInfo)) {
+	r.bgObserver.Store(&f)
 }
 
 // printBgWaitCeilingEnv bounds how long a -p run waits for its background

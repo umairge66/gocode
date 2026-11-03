@@ -16,6 +16,7 @@ import (
 	"github.com/umairge66/gocode/internal/agent"
 	"github.com/umairge66/gocode/internal/agentsdef"
 	"github.com/umairge66/gocode/internal/agenttool"
+	"github.com/umairge66/gocode/internal/bgtask"
 	"github.com/umairge66/gocode/internal/builtincmds"
 	"github.com/umairge66/gocode/internal/conversation"
 	"github.com/umairge66/gocode/internal/envutil"
@@ -143,6 +144,9 @@ type sessionRuntime struct {
 	// source of truth for running background subagents, and the interactive
 	// active-agents panel is driven from it (not from Agent tool start/end).
 	tasks *subagent.TaskRegistry
+	// bgObserver, when set, is told about each background command that
+	// ended (setBackgroundObserver).
+	bgObserver atomic.Pointer[func(bgtask.TaskInfo)]
 
 	// projectMemory is the loaded gocode.md memory block (with its header), or
 	// "" when none was found. It is appended to conv.System and handed to the

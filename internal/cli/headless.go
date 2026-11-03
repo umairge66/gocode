@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/umairge66/gocode/internal/agent"
@@ -28,10 +28,15 @@ import (
 //     a JSON array of every record instead).
 //   - stream-json (needs --verbose): newline-delimited records as they happen:
 //     system/init, each assistant turn, each tool-result user turn, optional
-//     partial stream_event records, and a result record per turn.
+//     partial stream_event records, system records (compact_boundary,
+//     api_retry, task_started, task_notification), and a result record per
+//     turn.
 //
 // --input-format stream-json (with --output-format stream-json) reads user
-// messages as newline-delimited JSON on stdin and runs one turn per message.
+// messages and control requests as newline-delimited JSON on stdin, while
+// turns run (headless_stream.go): one turn per message, messages that arrive
+// during a turn delivered to it between tool rounds, and permission asks sent
+// to the host as can_use_tool requests (headless_permission.go).
 // --json-schema makes the model return its answer through a StructuredOutput
 // tool whose input is validated against the schema; the validated object is
 // the result's structured_output.
@@ -48,6 +53,9 @@ type printOutputOptions struct {
 	partialEnv bool
 	jsonSchema string
 	schemaSet  bool
+	// permissionPromptTool is --permission-prompt-tool: "stdio" (the
+	// stream-json host) or an MCP tool that decides permission asks.
+	permissionPromptTool string
 }
 
 // parsePrintOutputFlags pulls the output flags out of the print-mode
@@ -97,6 +105,12 @@ func parsePrintOutputFlags(rest []string) (printOutputOptions, []string, string)
 				return o, nil, "error: option '--json-schema <schema>' argument missing"
 			}
 			o.jsonSchema, o.schemaSet = v, true
+		case "--permission-prompt-tool":
+			v, ok := value()
+			if !ok {
+				return o, nil, "error: option '--permission-prompt-tool <tool>' argument missing"
+			}
+			o.permissionPromptTool = strings.TrimSpace(v)
 		case "--verbose":
 			if hasVal {
 				out = append(out, x)
@@ -128,6 +142,9 @@ func (o printOutputOptions) format() string {
 func (o *printOutputOptions) validate(env *Env) string {
 	if o.inputFormat == headless.FormatStreamJSON && o.format() != headless.FormatStreamJSON {
 		return headless.ErrInputStreamNeedsOutputStream
+	}
+	if msg := validatePermissionPromptTool(o.permissionPromptTool, o.inputFormat); msg != "" {
+		return msg
 	}
 	o.partialEnv = envutil.EnvTruthy(envGetenv(env)("GOCODE_CODE_INCLUDE_PARTIAL_MESSAGES"))
 	if (o.partial || o.partialEnv) && o.format() != headless.FormatStreamJSON {
@@ -181,6 +198,15 @@ type headlessRun struct {
 	// priceNoticeShown: the unpriced-model notice was printed.
 	priceNoticeShown bool
 
+	// in is the stream-json input (nil for a single prompt).
+	in *streamInput
+	// initCommands are the slash commands initialize reports, taken when
+	// the session is wired.
+	initCommands []map[string]any
+	// ctxTokens is the context size the latest model response measured
+	// (get_context_usage during a turn).
+	ctxTokens atomic.Int64
+
 	// per-turn observations
 	lastStop string
 	denials  []headless.PermissionDenial
@@ -205,16 +231,41 @@ func (h *headlessRun) emit(v any) {
 // runHeadlessPrint runs the json / stream-json print session: prompts come
 // from next (one turn each, until it reports no more).
 func runHeadlessPrint(env *Env, s *printSession, o printOutputOptions, schema map[string]any, next func() (string, bool, error)) int {
+	return runHeadless(env, s, o, schema, nil, func(context.Context) ([]agent.ContentBlock, bool, error) {
+		prompt, ok, err := next()
+		if !ok || err != nil {
+			return nil, ok, err
+		}
+		return []agent.ContentBlock{agent.TextBlock(prompt)}, true, nil
+	})
+}
+
+// runHeadlessStream runs a print session driven by stream-json input on r.
+func runHeadlessStream(env *Env, s *printSession, o printOutputOptions, schema map[string]any, r io.Reader) int {
+	in := newStreamInput()
+	return runHeadless(env, s, o, schema, in, in.next)
+}
+
+// runHeadless is the json / stream-json print session: prompts come from
+// next, one turn each, until it reports no more. in, when set, is the
+// stream-json input the session reads from (control requests, mid-turn
+// messages, host permission prompts); it starts reading once the session
+// is built.
+func runHeadless(env *Env, s *printSession, o printOutputOptions, schema map[string]any, in *streamInput, next func(context.Context) ([]agent.ContentBlock, bool, error)) int {
 	return withPrintSession(env, s, false, func(ctx context.Context, env *Env, rt *sessionRuntime) int {
-		h := &headlessRun{env: env, s: s, rt: rt, opts: o, schema: schema}
+		h := &headlessRun{env: env, s: s, rt: rt, opts: o, schema: schema, in: in}
 		if o.format() == headless.FormatStreamJSON {
 			h.stream = headless.NewWriter(env.Stdout)
 		}
 		h.wire()
 		h.emit(h.systemInit())
+		if in != nil {
+			in.h = h
+			in.start(env.Stdin)
+		}
 		var last *headless.Result
 		for {
-			prompt, ok, err := next()
+			blocks, ok, err := next(ctx)
 			if err != nil {
 				fmt.Fprintln(env.Stderr, err.Error())
 				return 1
@@ -222,7 +273,9 @@ func runHeadlessPrint(env *Env, s *printSession, o printOutputOptions, schema ma
 			if !ok {
 				break
 			}
-			r := h.turn(ctx, prompt)
+			r := h.turnWith(ctx, func(ctx context.Context) (conversation.Result, error) {
+				return h.rt.conv.SubmitContent(ctx, blocks)
+			})
 			last = &r
 			h.emit(r)
 			if ctx.Err() != nil {
@@ -300,6 +353,9 @@ func (h *headlessRun) wire() {
 			h.mu.Lock()
 			h.lastStop = ev.StopReason
 			h.mu.Unlock()
+			if u := ev.Usage; u.InputTokens+u.CachedInputTokens+u.CacheWriteTokens > 0 {
+				h.ctxTokens.Store(int64(u.InputTokens + u.CachedInputTokens + u.CacheWriteTokens + u.OutputTokens))
+			}
 			if h.partial != nil {
 				h.partial.finish(ev)
 			}
@@ -313,7 +369,12 @@ func (h *headlessRun) wire() {
 	if h.opts.includePartial() {
 		h.partial = &partialStreamer{h: h}
 		conv.OnDelta = h.partial.text
+		conv.OnThinkingDelta = h.partial.thinking
+		conv.OnToolUseStart = h.partial.toolStart
+		conv.OnToolInputDelta = h.partial.toolInput
 	}
+	h.wireEvents()
+	h.wirePrompter()
 	if h.rt.dispatcher != nil {
 		h.rt.dispatcher.OnPermissionDenied = func(call agent.ToolUse) {
 			input := call.Input
@@ -367,6 +428,9 @@ func (h *headlessRun) systemInit() headless.SystemInit {
 		init.APIKeySource = h.s.KeySource
 	}
 	init.Version = updateCurrentVersion()
+	if h.in != nil {
+		init.Capabilities = append(init.Capabilities, headless.ControlCapabilities...)
+	}
 	return init
 }
 
@@ -381,6 +445,10 @@ func (h *headlessRun) turn(ctx context.Context, prompt string) headless.Result {
 func (h *headlessRun) turnWith(ctx context.Context, submit func(context.Context) (conversation.Result, error)) headless.Result {
 	conv := h.rt.conv
 	started := time.Now()
+	if h.in != nil {
+		// The turn runs under its own context, which an interrupt cancels.
+		ctx = h.in.beginTurn(ctx)
+	}
 	h.mu.Lock()
 	h.lastStop, h.denials = "", nil
 	h.mu.Unlock()
@@ -401,6 +469,10 @@ func (h *headlessRun) turnWith(ctx context.Context, submit func(context.Context)
 		h.notices(res2.Notices)
 		turns += res2.TurnCount
 		res, err = res2, err2
+	}
+	if h.in != nil && h.in.endTurn() && res.Reason == agent.ReasonAborted {
+		// An interrupt request ended the turn; the session goes on.
+		res.Err = errInterrupted
 	}
 
 	r := headless.NewResult(h.rt.currentSessionID())
@@ -487,42 +559,109 @@ func (h *headlessRun) notices(ns []string) {
 	}
 }
 
-// partialStreamer turns the model's text deltas into stream_event records
-// framed like the Messages API stream: message_start, content_block_start,
-// content_block_delta per delta, then content_block_stop, message_delta and
-// message_stop once the turn is complete.
+// partialStreamer turns the model's streamed deltas into stream_event
+// records framed like the Messages API stream: message_start, then for each
+// content block (thinking, text, tool_use) content_block_start, its
+// content_block_delta events (thinking_delta, text_delta, input_json_delta)
+// and content_block_stop, then message_delta and message_stop once the
+// response is complete. A block ends when a delta of another block arrives;
+// indices count the response's blocks from 0. Providers that do not stream
+// tool calls or thinking only produce text blocks.
 type partialStreamer struct {
-	h       *headlessRun
+	h *headlessRun
+
+	mu      sync.Mutex
 	started bool
+	// index is the open block's index (-1 before the first); kind its type
+	// ("" when none is open), toolID its tool_use id.
+	index  int
+	kind   string
+	toolID string
 }
 
 func (p *partialStreamer) send(event any) {
 	p.h.emit(headless.NewStreamEvent(p.h.rt.currentSessionID(), event))
 }
 
-func (p *partialStreamer) text(delta string) {
-	if !p.started {
-		p.started = true
-		p.send(map[string]any{"type": "message_start", "message": map[string]any{
-			"id": "msg_" + ids.RandomUUID(), "type": "message", "role": "assistant", "model": p.h.modelName(),
-			"content": []any{}, "stop_reason": nil, "stop_sequence": nil,
-			"usage": map[string]any{"input_tokens": 0, "output_tokens": 0},
-		}})
-		p.send(map[string]any{"type": "content_block_start", "index": 0, "content_block": map[string]any{"type": "text", "text": ""}})
+// begin opens the message (under p.mu).
+func (p *partialStreamer) begin() {
+	if p.started {
+		return
 	}
-	p.send(map[string]any{"type": "content_block_delta", "index": 0, "delta": map[string]any{"type": "text_delta", "text": delta}})
+	p.started, p.index, p.kind = true, -1, ""
+	p.send(map[string]any{"type": "message_start", "message": map[string]any{
+		"id": "msg_" + ids.RandomUUID(), "type": "message", "role": "assistant", "model": p.h.liveModel(),
+		"content": []any{}, "stop_reason": nil, "stop_sequence": nil,
+		"usage": map[string]any{"input_tokens": 0, "output_tokens": 0},
+	}})
+}
+
+// open closes the open block and starts a new one (under p.mu).
+func (p *partialStreamer) open(kind string, block map[string]any) {
+	p.closeBlock()
+	p.index++
+	p.kind = kind
+	p.send(map[string]any{"type": "content_block_start", "index": p.index, "content_block": block})
+}
+
+// closeBlock ends the open block, if any (under p.mu).
+func (p *partialStreamer) closeBlock() {
+	if p.kind == "" {
+		return
+	}
+	p.send(map[string]any{"type": "content_block_stop", "index": p.index})
+	p.kind, p.toolID = "", ""
+}
+
+func (p *partialStreamer) text(delta string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.begin()
+	if p.kind != agent.BlockText {
+		p.open(agent.BlockText, map[string]any{"type": "text", "text": ""})
+	}
+	p.send(map[string]any{"type": "content_block_delta", "index": p.index, "delta": map[string]any{"type": "text_delta", "text": delta}})
+}
+
+func (p *partialStreamer) thinking(delta string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.begin()
+	if p.kind != agent.BlockThinking {
+		p.open(agent.BlockThinking, map[string]any{"type": "thinking", "thinking": "", "signature": ""})
+	}
+	p.send(map[string]any{"type": "content_block_delta", "index": p.index, "delta": map[string]any{"type": "thinking_delta", "thinking": delta}})
+}
+
+func (p *partialStreamer) toolStart(id, name string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.begin()
+	p.open(agent.BlockToolUse, map[string]any{"type": "tool_use", "id": id, "name": name, "input": map[string]any{}})
+	p.toolID = id
+}
+
+func (p *partialStreamer) toolInput(id, partial string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.kind != agent.BlockToolUse || p.toolID != id {
+		return
+	}
+	p.send(map[string]any{"type": "content_block_delta", "index": p.index, "delta": map[string]any{"type": "input_json_delta", "partial_json": partial}})
 }
 
 func (p *partialStreamer) finish(ev agent.MessageEvent) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if !p.started {
 		return
 	}
+	p.closeBlock()
 	p.started = false
 	var stop any
 	if ev.StopReason != "" {
 		stop = ev.StopReason
 	}
-	p.send(map[string]any{"type": "content_block_stop", "index": 0})
 	p.send(map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": stop, "stop_sequence": nil},
 		"usage": map[string]any{"output_tokens": ev.Usage.OutputTokens}})
 	p.send(map[string]any{"type": "message_stop"})
@@ -641,43 +780,6 @@ func (s *structuredOutput) lastError() string {
 	return s.lastErr
 }
 
-// streamInputPrompts reads --input-format stream-json user messages from r:
-// one JSON record per line; each user record is one prompt. Blank lines and
-// records of other types are skipped. A line that is not JSON ends the run
-// with an error.
-func streamInputPrompts(r io.Reader) func() (string, bool, error) {
-	if r == nil {
-		return func() (string, bool, error) { return "", false, nil }
-	}
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 64*1024*1024)
-	return func() (string, bool, error) {
-		for sc.Scan() {
-			line := strings.TrimSpace(sc.Text())
-			if line == "" {
-				continue
-			}
-			var rec struct {
-				Type    string `json:"type"`
-				Message *struct {
-					Role    string          `json:"role"`
-					Content json.RawMessage `json:"content"`
-				} `json:"message"`
-			}
-			if err := json.Unmarshal([]byte(line), &rec); err != nil {
-				return "", false, errors.New(streamInputParseError(line))
-			}
-			if rec.Type != "user" || rec.Message == nil || rec.Message.Role != agent.RoleUser {
-				continue
-			}
-			if text := userContentText(rec.Message.Content); text != "" {
-				return text, true, nil
-			}
-		}
-		return "", false, nil
-	}
-}
-
 // streamInputParseError renders the error for an input line that is not
 // JSON.
 func streamInputParseError(line string) string {
@@ -694,29 +796,6 @@ func streamInputParseError(line string) string {
 		}
 	}
 	return fmt.Sprintf("Error parsing streaming input line (type=%s, %d chars): SyntaxError", typ, len(line))
-}
-
-// userContentText extracts the prompt text of a user message's content (a
-// string, or the text blocks of a block list).
-func userContentText(raw json.RawMessage) string {
-	var s string
-	if json.Unmarshal(raw, &s) == nil {
-		return strings.TrimSpace(s)
-	}
-	var blocks []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
-	if json.Unmarshal(raw, &blocks) != nil {
-		return ""
-	}
-	var parts []string
-	for _, b := range blocks {
-		if b.Type == agent.BlockText && b.Text != "" {
-			parts = append(parts, b.Text)
-		}
-	}
-	return strings.TrimSpace(strings.Join(parts, "\n"))
 }
 
 // singlePrompt yields prompt once.

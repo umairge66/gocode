@@ -37,6 +37,8 @@ type fakeProvider struct {
 	turns []fakeTurn
 	calls int
 	tools [][]string // tool names advertised per request
+	// bodies are the request bodies, in order.
+	bodies []string
 }
 
 func newFakeProvider(t *testing.T, turns ...fakeTurn) *fakeProvider {
@@ -64,6 +66,7 @@ func (p *fakeProvider) serve(w http.ResponseWriter, r *http.Request) {
 		names = append(names, t.Function.Name)
 	}
 	p.tools = append(p.tools, names)
+	p.bodies = append(p.bodies, string(body))
 	i := p.calls
 	p.calls++
 	if i >= len(p.turns) {
