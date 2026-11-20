@@ -42,9 +42,17 @@ func (c *captureCaller) first() agent.ModelRequest {
 // prefix of its own).
 type overhead struct {
 	systemChars, toolChars, tools, reminderChars int
+	// tempPathChars is how much of systemChars is the machine's temp folder
+	// path (the tests' working and scratchpad directories are under it).
+	tempPathChars int
 }
 
 func (o overhead) total() int { return o.systemChars + o.toolChars }
+
+// portable is total without the temp folder path, whose length differs by
+// machine (macOS temp paths are some 40 characters longer than Linux ones);
+// the ceilings bound this.
+func (o overhead) portable() int { return o.total() - o.tempPathChars }
 
 func (o overhead) String() string {
 	s := fmt.Sprintf("system %6d + tools %6d (%2d defs) = %6d chars ≈ %5d tokens",
@@ -58,6 +66,17 @@ func (o overhead) String() string {
 func measureRequest(req agent.ModelRequest) overhead {
 	b, _ := json.Marshal(req.Tools)
 	o := overhead{systemChars: len(req.System), toolChars: len(b), tools: len(req.Tools)}
+	if tmp := filepath.Clean(os.TempDir()); len(tmp) > 1 {
+		// The scratchpad path also has the working directory as one folder
+		// name, every other character replaced by "-".
+		flat := strings.Map(func(r rune) rune {
+			if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
+				return r
+			}
+			return '-'
+		}, tmp)
+		o.tempPathChars = (strings.Count(req.System, tmp) + strings.Count(req.System, flat)) * len(tmp)
+	}
 	for _, m := range req.Messages {
 		for _, blk := range m.Content {
 			if blk.AnnouncedTools != nil {
@@ -209,7 +228,7 @@ func printBreakdown(name string, req agent.ModelRequest) {
 // definitions, tool search on) of a default -p session, in characters. It
 // includes the scratchpad section (about 250 chars plus the directory path)
 // and the CodeGraph tool with its line in "# Using your tools" (about 1100
-// chars).
+// chars), and leaves out the temp folder path (see overhead.portable).
 const headlessOverheadCeiling = 31550
 
 // TestMeasureFixedOverhead reports the fixed per-request prompt overhead for
@@ -244,8 +263,8 @@ func TestMeasureFixedOverhead(t *testing.T) {
 		if after.total() >= before.total() {
 			t.Errorf("%s: tool search did not reduce the overhead: off %v, on %v", c.name, before, after)
 		}
-		if !c.interactive && after.total() > headlessOverheadCeiling {
-			t.Errorf("%s: fixed overhead %d chars exceeds the ceiling %d: %v", c.name, after.total(), headlessOverheadCeiling, after)
+		if !c.interactive && after.portable() > headlessOverheadCeiling {
+			t.Errorf("%s: fixed overhead %d chars (without the temp folder path) exceeds the ceiling %d: %v", c.name, after.portable(), headlessOverheadCeiling, after)
 		}
 	}
 }
@@ -283,8 +302,8 @@ func TestGrepViaBashShrinksOverhead(t *testing.T) {
 		if viaBash.total() >= plain.total() || viaBash.tools != plain.tools-1 {
 			t.Errorf("interactive=%v: grep via Bash %v, default %v", interactive, viaBash, plain)
 		}
-		if !interactive && viaBash.total() > headlessGrepViaBashOverheadCeiling {
-			t.Errorf("-p with grep via Bash: %d chars exceeds the ceiling %d", viaBash.total(), headlessGrepViaBashOverheadCeiling)
+		if !interactive && viaBash.portable() > headlessGrepViaBashOverheadCeiling {
+			t.Errorf("-p with grep via Bash: %d chars (without the temp folder path) exceeds the ceiling %d", viaBash.portable(), headlessGrepViaBashOverheadCeiling)
 		}
 		if os.Getenv("GOCODE_PRINT_OVERHEAD") != "" {
 			fmt.Printf("interactive=%v default %s\ninteractive=%v grep via Bash %s\n", interactive, plain, interactive, viaBash)
