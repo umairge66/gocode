@@ -220,6 +220,18 @@ Then, once: open `chrome://extensions`, turn on **Developer mode**, click **Load
 ### Fast search
 The model's `grep` runs a bundled **ugrep** that skips `.gitignore`d files, VCS folders and binaries, so searches on real projects return your code in milliseconds instead of a flood of `node_modules`.
 
+### Knowledge graph
+The agent has the graph built in: a read-only `CodeGraph` tool answers "where do I start", "what calls this" and "how do these two parts connect" from a graph of your code, built in memory on first use and kept current as files change. You do not run or set up anything, and nothing is written to your project. Files your `Read` deny rules cover stay out of it.
+
+To explore the same graph yourself, `gocode graphify` (or `/graphify` in a session) maps a project into a knowledge graph: files, functions, methods and types as nodes; calls, imports, inheritance and type use as edges; then communities, the most connected definitions, unexpected links between areas and import cycles. It is a native Go build of the [graphify](https://github.com/Graphify-Labs/graphify) pipeline (detect → extract → build → cluster → analyze → report → export) and writes the same `graphify-out/` layout: `graph.json` (NetworkX node-link format), `GRAPH_REPORT.md`, an interactive `graph.html` and a per-file cache, so only changed files are read again.
+```sh
+gocode graphify                                   # build or update the graph of this directory
+gocode graphify query "how does login reach the database?"
+gocode graphify explain "Server.Start"
+gocode graphify path "main" "DB.Put"
+```
+It runs locally and needs no model or API key. Go is read with the Go parser; Python, JavaScript/TypeScript (also inside Vue and Svelte components), Java, C#, Kotlin, Scala, Dart, Rust, C/C++, Ruby, PHP, Swift, Lua, shell and SQL (tables, views, functions and their references) with pattern-based extractors; Markdown by its headings, links and code mentions. A method call is bound to the method of the variable's declared type where the code states it (a typed parameter or field, `x = new T()`, in Go also a function's result and embedded types). Every edge says whether it is `EXTRACTED` (stated in the source) or `INFERRED` (matched by name, with a score). PDFs, images, audio and video are counted but not read. Source in other languages appears as file nodes only, and the report says how many. A `.graphifyignore` file (gitignore syntax) excludes paths, `--out <dir>` puts the output elsewhere, and `gocode graphify help` lists the options. `graphify-out/cache/` is ignored by git; `graph.json` (one node or link per line) and the report can be committed.
+
 ### Scripts and CI
 ```sh
 gocode -p "summarize the changes on this branch"
@@ -251,9 +263,10 @@ Run `gocode auth status` to see which keys gocode found and the variable each pr
 | `/config`, `/theme`, `/permissions`, `/memory`, `/hooks` | settings, look, permission rules, project memory |
 | `/mcp`, `/plugin`, `/tasks`, `/export` | servers, plugins, background jobs, export a conversation |
 | `/init` | write a `gocode.md` describing the project |
+| `/graphify` | build a knowledge graph of the project, or query it (`query`, `path`, `explain`) |
 | `/help` | everything else |
 
-On the command line: `gocode --help`, plus `gocode doctor`, `gocode mcp …`, `gocode plugin …`, `gocode sandbox …`, `gocode chrome …` and `gocode trust`.
+On the command line: `gocode --help`, plus `gocode doctor`, `gocode graphify …`, `gocode mcp …`, `gocode plugin …`, `gocode sandbox …`, `gocode chrome …` and `gocode trust`.
 
 ## Configuration
 

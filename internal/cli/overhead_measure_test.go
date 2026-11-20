@@ -207,8 +207,10 @@ func printBreakdown(name string, req agent.ModelRequest) {
 
 // headlessOverheadCeiling bounds the fixed per-request prompt (system + tool
 // definitions, tool search on) of a default -p session, in characters. It
-// includes the scratchpad section (about 250 chars plus the directory path).
-const headlessOverheadCeiling = 30400
+// includes the scratchpad section (about 250 chars plus the directory path)
+// and the CodeGraph tool with its line in "# Using your tools" (about 1100
+// chars).
+const headlessOverheadCeiling = 31550
 
 // TestMeasureFixedOverhead reports the fixed per-request prompt overhead for
 // the default -p tool set, the default interactive tool set, and interactive
@@ -262,7 +264,7 @@ func multiMCPFactory(servers map[string]*memMCPServer) mcphost.TransportFactory 
 
 // headlessGrepViaBashOverheadCeiling bounds the -p fixed prompt when `grep`
 // in Bash runs ugrep (no Grep tool definition), in characters.
-const headlessGrepViaBashOverheadCeiling = 28900
+const headlessGrepViaBashOverheadCeiling = 30050
 
 // TestGrepViaBashShrinksOverhead: when `grep` in Bash runs ugrep the Grep
 // tool is not sent, so the fixed per-request prompt is smaller than the

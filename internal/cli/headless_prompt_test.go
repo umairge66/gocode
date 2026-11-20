@@ -32,9 +32,9 @@ const (
 // "# Environment" section, and the serialized tool definitions with the
 // default compact tool texts and with GOCODE_FULL_TOOL_DESCRIPTIONS set.
 const (
-	interactiveSystemGolden    = "d116ed927fb04e619e0722e164e13c347f3ed1e5b365ce482ba60143ccc84d6e"
-	interactiveToolsGolden     = "075308560f0d26286ee901bfcb8ab0b08173f5eab9bb9ad487c5cee39a6ce08b"
-	interactiveFullToolsGolden = "1637157f1490d768331745102fa91a28a52cb1a1216a125f1d25eacc841de3ad"
+	interactiveSystemGolden    = "84a57fb1bd1e0a54e3a304ed833437849cbd6d4d9b5f37c2052ac0294bd83c51"
+	interactiveToolsGolden     = "d759829572c9aa3cd3ab18bf47d6658cd4221798665629928d1d76c4a007e36c"
+	interactiveFullToolsGolden = "baafa162ce1dfeebd28d0417a7273253bd93baa04e4bd24d71fdf6c3b31e9ecf"
 )
 
 func withoutEnvironment(system string) string {
@@ -100,8 +100,8 @@ func TestInteractivePromptUnchanged(t *testing.T) {
 // Golden hashes of the same interactive prompt when `grep` in Bash runs
 // ugrep (a ugrep resolves): no Grep tool, and the guidance points at `grep`.
 const (
-	interactiveGrepViaBashSystemGolden = "25f718567e49f002bfef732b31ac0a9ddeabeb1208a27496f53f33b455ee093a"
-	interactiveGrepViaBashToolsGolden  = "0650e8bf228fecd192008e0386a252cfa23f3e1d0ee158124cc657830d96124a"
+	interactiveGrepViaBashSystemGolden = "970638b4816a1979751abda9264263f955b91da9a104da119c587ddc409151ba"
+	interactiveGrepViaBashToolsGolden  = "780a7a019d4e91a338fb28dabf5d50b647642316e325abc4723067685ccd6242"
 )
 
 func TestInteractivePromptGrepViaBash(t *testing.T) {

@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Knowledge graph</title>
+<style>
+  :root { --bg:#f7f7f5; --panel:#ffffff; --fg:#1d1f23; --muted:#6b7280; --line:#d9dbe0; --edge:rgba(60,70,90,.13); --hi:#d9480f; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14161a; --panel:#1c1f25; --fg:#e6e8ec; --muted:#9aa1ad; --line:#2c313a; --edge:rgba(170,185,210,.12); --hi:#ffa94d; }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--fg); font:14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  #wrap { display:flex; height:100%; }
+  #stage { position:relative; flex:1; min-width:0; }
+  canvas { display:block; width:100%; height:100%; cursor:grab; }
+  canvas.drag { cursor:grabbing; }
+  #side { width:320px; max-width:45vw; background:var(--panel); border-left:1px solid var(--line); display:flex; flex-direction:column; }
+  #side header { padding:14px 16px 10px; border-bottom:1px solid var(--line); }
+  #side h1 { margin:0 0 2px; font-size:15px; overflow-wrap:anywhere; }
+  #meta { color:var(--muted); font-size:12px; }
+  #q { width:100%; margin-top:10px; padding:7px 9px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); font:inherit; }
+  #info { padding:12px 16px; overflow:auto; flex:1; }
+  #info h2 { margin:0 0 4px; font-size:14px; overflow-wrap:anywhere; }
+  #info h3 { margin:14px 0 4px; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); }
+  #info .sub { color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
+  #info ul { list-style:none; margin:0; padding:0; }
+  #info li { padding:3px 0; overflow-wrap:anywhere; }
+  #info a { color:inherit; text-decoration:none; border-bottom:1px dotted var(--muted); cursor:pointer; }
+  #info a:hover { color:var(--hi); }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:6px; }
+  #tip { position:absolute; pointer-events:none; padding:3px 7px; border-radius:5px; background:var(--panel); border:1px solid var(--line); font-size:12px; display:none; white-space:nowrap; }
+  @media (max-width: 640px) { #wrap { flex-direction:column; } #side { width:auto; max-width:none; height:42%; border-left:0; border-top:1px solid var(--line); } }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="stage"><canvas id="c"></canvas><div id="tip"></div></div>
+  <aside id="side">
+    <header>
+      <h1 id="title"></h1>
+      <div id="meta"></div>
+      <input id="q" type="search" placeholder="Search nodes…" autocomplete="off">
+    </header>
+    <div id="info"></div>
+  </aside>
+</div>
+<script>
+const D = /*DATA*/null, TITLE = /*TITLE*/null;
+const N = D.n, E = D.e;
+const cv = document.getElementById('c'), ctx = cv.getContext('2d'), tip = document.getElementById('tip'), info = document.getElementById('info');
+const css = k => getComputedStyle(document.documentElement).getPropertyValue(k).trim();
+const dark = matchMedia('(prefers-color-scheme: dark)');
+const adj = N.map(() => []);
+E.forEach((e, i) => { adj[e[0]].push(i); adj[e[1]].push(i); });
+let W = 0, H = 0, scale = 1, ox = 0, oy = 0, sel = -1, hover = -1, near = new Set();
+
+document.title = TITLE;
+document.getElementById('title').textContent = TITLE;
+document.getElementById('meta').textContent = N.length + (N.length < D.total ? ' of ' + D.total : '') + ' nodes · ' + E.length + ' edges';
+
+const hue = c => (c * 137.508) % 360;
+const color = (c, a) => 'hsla(' + hue(c) + ',62%,' + (dark.matches ? 64 : 42) + '%,' + a + ')';
+const radius = n => 2.2 + Math.sqrt(n.d) * 0.8;
+const sx = x => x * scale + ox, sy = y => y * scale + oy;
+
+function resize() {
+  const r = cv.getBoundingClientRect(), dpr = devicePixelRatio || 1;
+  W = r.width; H = r.height; cv.width = W * dpr; cv.height = H * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  draw();
+}
+function fit() {
+  if (!N.length) return;
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const n of N) { x0 = Math.min(x0, n.x); x1 = Math.max(x1, n.x); y0 = Math.min(y0, n.y); y1 = Math.max(y1, n.y); }
+  scale = Math.min(W / (x1 - x0 + 80), H / (y1 - y0 + 80), 2.5);
+  ox = W / 2 - (x0 + x1) / 2 * scale; oy = H / 2 - (y0 + y1) / 2 * scale;
+}
+function line(e) { const a = N[e[0]], b = N[e[1]]; ctx.moveTo(sx(a.x), sy(a.y)); ctx.lineTo(sx(b.x), sy(b.y)); }
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.lineWidth = 1;
+  if (sel < 0 && (E.length <= 8000 || scale > 1)) {
+    ctx.strokeStyle = css('--edge'); ctx.beginPath(); E.forEach(line); ctx.stroke();
+  }
+  if (sel >= 0) {
+    ctx.strokeStyle = css('--hi'); ctx.globalAlpha = .7; ctx.beginPath(); adj[sel].forEach(i => line(E[i])); ctx.stroke(); ctx.globalAlpha = 1;
+  }
+  const labels = [];
+  N.forEach((n, i) => {
+    const x = sx(n.x), y = sy(n.y), r = Math.max(1.2, radius(n) * Math.min(scale, 1.6));
+    if (x < -20 || y < -20 || x > W + 20 || y > H + 20) return;
+    const lit = sel < 0 || i === sel || near.has(i);
+    ctx.fillStyle = color(n.c, lit ? .92 : .13);
+    ctx.beginPath(); ctx.arc(x, y, r, 0, 6.2832); ctx.fill();
+    if (i === sel || i === hover) { ctx.strokeStyle = css('--hi'); ctx.lineWidth = 2; ctx.stroke(); ctx.lineWidth = 1; }
+    if (i === sel || (sel >= 0 && near.has(i) && near.size < 60) || (lit && r * scale > 9)) labels.push([n.l, x + r + 3, y + 4]);
+  });
+  ctx.fillStyle = css('--fg'); ctx.font = '11px system-ui, sans-serif';
+  labels.slice(0, 400).forEach(l => ctx.fillText(l[0], l[1], l[2]));
+}
+function pick(px, py) {
+  let best = -1, bd = 12 * 12;
+  N.forEach((n, i) => { const dx = sx(n.x) - px, dy = sy(n.y) - py, d = dx * dx + dy * dy; if (d < bd) { bd = d; best = i; } });
+  return best;
+}
+function el(tag, text, cls) { const e = document.createElement(tag); if (text != null) e.textContent = text; if (cls) e.className = cls; return e; }
+function nodeLink(i) {
+  const li = el('li'), dot = el('span', null, 'dot'), a = el('a', N[i].l);
+  dot.style.background = color(N[i].c, 1); a.onclick = () => select(i, true);
+  li.append(dot, a); return li;
+}
+function select(i, center) {
+  sel = i; near = new Set(); info.textContent = '';
+  if (i < 0) { overview(); draw(); return; }
+  const n = N[i], groups = {};
+  adj[i].forEach(k => {
+    const e = E[k], out = e[0] === i, j = out ? e[1] : e[0];
+    near.add(j);
+    const key = (out ? '' : '← ') + D.r[e[2]] + (out ? ' →' : '');
+    (groups[key] = groups[key] || []).push(j);
+  });
+  info.append(el('h2', n.l), el('div', (n.k || 'node') + ' · ' + n.f, 'sub'), el('div', 'Community ' + n.c + (D.c[n.c] ? ': ' + D.c[n.c] : ''), 'sub'));
+  Object.keys(groups).sort().forEach(key => {
+    info.append(el('h3', key + ' (' + groups[key].length + ')'));
+    const ul = el('ul'); groups[key].slice(0, 80).forEach(j => ul.append(nodeLink(j))); info.append(ul);
+  });
+  if (center) { scale = Math.max(scale, 1.1); ox = W / 2 - n.x * scale; oy = H / 2 - n.y * scale; }
+  draw();
+}
+function overview() {
+  const sizes = {};
+  N.forEach(n => sizes[n.c] = (sizes[n.c] || 0) + 1);
+  info.append(el('h3', 'Largest communities'));
+  const ul = el('ul');
+  Object.keys(sizes).sort((a, b) => sizes[b] - sizes[a]).slice(0, 25).forEach(c => {
+    const li = el('li'), dot = el('span', null, 'dot');
+    dot.style.background = color(+c, 1);
+    li.append(dot, document.createTextNode((D.c[c] || 'Community ' + c) + ' (' + sizes[c] + ')'));
+    ul.append(li);
+  });
+  info.append(ul, el('div', 'Scroll to zoom, drag to pan, click a node for its connections.', 'sub'));
+}
+
+let drag = null, moved = false;
+cv.addEventListener('pointerdown', e => { drag = [e.clientX, e.clientY, ox, oy]; moved = false; cv.setPointerCapture(e.pointerId); cv.classList.add('drag'); });
+cv.addEventListener('pointermove', e => {
+  const r = cv.getBoundingClientRect();
+  if (drag) {
+    if (Math.abs(e.clientX - drag[0]) + Math.abs(e.clientY - drag[1]) > 3) moved = true;
+    ox = drag[2] + e.clientX - drag[0]; oy = drag[3] + e.clientY - drag[1]; draw(); return;
+  }
+  const h = pick(e.clientX - r.left, e.clientY - r.top);
+  if (h !== hover) { hover = h; draw(); }
+  if (h >= 0) { tip.textContent = N[h].l + ' — ' + N[h].f; tip.style.left = (e.clientX - r.left + 12) + 'px'; tip.style.top = (e.clientY - r.top + 12) + 'px'; tip.style.display = 'block'; }
+  else tip.style.display = 'none';
+});
+cv.addEventListener('pointerup', e => {
+  const r = cv.getBoundingClientRect();
+  if (!moved) select(pick(e.clientX - r.left, e.clientY - r.top), false);
+  drag = null; cv.classList.remove('drag');
+});
+cv.addEventListener('wheel', e => {
+  e.preventDefault();
+  const r = cv.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
+  const k = Math.min(Math.max(scale * Math.exp(-e.deltaY * 0.0015), 0.02), 8) / scale;
+  ox = px - (px - ox) * k; oy = py - (py - oy) * k; scale *= k; draw();
+}, { passive: false });
+document.getElementById('q').addEventListener('input', e => {
+  const q = e.target.value.trim().toLowerCase();
+  if (!q) { select(-1); return; }
+  const hits = [];
+  N.forEach((n, i) => { if (n.l.toLowerCase().includes(q)) hits.push(i); });
+  hits.sort((a, b) => N[b].d - N[a].d);
+  sel = -1; near = new Set(hits); info.textContent = '';
+  info.append(el('h3', hits.length + ' matches'));
+  const ul = el('ul'); hits.slice(0, 60).forEach(i => ul.append(nodeLink(i))); info.append(ul);
+  if (hits.length) { sel = hits[0]; near = new Set(hits); }
+  draw();
+});
+document.getElementById('q').addEventListener('keydown', e => { if (e.key === 'Enter' && sel >= 0) select(sel, true); });
+dark.addEventListener('change', draw);
+addEventListener('resize', resize);
+resize(); fit(); overview(); draw();
+</script>
+</body>
+</html>

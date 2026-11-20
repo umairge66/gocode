@@ -6,6 +6,35 @@ it refuses to publish a version that has no section here.
 
 ## [Unreleased]
 
+### Added
+
+- **The agent knows your code's structure: the `CodeGraph` tool.** A built-in
+  read-only tool lets the model ask what calls a function, how two parts
+  connect and where the main areas of a project are, instead of searching file
+  by file. The graph is built in memory on first use, follows your edits, and
+  writes nothing to the project; files covered by `Read` deny rules are left
+  out. It adds about 275 tokens to each request.
+- **Knowledge graph: `gocode graphify` and `/graphify`.** Builds a graph of a
+  project's code and docs and writes `graphify-out/` (`graph.json`,
+  `GRAPH_REPORT.md`, an interactive `graph.html` and a cache): definitions and
+  how they call, import, inherit from and use each other, grouped into
+  communities, with the most connected definitions, unexpected links between
+  areas and import cycles in the report. `gocode graphify query "<question>"`,
+  `explain "<name>"` and `path "<A>" "<B>"` answer from the graph. It is a
+  native Go build of the [graphify](https://github.com/Graphify-Labs/graphify)
+  pipeline and output format; it runs locally, with no model, and re-reads
+  only changed files. Go is parsed exactly; Python, JavaScript/TypeScript
+  (also in Vue and Svelte components), Java, C#, Kotlin, Scala, Dart, Rust,
+  C/C++, Ruby, PHP, Swift, Lua, shell and SQL are read by pattern, and
+  Markdown by headings and links. Method calls follow the declared type of
+  the variable they are made on. The query commands say when the graph on
+  disk is older than the code. PDFs, images, audio and video are not read.
+  Builds are byte-for-byte reproducible, `graph.json` has one node or link per
+  line, and `--out <dir>` chooses the output directory. Calls are bound
+  through what a file imports (including `tsconfig.json` path aliases), and a
+  name that comes from outside the project is never matched to a local
+  definition of the same name.
+
 ## [0.1.7] - 2026-11-04
 
 ### Fixed

@@ -3,6 +3,7 @@ package toolrun
 import (
 	"errors"
 	"fmt"
+	"github.com/umairge66/gocode/internal/graphify"
 	"io/fs"
 	"math"
 	"os"
@@ -63,6 +64,8 @@ var toolResultLimits = map[protocol.Tool]int{
 	protocol.ToolGrep: GrepMaxResultSizeChars,
 	protocol.ToolRead: 0,
 	protocol.ToolLSP:  lsp.MaxResultSizeChars,
+
+	protocol.ToolCodeGraph: graphify.ToolMaxResultSizeChars,
 }
 
 // WithToolResultsDir sets the directory oversized tool results are saved to.

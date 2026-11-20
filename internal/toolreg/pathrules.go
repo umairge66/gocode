@@ -30,7 +30,7 @@ import (
 // tool that is not a file-path tool.
 func pathRuleKind(t protocol.Tool) protocol.Tool {
 	switch t {
-	case protocol.ToolRead, protocol.ToolGlob, protocol.ToolGrep, protocol.ToolLSP:
+	case protocol.ToolRead, protocol.ToolGlob, protocol.ToolGrep, protocol.ToolLSP, protocol.ToolCodeGraph:
 		return protocol.ToolRead
 	case protocol.ToolEdit, protocol.ToolWrite, protocol.ToolMultiEdit, protocol.ToolNotebookEdit:
 		return protocol.ToolEdit
@@ -42,8 +42,8 @@ func pathRuleKind(t protocol.Tool) protocol.Tool {
 // whole-filesystem deny / ask rule of a given tool also reaches.
 var matchAllReach = map[protocol.Tool]map[RuleBehavior][]protocol.Tool{
 	protocol.ToolRead: {
-		RuleDeny: {protocol.ToolRead, protocol.ToolGrep, protocol.ToolGlob, protocol.ToolLSP, protocol.ToolEdit, protocol.ToolMultiEdit, protocol.ToolWrite},
-		RuleAsk:  {protocol.ToolRead, protocol.ToolGrep, protocol.ToolGlob, protocol.ToolLSP},
+		RuleDeny: {protocol.ToolRead, protocol.ToolGrep, protocol.ToolGlob, protocol.ToolLSP, protocol.ToolCodeGraph, protocol.ToolEdit, protocol.ToolMultiEdit, protocol.ToolWrite},
+		RuleAsk:  {protocol.ToolRead, protocol.ToolGrep, protocol.ToolGlob, protocol.ToolLSP, protocol.ToolCodeGraph},
 	},
 	protocol.ToolEdit: {
 		RuleDeny: {protocol.ToolEdit, protocol.ToolMultiEdit, protocol.ToolWrite, protocol.ToolNotebookEdit},

@@ -881,7 +881,7 @@ func (d *Decider) decideBase(call Call, mode Mode, rules RuleSet) Decision {
 // includes the network screen (Read, Glob, Grep and LSP — the `getPath` tools).
 func networkScreenedRead(t protocol.Tool) bool {
 	switch t {
-	case protocol.ToolRead, protocol.ToolGlob, protocol.ToolGrep, protocol.ToolLSP:
+	case protocol.ToolRead, protocol.ToolGlob, protocol.ToolGrep, protocol.ToolLSP, protocol.ToolCodeGraph:
 		return true
 	}
 	return false

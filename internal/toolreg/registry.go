@@ -357,6 +357,11 @@ func builtinDescriptors() []ToolDescriptor {
 		// outside the working directories asks).
 		{Name: protocol.ToolLSP, ReadOnly: true, ConcurrencySafe: true, RulePrefix: "LSP"},
 
+		// CodeGraph reads the source files of the working directory into an
+		// in-memory graph and answers from it; it writes nothing. Its rule
+		// content is the directory and it is checked like Glob and Grep.
+		{Name: protocol.ToolCodeGraph, ReadOnly: true, ConcurrencySafe: true, RulePrefix: "CodeGraph"},
+
 		// Browser-control tools (milestone 2, internal/tools/browser). They drive
 		// the user's real Chrome over LOCAL IPC (internal/chromehost). READS
 		// (read_page, get_page_text, tabs_context, screenshot) are read-only and

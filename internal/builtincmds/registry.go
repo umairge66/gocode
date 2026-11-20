@@ -253,6 +253,13 @@ func defaultBuiltins() []*Builtin {
 			Handler:     func(args string) Effect { return dialogEffect("doctor", args) },
 		},
 		{
+			Name: "graphify", Kind: "local",
+			Description: "Build a knowledge graph of this project's code and docs, or query it (query, path, explain)",
+			// The host runs the pipeline (internal/graphify) and shows its
+			// report; Args carries the raw argument string.
+			Handler: func(args string) Effect { return dialogEffect("graphify", args) },
+		},
+		{
 			Name: "resume", Aliases: []string{"continue"}, Kind: "local-jsx",
 			Description: "Resume a previous conversation",
 			Handler:     func(args string) Effect { return dialogEffect("resume", args) },

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"github.com/umairge66/gocode/internal/graphify"
 	"os"
 	"regexp"
 	"strconv"
@@ -131,6 +132,8 @@ func toolArgs(name string, input json.RawMessage) string {
 		return str("url")
 	case "WebSearch":
 		return str("query")
+	case "CodeGraph":
+		return graphify.ToolUseSummary(input)
 	case "LSP":
 		wd, _ := os.Getwd()
 		return lsp.ToolUseSummary(input, wd)

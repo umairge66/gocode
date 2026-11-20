@@ -34,6 +34,8 @@ func TestTableResolvesKnownBuiltinsToEffectKind(t *testing.T) {
 		{"/provider", EffectOpenDialog},
 		{"/provider anthropic", EffectOpenDialog},
 		{"/doctor", EffectOpenDialog},
+		{"/graphify", EffectOpenDialog},
+		{"/graphify query \"what calls Run\"", EffectOpenDialog},
 		{"/resume", EffectOpenDialog},
 		{"/exit", EffectExit},
 		{"/quit", EffectExit}, // alias

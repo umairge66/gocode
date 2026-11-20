@@ -10,3 +10,5 @@ __pycache__/
 /ONBOARDING.md
 # Claude Code local state (agent worktrees, settings).
 .claude/
+# Knowledge graph built by `gocode graphify`.
+/graphify-out/

@@ -942,6 +942,8 @@ func printLocalResultText(env *Env, s *printSession, rt *sessionRuntime, res con
 			return info.configText()
 		case "doctor":
 			return info.doctorText()
+		case "graphify":
+			return graphifySlash(env, res.Effect.Args)
 		case "effort":
 			// -p: no picker and no persistence (the level applies to this
 			// session only).

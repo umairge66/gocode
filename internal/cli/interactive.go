@@ -1920,6 +1920,11 @@ func (d *turnDriver) renderLocal(eff *builtincmds.Effect) {
 		case "doctor":
 			d.showPanel(d.cmdInfo().doctorText())
 			return
+		case "graphify":
+			// /graphify [path | query | path | explain]: reading a large
+			// tree takes a moment, so it runs off the UI goroutine.
+			go func(args string) { d.showPanel(graphifySlash(d.env, args)) }(eff.Args)
+			return
 		case "model":
 			if d.dialogs != nil {
 				go d.dialogs.modelPicker()

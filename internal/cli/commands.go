@@ -215,6 +215,29 @@ var RootProgram = Command{
 			Description: "Check the health of your gocode installation. Reads settings files in the current directory without a trust prompt. For a full checkup that can also fix issues, run /doctor in a session.",
 		},
 		{
+			Name:        "graphify",
+			Args:        "[path]",
+			Description: "Build a knowledge graph of a directory's code and docs (graphify-out/graph.json, GRAPH_REPORT.md, graph.html), or query it. Runs locally, without a model.",
+			Flags: []Flag{
+				{Spec: "--force", Help: "Re-read every file instead of using the cache"},
+				{Spec: "--cluster-only", Help: "Re-cluster the existing graph without reading files"},
+				{Spec: "--resolution <n>", Help: "Community granularity (default 1; higher gives more, smaller communities)"},
+				{Spec: "--no-viz", Help: "Do not write graph.html"},
+				{Spec: "--node-limit <n>", Help: "Nodes drawn in graph.html (default 2000; 0 draws all)"},
+				{Spec: "--no-gitignore", Help: "Also read files ignored by .gitignore"},
+				{Spec: "--out <dir>", Help: "Write the outputs to this directory instead of <path>/graphify-out"},
+			},
+			Subcommands: []Command{
+				{Name: "query", Args: "<question>", Description: "Show the part of the graph relevant to a question", Flags: []Flag{
+					{Spec: "--budget <n>", Help: "Approximate size of the answer in tokens (default 2000)"},
+					{Spec: "--depth <n>", Help: "How many edges to follow from the matched nodes (default 2)"},
+					{Spec: "--graph <file>", Help: "The graph.json to read"},
+				}},
+				{Name: "path", Args: "<A> <B>", Description: "Shortest connection between two nodes", Flags: []Flag{{Spec: "--graph <file>", Help: "The graph.json to read"}}},
+				{Name: "explain", Args: "<name>", Description: "One node and everything connected to it", Flags: []Flag{{Spec: "--graph <file>", Help: "The graph.json to read"}}},
+			},
+		},
+		{
 			Name:        "sandbox",
 			Hidden:      true,
 			Description: "Sandbox posture management",

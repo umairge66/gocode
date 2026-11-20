@@ -373,6 +373,8 @@ func runSubcommand(env *Env, cmd *Command, t []string, d *DispatchDefaults) int 
 		return runAutoModeCmd(env, t)
 	case "doctor":
 		return runDoctorCmd(env, d)
+	case "graphify":
+		return runGraphifyCmd(env, t)
 	case "sandbox":
 		return runSandboxCmd(env, t)
 	case "import-conversations":

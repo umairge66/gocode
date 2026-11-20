@@ -62,6 +62,11 @@ const (
 	// language server is configured.
 	ToolLSP Tool = "LSP"
 
+	// ToolCodeGraph answers structural questions (what calls what, how two
+	// definitions connect) from a knowledge graph of the working directory,
+	// built in memory by internal/graphify.
+	ToolCodeGraph Tool = "CodeGraph"
+
 	// Browser-control tools (milestone 2). These drive the user's real Chrome
 	// through the LOCAL native host + MV3 extension (internal/chromehost); there
 	// is no network, account or telemetry. The identifiers and param/result
@@ -107,7 +112,7 @@ func AllTools() []Tool {
 		ToolRead, ToolEdit, ToolMultiEdit, ToolWebFetch, ToolWebSearch,
 		ToolAmendAgent, ToolWorkflow,
 		ToolSendMessage, ToolListAgents, ToolSearch, ToolTaskStop,
-		ToolEnterPlanMode, ToolExitPlanMode, ToolLSP,
+		ToolEnterPlanMode, ToolExitPlanMode, ToolLSP, ToolCodeGraph,
 		ToolBrowserNavigate, ToolBrowserReadPage, ToolBrowserGetPageText,
 		ToolBrowserTabsContext, ToolBrowserTabsCreate, ToolBrowserTabsClose,
 		ToolBrowserScreenshot,

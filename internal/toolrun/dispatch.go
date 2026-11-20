@@ -36,6 +36,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/umairge66/gocode/internal/graphify"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -704,6 +705,7 @@ func (d *Dispatcher) registerDefaults() {
 	d.registerTaskTools()
 	d.registerPlanTools()
 	d.registerLSPTool()
+	d.Register(protocol.ToolCodeGraph, CodeGraphAdapter(graphify.Tool{Root: d.WorkDir, Exclude: d.searchResultExcluded}))
 	d.registerToolSearch()
 
 	// NOTE: Diff and Mods are intentionally NOT registered — they are a plugin

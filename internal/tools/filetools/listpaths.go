@@ -114,3 +114,22 @@ func ListPaths(ctx context.Context, root string, opt ListOptions, visit func(rel
 	}
 	return true, nil
 }
+
+// IgnoreFile is one parsed ignore file in gitignore syntax (globs, "/"
+// anchoring, a trailing "/" for directories, "!" to re-include), rooted at
+// the directory its patterns are relative to.
+type IgnoreFile struct{ f *ignoreFile }
+
+// LoadIgnoreFile reads the ignore file at path, whose patterns are relative
+// to dir. A missing or empty file yields a matcher that ignores nothing.
+func LoadIgnoreFile(path, dir string) *IgnoreFile {
+	return &IgnoreFile{f: loadIgnoreFile(path, dir)}
+}
+
+// Ignored reports whether the file's rules ignore abs itself (the last
+// matching rule wins). As in git, a path inside an ignored directory is
+// ignored whatever its own rules say; callers that walk a tree prune the
+// directory when it is reported.
+func (i *IgnoreFile) Ignored(abs string, isDir bool) bool {
+	return i != nil && i.f.match(abs, isDir) == matchIgnore
+}
