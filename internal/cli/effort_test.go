@@ -232,7 +232,23 @@ func TestInteractiveEffortCommand(t *testing.T) {
 	defer prog.Quit()
 	prog.waitFor(func(m tea.Msg) bool { _, ok := m.(ui.SetBannerMsg); return ok }, 10*time.Second)
 
+	// A command line submitted while the previous command's turn is still
+	// being torn down is refused ("A turn is already in progress"), so each
+	// command is left to settle (the idle status that ends its turn) before
+	// the next one is typed.
+	settle := func(from int, cmd string) {
+		t.Helper()
+		if _, _, ok := prog.waitAfter(from, func(m tea.Msg) bool {
+			s, ok := m.(ui.SetStatusMsg)
+			return ok && s.Status.Kind == ui.StatusIdle
+		}); !ok {
+			t.Fatalf("%s never finished", cmd)
+		}
+	}
+
+	from := prog.mark()
 	submitLine(prog, "/effort high")
+	settle(from, "/effort high")
 	if !sawSystemMsg(prog, "Set effort level to high (saved as your default for new sessions)") {
 		t.Fatal("/effort high did not confirm")
 	}
@@ -255,7 +271,9 @@ func TestInteractiveEffortCommand(t *testing.T) {
 		t.Fatal("/effort fell into the unavailable-dialog fallback")
 	}
 
+	from = prog.mark()
 	submitLine(prog, "/status")
+	settle(from, "/status")
 	if !sawSystemMsg(prog, "Effort:        high") {
 		t.Fatal("/status did not show the effort")
 	}
