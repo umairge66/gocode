@@ -6,6 +6,8 @@ it refuses to publish a version that has no section here.
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-11-21
+
 ### Added
 
 - **The agent knows your code's structure: the `CodeGraph` tool.** A built-in
@@ -13,7 +15,7 @@ it refuses to publish a version that has no section here.
   connect and where the main areas of a project are, instead of searching file
   by file. The graph is built in memory on first use, follows your edits, and
   writes nothing to the project; files covered by `Read` deny rules are left
-  out. It adds about 275 tokens to each request.
+  out. It adds about 350 tokens to each request.
 - **Knowledge graph: `gocode graphify` and `/graphify`.** Builds a graph of a
   project's code and docs and writes `graphify-out/` (`graph.json`,
   `GRAPH_REPORT.md`, an interactive `graph.html` and a cache): definitions and
@@ -344,7 +346,8 @@ browser control" in `chrome://extensions`.
 
 First public release.
 
-[Unreleased]: https://github.com/umairge66/gocode/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/umairge66/gocode/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/umairge66/gocode/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/umairge66/gocode/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/umairge66/gocode/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/umairge66/gocode/compare/v0.1.4...v0.1.5
