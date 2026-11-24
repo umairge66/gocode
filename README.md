@@ -10,23 +10,23 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/umairge66/gocode/releases/latest"><img alt="Download gocode" src="https://img.shields.io/badge/-Download%20latest%20release-2F81F7?style=for-the-badge&logo=github&logoColor=white"></a>
+  <a href="https://github.com/umairge66/gocode/releases/latest"><img alt="Download gocode" src="docs/badges/download-gocode.svg"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/umairge66/gocode/releases/latest/download/gocode_linux_amd64.tar.gz"><img alt="Download for Linux (x86_64)" src="https://img.shields.io/badge/Linux-x86__64-FCC624?style=flat-square&logo=linux&logoColor=white"></a>
-  <a href="https://github.com/umairge66/gocode/releases/latest/download/gocode_darwin_arm64.tar.gz"><img alt="Download for macOS (Apple silicon)" src="https://img.shields.io/badge/macOS-Apple%20silicon-000000?style=flat-square&logo=apple&logoColor=white"></a>
-  <a href="https://github.com/umairge66/gocode/releases/latest/download/gocode_darwin_amd64.tar.gz"><img alt="Download for macOS (Intel)" src="https://img.shields.io/badge/macOS-Intel-000000?style=flat-square&logo=apple&logoColor=white"></a>
-  <a href="https://github.com/umairge66/gocode/releases/latest/download/gocode_windows_amd64.zip"><img alt="Download for Windows (x64)" src="https://img.shields.io/badge/Windows-x64-0078D4?style=flat-square&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0wIDBoMTF2MTFIMHpNMTMgMGgxMXYxMUgxM3pNMCAxM2gxMXYxMUgwek0xMyAxM2gxMXYxMUgxM3oiLz48L3N2Zz4="></a>
-  <a href="https://github.com/umairge66/gocode/releases/latest"><img alt="All platforms" src="https://img.shields.io/badge/all%20platforms-%E2%86%92-8250DF?style=flat-square"></a>
+  <a href="https://github.com/umairge66/gocode/releases/latest/download/gocode_linux_amd64.tar.gz"><img alt="Download for Linux (x86_64)" src="docs/badges/download-for-linux-x86-64.svg"></a>
+  <a href="https://github.com/umairge66/gocode/releases/latest/download/gocode_darwin_arm64.tar.gz"><img alt="Download for macOS (Apple silicon)" src="docs/badges/download-for-macos-apple-silicon.svg"></a>
+  <a href="https://github.com/umairge66/gocode/releases/latest/download/gocode_darwin_amd64.tar.gz"><img alt="Download for macOS (Intel)" src="docs/badges/download-for-macos-intel.svg"></a>
+  <a href="https://github.com/umairge66/gocode/releases/latest/download/gocode_windows_amd64.zip"><img alt="Download for Windows (x64)" src="docs/badges/download-for-windows-x64.svg"></a>
+  <a href="https://github.com/umairge66/gocode/releases/latest"><img alt="All platforms" src="docs/badges/all-platforms.svg"></a>
 </p>
 
 <p align="center">
   <a href="https://github.com/umairge66/gocode/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/umairge66/gocode/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/umairge66/gocode/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/umairge66/gocode?include_prereleases&color=8250DF"></a>
-  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-F0883E"></a>
-  <img alt="Go 1.26" src="https://img.shields.io/badge/go-1.26-00ADD8">
-  <img alt="Linux, macOS, Windows, BSD" src="https://img.shields.io/badge/platforms-linux%20%7C%20macOS%20%7C%20windows%20%7C%20bsd-6E7781">
+  <a href="https://github.com/umairge66/gocode/releases/latest"><img alt="Latest release" src="https://badgen.net/github/release/umairge66/gocode?color=8250DF"></a>
+  <a href="LICENSE"><img alt="License: MIT" src="docs/badges/license-mit.svg"></a>
+  <img alt="Go 1.26" src="docs/badges/go-1-26.svg">
+  <img alt="Linux, macOS, Windows, BSD" src="docs/badges/linux-macos-windows-bsd.svg">
 </p>
 
 <p align="center">
